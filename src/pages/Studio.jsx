@@ -13,7 +13,7 @@ export default function Studio() {
   const { connectionState, errorMessage, connect, disconnect, updateState, reconnect, recordingUrl, clearRecording } =
     useMirrorStream(videoRef);
 
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceMode, setVoiceMode] = useState('direct');
   const [selectedVoiceId, setSelectedVoiceId] = useState(null);
   const { voiceState, voiceError, startVoiceStream, stopVoiceStream } = useVoiceStream();
 
@@ -94,12 +94,13 @@ export default function Studio() {
 
   // Coordinate voice stream with video stream lifecycle
   useEffect(() => {
-    if (connectionState === 'connected' && voiceEnabled && selectedVoiceId && voiceState === 'idle') {
-      startVoiceStream({ voiceId: selectedVoiceId });
+    if (connectionState === 'connected' && voiceMode && voiceState === 'idle') {
+      if (voiceMode === 'converted' && !selectedVoiceId) return;
+      startVoiceStream({ voiceId: selectedVoiceId, mode: voiceMode });
     } else if ((connectionState === 'idle' || connectionState === 'error') && voiceState === 'active') {
       stopVoiceStream();
     }
-  }, [connectionState, voiceEnabled, selectedVoiceId, voiceState, startVoiceStream, stopVoiceStream]);
+  }, [connectionState, voiceMode, selectedVoiceId, voiceState, startVoiceStream, stopVoiceStream]);
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-[#080810] flex">
@@ -122,8 +123,8 @@ export default function Studio() {
             onStateChange={handlePanelStateChange}
             recordingUrl={recordingUrl}
             onDownload={handleDownload}
-            voiceEnabled={voiceEnabled}
-            setVoiceEnabled={setVoiceEnabled}
+            voiceMode={voiceMode}
+            setVoiceMode={setVoiceMode}
             selectedVoiceId={selectedVoiceId}
             onSelectVoice={setSelectedVoiceId}
             voiceState={voiceState}

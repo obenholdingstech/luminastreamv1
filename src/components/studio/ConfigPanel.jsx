@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import AvatarUploader from './AvatarUploader';
 import VoiceUploader from './VoiceUploader';
+import VoiceModeSelector from './VoiceModeSelector';
 import StatusBadge from './StatusBadge';
+import { Link } from 'react-router-dom';
 import { Power, Square, EyeOff, Download } from 'lucide-react';
 
 export default function ConfigPanel({
@@ -17,8 +19,8 @@ export default function ConfigPanel({
   onStateChange,
   recordingUrl,
   onDownload,
-  voiceEnabled,
-  setVoiceEnabled,
+  voiceMode,
+  setVoiceMode,
   selectedVoiceId,
   onSelectVoice,
   voiceState,
@@ -73,8 +75,15 @@ export default function ConfigPanel({
     <div className="w-full h-full bg-[#0F0F1A] border-r border-[#1A1A2E] flex flex-col">
       {/* Brand header */}
       <div className="px-6 py-5 border-b border-[#1A1A2E]">
-        <h1 className="text-[13px] font-semibold tracking-[0.3em] text-white uppercase">Mirror</h1>
-        <p className="text-[10px] tracking-widest text-[#64748B] uppercase mt-1">Realtime Studio</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-[13px] font-semibold tracking-[0.3em] text-white uppercase">Mirror</h1>
+            <p className="text-[10px] tracking-widest text-[#64748B] uppercase mt-1">Realtime Studio</p>
+          </div>
+          <Link to="/text-to-speech" className="text-[10px] text-[#64748B] hover:text-white tracking-wider uppercase transition">
+            TTS
+          </Link>
+        </div>
       </div>
 
       {/* Scrollable config area */}
@@ -98,35 +107,27 @@ export default function ConfigPanel({
           </p>
         </div>
 
-        {/* Reference voice */}
+        {/* Voice output */}
         <div>
           <label className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase mb-2 block">
-            Reference Voice
+            Voice Output
           </label>
-          <VoiceUploader
-            selectedVoiceId={selectedVoiceId}
-            onSelectVoice={onSelectVoice}
-            voiceState={voiceState}
-            voiceError={voiceError}
-            disabled={isStreaming}
-          />
-          {selectedVoiceId && (
-            <div className="flex items-center justify-between mt-3">
-              <span className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase">Voice</span>
-              <button
-                onClick={() => setVoiceEnabled(!voiceEnabled)}
-                className={`w-9 h-5 rounded-full transition relative ${voiceEnabled ? 'bg-[#6366F1]' : 'bg-[#2A2A3E]'}`}
-              >
-                <span
-                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
-                    voiceEnabled ? 'left-4' : 'left-0.5'
-                  }`}
-                />
-              </button>
+          <VoiceModeSelector mode={voiceMode} onModeChange={setVoiceMode} disabled={isStreaming} />
+          {voiceMode === 'converted' && (
+            <div className="mt-3">
+              <VoiceUploader
+                selectedVoiceId={selectedVoiceId}
+                onSelectVoice={onSelectVoice}
+                voiceState={voiceState}
+                voiceError={voiceError}
+                disabled={isStreaming}
+              />
             </div>
           )}
           <p className="text-[10px] text-[#4A5568] mt-2 leading-relaxed">
-            Select a voice from your library. Converted audio replaces your mic during stream.
+            {voiceMode === 'direct'
+              ? 'Your natural microphone voice goes straight to the output with no conversion.'
+              : 'Select a voice. Your speech is converted in real-time using Resemble AI.'}
           </p>
         </div>
 

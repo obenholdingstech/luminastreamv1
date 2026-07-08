@@ -2,30 +2,10 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 
 const TARGET_INPUT_RATE = 16000;
-const CHUNK_SAMPLES = 4800; // ~300ms at 16kHz — balance of latency and quality
+const CHUNK_SAMPLES = 4800; // ~300ms at 16kHz
+const MAX_IN_FLIGHT = 3;   // Prevent pile-up if API is slow
 
-// ── Encoding helpers ────────────────────────────────────────────
-function int16ToBase64(int16) {
-  const bytes = new Uint8Array(int16.buffer);
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunk, bytes.length)));
-  }
-  return btoa(binary);
-}
-
-function base64ToFloat32(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const count = Math.floor(bytes.length / 2);
-  const int16 = new Int16Array(bytes.buffer, 0, count);
-  const float32 = new Float32Array(count);
-  for (let i = 0; i < count; i++) float32[i] = int16[i] / 0x8000;
-  return float32;
-}
-
+// ── Audio helpers ───────────────────────────────────────────────
 function resample(input, inputRate, targetRate) {
   if (inputRate === targetRate) return input;
   const ratio = inputRate / targetRate;
@@ -57,6 +37,48 @@ function combineChunks(chunks) {
   return out;
 }
 
+function writeStr(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function pcmToWavBlob(pcm16, sampleRate) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataSize = pcm16.byteLength;
+  const headerSize = 44;
+  const buffer = new ArrayBuffer(headerSize + dataSize);
+  const view = new DataView(buffer);
+
+  writeStr(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(view, 8, 'WAVE');
+  writeStr(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  new Uint8Array(buffer, headerSize).set(
+    new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength)
+  );
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 // ── Hook ────────────────────────────────────────────────────────
 export function useVoiceStream() {
   const [voiceState, setVoiceState] = useState('idle');
@@ -68,103 +90,90 @@ export function useVoiceStream() {
   const gainRef = useRef(null);
   const micRef = useRef(null);
   const voiceIdRef = useRef(null);
+  const modeRef = useRef('direct');
   const bufRef = useRef([]);
   const accRef = useRef(0);
   const activeRef = useRef(false);
-  const outputRateRef = useRef(44100);
+  const playTimeRef = useRef(0);
   const queueTimerRef = useRef(null);
+  const inFlightRef = useRef(0);
 
-  // Pipelined sending + ordered playback
-  const seqRef = useRef(0);           // next sequence number to assign
-  const nextPlaySeqRef = useRef(0);   // next sequence number to play
-  const responseMapRef = useRef({});  // seq → Float32Array | null
-  const playTimeRef = useRef(0);      // next scheduled playback time
-  const staleCheckRef = useRef({});   // seq → timestamp when gap first detected
+  // Pipelined sending + ordered playback (converted mode only)
+  const seqRef = useRef(0);
+  const nextPlaySeqRef = useRef(0);
+  const decodedMapRef = useRef({});
 
-  const playBuffer = useCallback((float32) => {
+  const processPlaybackQueue = useCallback(() => {
     const ctx = ctxRef.current;
-    if (!ctx || !activeRef.current || !float32) return;
+    if (!ctx || !activeRef.current) return;
 
-    const buffer = ctx.createBuffer(1, float32.length, outputRateRef.current);
-    buffer.copyToChannel(float32, 0);
+    while (decodedMapRef.current[nextPlaySeqRef.current] !== undefined) {
+      const audioBuffer = decodedMapRef.current[nextPlaySeqRef.current];
+      delete decodedMapRef.current[nextPlaySeqRef.current];
+      nextPlaySeqRef.current++;
 
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(ctx.destination);
+      if (audioBuffer) {
+        const src = ctx.createBufferSource();
+        src.buffer = audioBuffer;
+        src.connect(ctx.destination);
 
-    // Schedule seamlessly after previous chunk — no gaps
-    const now = ctx.currentTime;
-    if (playTimeRef.current < now) playTimeRef.current = now + 0.02;
-    src.start(playTimeRef.current);
-    playTimeRef.current += buffer.duration;
+        const now = ctx.currentTime;
+        if (playTimeRef.current < now) playTimeRef.current = now + 0.02;
+        src.start(playTimeRef.current);
+        playTimeRef.current += audioBuffer.duration;
+      }
+    }
   }, []);
 
-  // Play all consecutive responses from the queue; skip stale gaps after 1.5s
-  const processQueue = useCallback(() => {
-    const map = responseMapRef.current;
-    const stale = staleCheckRef.current;
-    const now = Date.now();
-
-    let advanced = true;
-    while (advanced) {
-      advanced = false;
-      const seq = nextPlaySeqRef.current;
-
-      if (map[seq] !== undefined) {
-        const float32 = map[seq];
-        delete map[seq];
-        delete stale[seq];
-        nextPlaySeqRef.current++;
-        if (float32) playBuffer(float32);
-        advanced = true;
-      } else if (seq < seqRef.current) {
-        // Sent but not yet received — track staleness
-        if (!stale[seq]) {
-          stale[seq] = now;
-        } else if (now - stale[seq] > 1500) {
-          // Skip missing chunk to unblock the queue
-          delete stale[seq];
-          nextPlaySeqRef.current++;
-          advanced = true;
-        }
-      }
-    }
-  }, [playBuffer]);
-
-  // Fire-and-forget: sends chunk without blocking the next capture cycle
-  const sendChunk = useCallback(async (pcm16, seq) => {
+  const sendChunk = useCallback(async (pcm16) => {
+    const seq = seqRef.current++;
     try {
-      const audioBase64 = int16ToBase64(pcm16);
-      const res = await base44.functions.invoke('processVoice', {
-        voiceId: voiceIdRef.current,
-        audioBase64,
-        outputFormat: `pcm_${outputRateRef.current}`,
+      // 1. Convert PCM to WAV blob
+      const wavBlob = pcmToWavBlob(pcm16, TARGET_INPUT_RATE);
+
+      // 2. Upload WAV to storage (most direct route to a URL Resemble can fetch)
+      const uploadRes = await base44.integrations.Core.UploadFile({ file: wavBlob });
+      if (!uploadRes?.file_url) throw new Error('Upload failed');
+
+      // 3. Call Resemble STS via backend (keeps API key server-side)
+      const res = await base44.functions.invoke('convertVoice', {
+        voiceUuid: voiceIdRef.current,
+        audioUrl: uploadRes.file_url,
+        sampleRate: TARGET_INPUT_RATE,
       });
+
       if (res.data?.audioBase64) {
-        responseMapRef.current[seq] = base64ToFloat32(res.data.audioBase64);
+        const ctx = ctxRef.current;
+        if (!ctx || !activeRef.current) return;
+
+        // 4. Decode WAV to AudioBuffer (browser handles resampling)
+        const bytes = base64ToBytes(res.data.audioBase64);
+        const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+        decodedMapRef.current[seq] = audioBuffer;
       } else {
-        responseMapRef.current[seq] = null;
+        decodedMapRef.current[seq] = null;
       }
     } catch (_err) {
-      responseMapRef.current[seq] = null;
+      decodedMapRef.current[seq] = null;
     }
-    processQueue();
-  }, [processQueue]);
+    processPlaybackQueue();
+  }, [processPlaybackQueue]);
 
-  const startVoiceStream = useCallback(async ({ voiceId }) => {
+  const startVoiceStream = useCallback(async ({ voiceId, mode }) => {
     if (activeRef.current) return;
     activeRef.current = true;
+    modeRef.current = mode;
     voiceIdRef.current = voiceId;
     setVoiceError(null);
 
-    // Reset all pipeline state
+    // Reset pipeline state
     seqRef.current = 0;
     nextPlaySeqRef.current = 0;
-    responseMapRef.current = {};
-    staleCheckRef.current = {};
+    decodedMapRef.current = {};
     playTimeRef.current = 0;
     bufRef.current = [];
     accRef.current = 0;
+    inFlightRef.current = 0;
 
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({
@@ -179,72 +188,71 @@ export function useVoiceStream() {
       micRef.current = micStream;
 
       const ctx = new AudioContext();
-      // Critical: browsers auto-suspend contexts not created in a direct user gesture.
-      // Without resume(), onaudioprocess never fires and no audio reaches the speakers.
-      if (ctx.state === 'suspended') {
-        await ctx.resume();
-      }
+      if (ctx.state === 'suspended') await ctx.resume();
       ctxRef.current = ctx;
 
-      // Match ElevenLabs output format to the context's native sample rate
-      // to eliminate browser-side resampling and reduce latency.
-      const sr = ctx.sampleRate;
-      if (sr === 48000) outputRateRef.current = 48000;
-      else if (sr === 44100) outputRateRef.current = 44100;
-      else if (sr === 32000) outputRateRef.current = 32000;
-      else if (sr === 24000) outputRateRef.current = 24000;
-      else if (sr === 22050) outputRateRef.current = 22050;
-      else outputRateRef.current = 44100;
-
-      const inputRate = ctx.sampleRate;
       const source = ctx.createMediaStreamSource(micStream);
       sourceRef.current = source;
 
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
+      if (mode === 'direct') {
+        // ── Direct Voice: mic to speakers, zero processing ──
+        // No ScriptProcessor, no API calls, no conversion.
+        // The natural voice goes straight to the output.
+        source.connect(ctx.destination);
+        setVoiceState('active');
+      } else {
+        // ── Converted Voice: mic to WAV to upload to Resemble STS to speakers ──
+        const inputRate = ctx.sampleRate;
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        processorRef.current = processor;
 
-      // Zero-gain node silences mic passthrough to prevent speaker feedback.
-      // Converted audio is played separately via playBuffer → ctx.destination.
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      gainRef.current = gain;
+        // Zero-gain node silences mic passthrough (prevents feedback).
+        // Converted audio is played separately via the playback queue.
+        const gain = ctx.createGain();
+        gain.gain.value = 0;
+        gainRef.current = gain;
 
-      processor.onaudioprocess = (e) => {
-        if (!activeRef.current || !voiceIdRef.current) return;
-        const input = e.inputBuffer.getChannelData(0);
-        const resampled = resample(input, inputRate, TARGET_INPUT_RATE);
-        const pcm16 = float32ToInt16(resampled);
-        bufRef.current.push(pcm16);
-        accRef.current += pcm16.length;
+        processor.onaudioprocess = (e) => {
+          if (!activeRef.current || !voiceIdRef.current) return;
+          const input = e.inputBuffer.getChannelData(0);
+          const resampled = resample(input, inputRate, TARGET_INPUT_RATE);
+          const pcm16 = float32ToInt16(resampled);
+          bufRef.current.push(pcm16);
+          accRef.current += pcm16.length;
 
-        // Pipelined: send immediately when ready — do NOT wait for the response.
-        // This keeps capture continuous and prevents the long gaps that caused silence.
-        if (accRef.current >= CHUNK_SAMPLES) {
-          const combined = combineChunks(bufRef.current);
-          bufRef.current = [];
-          accRef.current = 0;
-          sendChunk(combined, seqRef.current);
-          seqRef.current++;
-        }
-      };
+          // Pipelined: send immediately when ready, do not wait for response
+          if (accRef.current >= CHUNK_SAMPLES) {
+            if (inFlightRef.current < MAX_IN_FLIGHT) {
+              const combined = combineChunks(bufRef.current);
+              bufRef.current = [];
+              accRef.current = 0;
+              inFlightRef.current++;
+              sendChunk(combined).finally(() => { inFlightRef.current--; });
+            } else {
+              // API cannot keep up — drop this chunk to prevent unbounded latency
+              bufRef.current = [];
+              accRef.current = 0;
+            }
+          }
+        };
 
-      source.connect(processor);
-      processor.connect(gain);
-      gain.connect(ctx.destination);
+        source.connect(processor);
+        processor.connect(gain);
+        gain.connect(ctx.destination);
 
-      // Safety net: process the playback queue periodically so stale chunks
-      // get skipped even when no new API responses arrive.
-      queueTimerRef.current = setInterval(() => {
-        processQueue();
-      }, 200);
+        // Safety net: process the playback queue periodically
+        queueTimerRef.current = setInterval(() => {
+          processPlaybackQueue();
+        }, 100);
 
-      setVoiceState('active');
+        setVoiceState('active');
+      }
     } catch (err) {
       setVoiceError(err.message || 'Microphone access failed');
       setVoiceState('error');
       activeRef.current = false;
     }
-  }, [sendChunk, processQueue]);
+  }, [sendChunk, processPlaybackQueue]);
 
   const stopVoiceStream = useCallback(() => {
     activeRef.current = false;
@@ -253,9 +261,9 @@ export function useVoiceStream() {
     accRef.current = 0;
     seqRef.current = 0;
     nextPlaySeqRef.current = 0;
-    responseMapRef.current = {};
-    staleCheckRef.current = {};
+    decodedMapRef.current = {};
     playTimeRef.current = 0;
+    inFlightRef.current = 0;
 
     if (queueTimerRef.current) {
       clearInterval(queueTimerRef.current);
