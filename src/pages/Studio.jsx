@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import ConfigPanel from '@/components/studio/ConfigPanel';
 import VideoCanvas from '@/components/studio/VideoCanvas';
 import { useMirrorStream } from '@/hooks/useMirrorStream';
+import { useVoiceStream } from '@/hooks/useVoiceStream';
 
 export default function Studio() {
   const videoRef = useRef(null);
@@ -11,6 +12,10 @@ export default function Studio() {
 
   const { connectionState, errorMessage, connect, disconnect, updateState, reconnect, recordingUrl, clearRecording } =
     useMirrorStream(videoRef);
+
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [selectedVoiceId, setSelectedVoiceId] = useState(null);
+  const { voiceState, voiceError, startVoiceStream, stopVoiceStream } = useVoiceStream();
 
   // Track current panel state so keyboard shortcuts can use it
   const panelStateRef = useRef({ prompt: '', imageFile: null, enhance: true });
@@ -87,6 +92,15 @@ export default function Studio() {
     return () => window.removeEventListener('keydown', handleKey);
   }, [toggleAllUI, togglePanel, handleSpace, handleReconnectKey]);
 
+  // Coordinate voice stream with video stream lifecycle
+  useEffect(() => {
+    if (connectionState === 'connected' && voiceEnabled && selectedVoiceId && voiceState === 'idle') {
+      startVoiceStream({ voiceId: selectedVoiceId });
+    } else if ((connectionState === 'idle' || connectionState === 'error') && voiceState === 'active') {
+      stopVoiceStream();
+    }
+  }, [connectionState, voiceEnabled, selectedVoiceId, voiceState, startVoiceStream, stopVoiceStream]);
+
   return (
     <div className="h-screen w-screen overflow-hidden bg-[#080810] flex">
       {/* Config panel — slides out via width transition */}
@@ -108,6 +122,12 @@ export default function Studio() {
             onStateChange={handlePanelStateChange}
             recordingUrl={recordingUrl}
             onDownload={handleDownload}
+            voiceEnabled={voiceEnabled}
+            setVoiceEnabled={setVoiceEnabled}
+            selectedVoiceId={selectedVoiceId}
+            onSelectVoice={setSelectedVoiceId}
+            voiceState={voiceState}
+            voiceError={voiceError}
           />
         </div>
       </div>

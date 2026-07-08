@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import AvatarUploader from './AvatarUploader';
+import VoiceUploader from './VoiceUploader';
 import StatusBadge from './StatusBadge';
 import { Power, Square, EyeOff, Download } from 'lucide-react';
 
@@ -16,6 +17,12 @@ export default function ConfigPanel({
   onStateChange,
   recordingUrl,
   onDownload,
+  voiceEnabled,
+  setVoiceEnabled,
+  selectedVoiceId,
+  onSelectVoice,
+  voiceState,
+  voiceError,
 }) {
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
@@ -88,6 +95,38 @@ export default function ConfigPanel({
           <AvatarUploader imagePreview={imagePreview} onImageSelect={handleImageChange} />
           <p className="text-[10px] text-[#4A5568] mt-2 leading-relaxed">
             Front-facing portrait, 512×512 minimum. Defines the identity.
+          </p>
+        </div>
+
+        {/* Reference voice */}
+        <div>
+          <label className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase mb-2 block">
+            Reference Voice
+          </label>
+          <VoiceUploader
+            selectedVoiceId={selectedVoiceId}
+            onSelectVoice={onSelectVoice}
+            voiceState={voiceState}
+            voiceError={voiceError}
+            disabled={isStreaming}
+          />
+          {selectedVoiceId && (
+            <div className="flex items-center justify-between mt-3">
+              <span className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase">Voice Clone</span>
+              <button
+                onClick={() => setVoiceEnabled(!voiceEnabled)}
+                className={`w-9 h-5 rounded-full transition relative ${voiceEnabled ? 'bg-[#6366F1]' : 'bg-[#2A2A3E]'}`}
+              >
+                <span
+                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                    voiceEnabled ? 'left-4' : 'left-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+          )}
+          <p className="text-[10px] text-[#4A5568] mt-2 leading-relaxed">
+            Upload 30s+ of clean speech. Cloned voice replaces your mic audio during stream.
           </p>
         </div>
 
