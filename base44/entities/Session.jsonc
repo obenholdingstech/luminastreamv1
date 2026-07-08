@@ -41,6 +41,32 @@
     "clientMetadata": {
       "type": "string",
       "description": "Browser/OS info for analytics"
+    },
+    "currentFps": {
+      "type": "number",
+      "description": "Real-time output FPS sampled from video element"
+    },
+    "droppedFrameRate": {
+      "type": "number",
+      "description": "Percentage of dropped frames"
+    },
+    "qualityScore": {
+      "type": "number",
+      "description": "Composite quality score 0-100 derived from FPS and drop rate"
+    },
+    "latencyMs": {
+      "type": "number",
+      "description": "Estimated round-trip latency in milliseconds"
+    },
+    "reconnectCount": {
+      "type": "number",
+      "default": 0,
+      "description": "Total automatic reconnections for this session"
+    },
+    "lastMetricAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the last metrics report"
     }
   },
   "required": [

@@ -44,7 +44,23 @@ Deno.serve(async (req) => {
         startTime: s.startTime,
         modelVersion: s.modelVersion,
         errorCount: s.errorCount,
+        currentFps: s.currentFps,
+        droppedFrameRate: s.droppedFrameRate,
+        qualityScore: s.qualityScore,
+        latencyMs: s.latencyMs,
+        reconnectCount: s.reconnectCount,
+        lastMetricAt: s.lastMetricAt,
       })),
+      performanceSummary: (() => {
+        const withMetrics = activeSessions.filter(s => s.qualityScore != null);
+        if (withMetrics.length === 0) return { avgFps: 0, avgLatency: 0, avgQuality: 0, trackedSessions: 0 };
+        return {
+          avgFps: Math.round(withMetrics.reduce((sum, s) => sum + (s.currentFps || 0), 0) / withMetrics.length),
+          avgLatency: Math.round(withMetrics.reduce((sum, s) => sum + (s.latencyMs || 0), 0) / withMetrics.length),
+          avgQuality: Math.round(withMetrics.reduce((sum, s) => sum + (s.qualityScore || 0), 0) / withMetrics.length),
+          trackedSessions: withMetrics.length,
+        };
+      })(),
       recentErrors: recentErrors.map(e => ({
         id: e.id,
         sessionId: e.sessionId,

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Activity, AlertCircle, LogOut, RefreshCw, Check, X } from 'lucide-react';
+import PerformanceTracker from './PerformanceTracker';
 
 function StatCard({ label, value, icon: Icon, color }) {
   return (
@@ -71,6 +72,9 @@ export default function AdminDashboard({ passcode, onLogout }) {
             color={stats?.apiKeyConfigured ? '#10B981' : '#EF4444'}
           />
         </div>
+
+        {/* Real-time performance tracker */}
+        <PerformanceTracker sessions={stats?.activeSessions} summary={stats?.performanceSummary} />
 
         {/* Two-column: active sessions + errors */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

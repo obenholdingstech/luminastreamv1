@@ -20,6 +20,13 @@ export function useMirrorStream(videoRef) {
   const recordedChunksRef = useRef([]);
   const recordingUrlRef = useRef(null);
   const attemptReconnectRef = useRef(() => {});
+  const metricsIntervalRef = useRef(null);
+  const metricsStateRef = useRef({
+    prevTotalFrames: 0, prevDroppedFrames: 0, prevSampleTime: 0,
+    currentFps: 0, droppedFrameRate: 0, latencyMs: 0, reconnectCount: 0,
+  });
+  const latencySamplesRef = useRef([]);
+  const totalReconnectsRef = useRef(0);
 
   // ── Recording helpers ──────────────────────────────────────────
   const startRecording = useCallback((stream) => {
@@ -62,6 +69,70 @@ export function useMirrorStream(videoRef) {
     setRecordingUrl(null);
   }, []);
 
+  // ── Performance metrics collection ───────────────────────────
+  const startMetricsCollection = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    metricsStateRef.current = {
+      prevTotalFrames: 0, prevDroppedFrames: 0, prevSampleTime: Date.now(),
+      currentFps: 0, droppedFrameRate: 0, latencyMs: 0, reconnectCount: 0,
+    };
+
+    // Sample video playback quality every 2s for FPS + dropped frames
+    const sampleInterval = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || !v.getVideoPlaybackQuality) return;
+      const q = v.getVideoPlaybackQuality();
+      const now = Date.now();
+      const st = metricsStateRef.current;
+      const dt = (now - st.prevSampleTime) / 1000;
+      const framesDelta = q.totalVideoFrames - st.prevTotalFrames;
+      const droppedDelta = q.droppedVideoFrames - st.prevDroppedFrames;
+      st.currentFps = dt > 0 ? Math.round(framesDelta / dt) : 0;
+      st.droppedFrameRate = framesDelta > 0 ? Math.round((droppedDelta / framesDelta) * 1000) / 10 : 0;
+      st.prevTotalFrames = q.totalVideoFrames;
+      st.prevDroppedFrames = q.droppedVideoFrames;
+      st.prevSampleTime = now;
+      st.reconnectCount = totalReconnectsRef.current;
+      if (latencySamplesRef.current.length > 0) {
+        st.latencyMs = Math.round(
+          latencySamplesRef.current.reduce((s, v) => s + v, 0) / latencySamplesRef.current.length
+        );
+      }
+    }, 2000);
+
+    // Report to backend every 5s
+    const reportInterval = setInterval(async () => {
+      if (!sessionIdRef.current) return;
+      const st = metricsStateRef.current;
+      const fpsScore = st.currentFps >= 20 ? 100 : st.currentFps >= 15 ? 75 : st.currentFps >= 10 ? 50 : 25;
+      const dropScore = st.droppedFrameRate <= 2 ? 100 : st.droppedFrameRate <= 5 ? 80 : st.droppedFrameRate <= 10 ? 60 : 40;
+      const qualityScore = Math.round(fpsScore * 0.6 + dropScore * 0.4);
+      try {
+        await base44.functions.invoke('reportMetrics', {
+          sessionId: sessionIdRef.current,
+          currentFps: st.currentFps,
+          droppedFrameRate: st.droppedFrameRate,
+          qualityScore,
+          latencyMs: st.latencyMs,
+          reconnectCount: st.reconnectCount,
+        });
+      } catch (_e) {}
+    }, 5000);
+
+    metricsIntervalRef.current = { sampleInterval, reportInterval };
+  }, [videoRef]);
+
+  const stopMetricsCollection = useCallback(() => {
+    if (metricsIntervalRef.current) {
+      clearInterval(metricsIntervalRef.current.sampleInterval);
+      clearInterval(metricsIntervalRef.current.reportInterval);
+      metricsIntervalRef.current = null;
+    }
+    latencySamplesRef.current = [];
+  }, []);
+
   // ── Connect ────────────────────────────────────────────────────
   const connect = useCallback(async ({ prompt, imageFile, enhance }) => {
     if (isConnectingRef.current) return;
@@ -73,8 +144,11 @@ export function useMirrorStream(videoRef) {
     try {
       setConnectionState('connecting');
       setErrorMessage(null);
+      const isReconnect = reconnectAttemptsRef.current > 0;
       reconnectAttemptsRef.current = 0;
       isManualDisconnectRef.current = false;
+      if (!isReconnect) totalReconnectsRef.current = 0;
+      const connectStartTime = Date.now();
 
       // Clear any previous recording before starting fresh
       if (recordingUrlRef.current) {
@@ -117,6 +191,7 @@ export function useMirrorStream(videoRef) {
         setConnectionState('disconnected');
         const delay = Math.pow(2, reconnectAttemptsRef.current) * 1000;
         reconnectAttemptsRef.current++;
+        totalReconnectsRef.current++;
         if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = setTimeout(async () => {
           if (configRef.current) {
@@ -135,6 +210,9 @@ export function useMirrorStream(videoRef) {
             videoRef.current.srcObject = remoteStream;
           }
           startRecording(remoteStream);
+          latencySamplesRef.current.push(Date.now() - connectStartTime);
+          if (latencySamplesRef.current.length > 10) latencySamplesRef.current.shift();
+          startMetricsCollection();
           setConnectionState('connected');
           reconnectAttemptsRef.current = 0;
         },
@@ -194,7 +272,7 @@ export function useMirrorStream(videoRef) {
     } finally {
       isConnectingRef.current = false;
     }
-  }, [videoRef, startRecording]);
+  }, [videoRef, startRecording, startMetricsCollection]);
 
   // ── Update state (prompt / image / enhance) ───────────────────
   const updateState = useCallback(async ({ prompt, imageFile, enhance }) => {
@@ -202,11 +280,15 @@ export function useMirrorStream(videoRef) {
     const fullPrompt = prompt?.trim() || DEFAULT_PROMPT;
     configRef.current = { prompt: fullPrompt, imageFile, enhance };
     try {
+      const t0 = Date.now();
       await realtimeClientRef.current.set({
         prompt: fullPrompt,
         ...(imageFile && { image: imageFile }),
         enhance,
       });
+      const latency = Date.now() - t0;
+      latencySamplesRef.current.push(latency);
+      if (latencySamplesRef.current.length > 10) latencySamplesRef.current.shift();
     } catch (_e) {}
   }, []);
 
@@ -218,6 +300,7 @@ export function useMirrorStream(videoRef) {
       reconnectTimerRef.current = null;
     }
     stopRecording();
+    stopMetricsCollection();
     if (realtimeClientRef.current) {
       try { realtimeClientRef.current.disconnect(); } catch (_e) {}
       realtimeClientRef.current = null;
@@ -235,7 +318,7 @@ export function useMirrorStream(videoRef) {
     }
     setConnectionState('idle');
     reconnectAttemptsRef.current = 0;
-  }, [videoRef, stopRecording]);
+  }, [videoRef, stopRecording, stopMetricsCollection]);
 
   // ── Reconnect (manual reset) ──────────────────────────────────
   const reconnect = useCallback(() => {
@@ -249,6 +332,7 @@ export function useMirrorStream(videoRef) {
   useEffect(() => {
     return () => {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      stopMetricsCollection();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try { mediaRecorderRef.current.stop(); } catch (_e) {}
       }
