@@ -1,0 +1,51 @@
+{
+  "name": "Session",
+  "type": "object",
+  "properties": {
+    "sessionToken": {
+      "type": "string",
+      "description": "Unique token identifying this streaming session"
+    },
+    "ipHash": {
+      "type": "string",
+      "description": "SHA-256 hash of client IP for rate limiting"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "ended",
+        "error"
+      ],
+      "default": "active"
+    },
+    "startTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "endTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "durationSeconds": {
+      "type": "number"
+    },
+    "modelVersion": {
+      "type": "string",
+      "default": "lucy-2.5"
+    },
+    "errorCount": {
+      "type": "number",
+      "default": 0
+    },
+    "clientMetadata": {
+      "type": "string",
+      "description": "Browser/OS info for analytics"
+    }
+  },
+  "required": [
+    "sessionToken",
+    "status",
+    "startTime"
+  ]
+}
