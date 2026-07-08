@@ -17,8 +17,8 @@ export default function Studio() {
   const recording = useRecording();
 
   // Handle remote video stream — pass to recording hook
-  const handleRemoteStream = useCallback((stream) => {
-    recording.setVideoStream(stream);
+  const handleRemoteStream = useCallback(() => {
+    recording.setVideoElement(videoRef.current);
   }, [recording]);
 
   const { connectionState, errorMessage, connect, disconnect, updateState, reconnect } =
