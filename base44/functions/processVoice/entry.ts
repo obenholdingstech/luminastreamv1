@@ -1,6 +1,7 @@
 Deno.serve(async (req) => {
   try {
-    const { voiceId, audioBase64 } = await req.json();
+    const { voiceId, audioBase64, outputFormat } = await req.json();
+    const format = outputFormat || 'pcm_44100';
 
     if (!voiceId || !audioBase64) {
       return Response.json({ error: 'voiceId and audioBase64 are required' }, { status: 400 });
@@ -25,7 +26,7 @@ Deno.serve(async (req) => {
 
     // Call ElevenLabs S2S with max latency optimization + PCM output
     const elevenResponse = await fetch(
-      `https://api.elevenlabs.io/v1/speech-to-speech/${voiceId}?output_format=pcm_44100&optimize_streaming_latency=4`,
+      `https://api.elevenlabs.io/v1/speech-to-speech/${voiceId}?output_format=${format}&optimize_streaming_latency=4`,
       {
         method: 'POST',
         headers: {
