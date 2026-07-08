@@ -1,4 +1,5 @@
 import { X, Download } from 'lucide-react';
+import VideoPlayer from './VideoPlayer';
 
 export default function RecordingPreview({ recordingUrl, onClose, onDownload }) {
   if (!recordingUrl) return null;
@@ -24,12 +25,7 @@ export default function RecordingPreview({ recordingUrl, onClose, onDownload }) 
           </button>
         </div>
       </div>
-      <video
-        src={recordingUrl}
-        controls
-        autoPlay
-        className="w-full max-h-[240px] bg-black"
-      />
+      <VideoPlayer src={recordingUrl} autoPlay />
     </div>
   );
 }

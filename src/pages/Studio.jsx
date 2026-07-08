@@ -98,14 +98,15 @@ export default function Studio() {
   // ── Download recording ──
   const handleDownload = useCallback(() => {
     if (recording.recordingUrl) {
+      const ext = recording.fileExtension || 'webm';
       const a = document.createElement('a');
       a.href = recording.recordingUrl;
-      a.download = `mirror-session-${Date.now()}.webm`;
+      a.download = `mirror-session-${Date.now()}.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
     }
-  }, [recording.recordingUrl]);
+  }, [recording.recordingUrl, recording.fileExtension]);
 
   // ── Keyboard shortcuts ──
   const togglePanel = useCallback(() => {

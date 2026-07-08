@@ -3,6 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 export function useRecording() {
   const [recordingUrl, setRecordingUrl] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [fileExtension, setFileExtension] = useState('webm');
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const videoStreamRef = useRef(null);
@@ -10,23 +11,30 @@ export function useRecording() {
   const fallbackTimerRef = useRef(null);
   const recordingRef = useRef(false);
 
-  const startRecording = useCallback((videoStream, audioStream) => {
-    if (recordingRef.current) return;
-
-    // Combine video + audio (if available) into a single MediaStream
-    const tracks = [...videoStream.getVideoTracks()];
-    if (audioStream) {
-      tracks.push(...audioStream.getAudioTracks());
-    }
-    const combined = new MediaStream(tracks);
-
-    // Choose the best supported codec — prefer vp9+opus, fall back gracefully
-    const mimeTypes = [
+  const pickMimeType = useCallback(() => {
+    // Prefer MP4 (H.264 + AAC) — universally recognized as a video file.
+    // Fall back to WebM if the browser doesn't support MP4 recording.
+    const candidates = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=avc1,mp4a',
+      'video/mp4',
       'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
       'video/webm',
     ];
-    const mimeType = mimeTypes.find((t) => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+    const supported = candidates.find((t) => MediaRecorder.isTypeSupported(t));
+    return supported || 'video/webm';
+  }, []);
+
+  const startRecording = useCallback((videoStream, audioStream) => {
+    if (recordingRef.current) return;
+
+    const tracks = [...videoStream.getVideoTracks()];
+    if (audioStream) tracks.push(...audioStream.getAudioTracks());
+    const combined = new MediaStream(tracks);
+
+    const mimeType = pickMimeType();
+    const isMp4 = mimeType.includes('mp4');
 
     try {
       chunksRef.current = [];
@@ -40,30 +48,29 @@ export function useRecording() {
       };
       recorder.onstop = () => {
         if (chunksRef.current.length > 0) {
-          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+          const blobType = isMp4 ? 'video/mp4' : 'video/webm';
+          const blob = new Blob(chunksRef.current, { type: blobType });
           const url = URL.createObjectURL(blob);
+          setFileExtension(isMp4 ? 'mp4' : 'webm');
           setRecordingUrl(url);
         }
         chunksRef.current = [];
       };
-      recorder.start(1000); // Flush chunks every 1s
+      recorder.start(1000);
       recorderRef.current = recorder;
       recordingRef.current = true;
       setIsRecording(true);
     } catch (_e) {
       // MediaRecorder unsupported — recording silently skipped
     }
-  }, []);
+  }, [pickMimeType]);
 
   const tryStart = useCallback(() => {
     if (recordingRef.current) return;
     const video = videoStreamRef.current;
     if (!video) return;
-
     const audio = audioStreamRef.current;
-    // Wait for both video AND audio before starting — ensures recording has audio
     if (!audio) return;
-
     if (fallbackTimerRef.current) {
       clearTimeout(fallbackTimerRef.current);
       fallbackTimerRef.current = null;
@@ -75,8 +82,6 @@ export function useRecording() {
     if (!stream) return;
     videoStreamRef.current = stream;
     tryStart();
-    // Fallback: if no audio arrives within 3s (e.g. no voice mode selected),
-    // start recording with video only so the user still gets a recording
     if (!recordingRef.current) {
       if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
       fallbackTimerRef.current = setTimeout(() => {
@@ -124,5 +129,5 @@ export function useRecording() {
     };
   }, []);
 
-  return { recordingUrl, isRecording, setVideoStream, setAudioStream, stop, clear };
+  return { recordingUrl, isRecording, fileExtension, setVideoStream, setAudioStream, stop, clear };
 }
