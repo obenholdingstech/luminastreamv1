@@ -1,13 +1,15 @@
 import StatusBadge from './StatusBadge';
-import { PanelRight } from 'lucide-react';
+import { PanelRight, Download } from 'lucide-react';
 
 export default function VideoCanvas({
   videoRef,
   connectionState,
   displayMode,
-  isFullscreen,
+  uiHidden,
   panelVisible,
   onShowPanel,
+  recordingUrl,
+  onDownload,
 }) {
   const isActive = ['connecting', 'connected', 'disconnected'].includes(connectionState);
 
@@ -21,7 +23,7 @@ export default function VideoCanvas({
         </div>
       )}
 
-      {/* Video output — ref-based, srcObject set imperatively for zero re-render overhead */}
+      {/* Video output — ref-based, srcObject set imperatively */}
       <video
         ref={videoRef}
         autoPlay
@@ -33,18 +35,29 @@ export default function VideoCanvas({
         style={{ display: isActive ? 'block' : 'none' }}
       />
 
-      {/* Floating status + restore pill — visible when panel hidden or fullscreen */}
-      {(!panelVisible || isFullscreen) && (
+      {/* Floating status + restore — visible when panel hidden and UI not fully hidden */}
+      {!uiHidden && !panelVisible && (
         <div className="absolute bottom-6 right-6 flex items-center gap-3 z-50">
           <StatusBadge state={connectionState} />
           <button
             onClick={onShowPanel}
             className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center text-white hover:bg-white/20 transition"
-            title="Show panel (H)"
+            title="Show panel (P)"
           >
             <PanelRight size={18} />
           </button>
         </div>
+      )}
+
+      {/* Floating download — appears after session ends when panel is hidden */}
+      {!uiHidden && !panelVisible && recordingUrl && !isActive && (
+        <button
+          onClick={onDownload}
+          className="absolute bottom-6 left-6 z-50 px-4 py-2.5 rounded-full bg-[#10B981]/10 backdrop-blur-sm border border-[#10B981]/30 text-[#10B981] text-sm font-medium hover:bg-[#10B981]/20 transition flex items-center gap-2"
+        >
+          <Download size={16} />
+          Download Recording
+        </button>
       )}
     </div>
   );

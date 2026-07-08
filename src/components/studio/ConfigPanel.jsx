@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import AvatarUploader from './AvatarUploader';
 import StatusBadge from './StatusBadge';
-import { Power, Square, EyeOff } from 'lucide-react';
+import { Power, Square, EyeOff, Download } from 'lucide-react';
 
 export default function ConfigPanel({
   connectionState,
@@ -13,6 +13,9 @@ export default function ConfigPanel({
   onUpdateState,
   onReconnect,
   onHideUI,
+  onStateChange,
+  recordingUrl,
+  onDownload,
 }) {
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
@@ -53,6 +56,11 @@ export default function ConfigPanel({
       if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
     };
   }, []);
+
+  // Sync current state upward so keyboard shortcuts can use it
+  useEffect(() => {
+    onStateChange?.({ prompt, imageFile, enhance });
+  }, [prompt, imageFile, enhance, onStateChange]);
 
   return (
     <div className="w-full h-full bg-[#0F0F1A] border-r border-[#1A1A2E] flex flex-col">
@@ -167,13 +175,27 @@ export default function ConfigPanel({
           </button>
         )}
 
+        {recordingUrl && !isStreaming && (
+          <button
+            onClick={onDownload}
+            className="w-full py-3 bg-[#10B981]/10 border border-[#10B981]/30 hover:bg-[#10B981]/20 text-[#10B981] text-sm font-medium rounded-md transition flex items-center justify-center gap-2"
+          >
+            <Download size={16} />
+            Download Recording
+          </button>
+        )}
+
         <button
           onClick={onHideUI}
           className="w-full py-2.5 text-[#64748B] hover:text-white text-xs tracking-widest uppercase transition flex items-center justify-center gap-2"
         >
           <EyeOff size={14} />
-          Hide UI (H)
+          Hide All UI (H)
         </button>
+
+        <p className="text-[9px] text-[#4A5568] text-center tracking-wider pt-1">
+          H Hide All · P Panel · Space Live/Stop · R Reconnect
+        </p>
       </div>
     </div>
   );

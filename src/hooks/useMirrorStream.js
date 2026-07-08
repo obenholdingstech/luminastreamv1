@@ -6,6 +6,7 @@ const DEFAULT_PROMPT = 'Substitute the character in the video with the person in
 export function useMirrorStream(videoRef) {
   const [connectionState, setConnectionState] = useState('idle');
   const [errorMessage, setErrorMessage] = useState(null);
+  const [recordingUrl, setRecordingUrl] = useState(null);
 
   const localStreamRef = useRef(null);
   const realtimeClientRef = useRef(null);
@@ -14,8 +15,54 @@ export function useMirrorStream(videoRef) {
   const reconnectTimerRef = useRef(null);
   const configRef = useRef(null);
   const isConnectingRef = useRef(false);
+  const isManualDisconnectRef = useRef(false);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const recordingUrlRef = useRef(null);
   const attemptReconnectRef = useRef(() => {});
 
+  // ── Recording helpers ──────────────────────────────────────────
+  const startRecording = useCallback((stream) => {
+    try {
+      recordedChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : 'video/webm';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        if (recordedChunksRef.current.length > 0) {
+          const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          recordingUrlRef.current = url;
+          setRecordingUrl(url);
+        }
+      };
+      recorder.start(1000); // flush chunks every 1s
+      mediaRecorderRef.current = recorder;
+    } catch (_e) {
+      // MediaRecorder unsupported — recording silently skipped
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch (_e) {}
+    }
+    mediaRecorderRef.current = null;
+  }, []);
+
+  const clearRecording = useCallback(() => {
+    if (recordingUrlRef.current) {
+      URL.revokeObjectURL(recordingUrlRef.current);
+      recordingUrlRef.current = null;
+    }
+    setRecordingUrl(null);
+  }, []);
+
+  // ── Connect ────────────────────────────────────────────────────
   const connect = useCallback(async ({ prompt, imageFile, enhance }) => {
     if (isConnectingRef.current) return;
     isConnectingRef.current = true;
@@ -27,13 +74,21 @@ export function useMirrorStream(videoRef) {
       setConnectionState('connecting');
       setErrorMessage(null);
       reconnectAttemptsRef.current = 0;
+      isManualDisconnectRef.current = false;
+
+      // Clear any previous recording before starting fresh
+      if (recordingUrlRef.current) {
+        URL.revokeObjectURL(recordingUrlRef.current);
+        recordingUrlRef.current = null;
+        setRecordingUrl(null);
+      }
 
       // 1. Create session on backend (validates, rate-limits, returns credentials)
       const sessionRes = await base44.functions.invoke('createSession', {});
       const { sessionId, apiKey, modelConfig } = sessionRes.data;
       sessionIdRef.current = sessionId;
 
-      // 2. Get camera stream with model-native specs (reuses existing stream on reconnect)
+      // 2. Get camera stream with model-native specs
       let stream = localStreamRef.current;
       if (!stream || !stream.active) {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -47,12 +102,12 @@ export function useMirrorStream(videoRef) {
         localStreamRef.current = stream;
       }
 
-      // 3. Import SDK and create client (dynamic import keeps initial bundle lean)
+      // 3. Import SDK and create client
       const { createDecartClient, models } = await import('@decartai/sdk');
       const model = models.realtime(modelConfig.modelId);
       const client = createDecartClient({ apiKey });
 
-      // Define reconnection logic inside this closure so it has access to connect()
+      // Reconnection logic — defined inside closure so it can call connect()
       const attemptReconnect = () => {
         if (reconnectAttemptsRef.current >= 3) {
           setConnectionState('error');
@@ -71,7 +126,7 @@ export function useMirrorStream(videoRef) {
       };
       attemptReconnectRef.current = attemptReconnect;
 
-      // 4. Connect with initialState so frame 1 is already transformed (no raw camera flash)
+      // 4. Connect with initialState so frame 1 is already transformed
       const realtimeClient = await client.realtime.connect(stream, {
         model,
         mirror: 'auto',
@@ -79,6 +134,7 @@ export function useMirrorStream(videoRef) {
           if (videoRef.current) {
             videoRef.current.srcObject = remoteStream;
           }
+          startRecording(remoteStream);
           setConnectionState('connected');
           reconnectAttemptsRef.current = 0;
         },
@@ -93,7 +149,7 @@ export function useMirrorStream(videoRef) {
 
       realtimeClientRef.current = realtimeClient;
 
-      // 5. Immediately set image + prompt together (atomic, avoids intermediate state)
+      // 5. Set image immediately if provided
       if (imageFile) {
         try {
           await realtimeClient.set({
@@ -101,18 +157,19 @@ export function useMirrorStream(videoRef) {
             image: imageFile,
             enhance,
           });
-        } catch (_e) {
-          // set() may race with connection setup; safe to ignore
-        }
+        } catch (_e) {}
       }
 
-      // 6. Wire up connection state and error handlers
+      // 6. Event handlers
       realtimeClient.on('connectionChange', (state) => {
         if (state === 'connected') {
           setConnectionState('connected');
           reconnectAttemptsRef.current = 0;
         } else if (state === 'disconnected') {
-          attemptReconnectRef.current();
+          // Only auto-reconnect if this wasn't a manual user disconnect
+          if (!isManualDisconnectRef.current) {
+            attemptReconnectRef.current();
+          }
         }
       });
 
@@ -137,8 +194,9 @@ export function useMirrorStream(videoRef) {
     } finally {
       isConnectingRef.current = false;
     }
-  }, [videoRef]);
+  }, [videoRef, startRecording]);
 
+  // ── Update state (prompt / image / enhance) ───────────────────
   const updateState = useCallback(async ({ prompt, imageFile, enhance }) => {
     if (!realtimeClientRef.current) return;
     const fullPrompt = prompt?.trim() || DEFAULT_PROMPT;
@@ -149,16 +207,17 @@ export function useMirrorStream(videoRef) {
         ...(imageFile && { image: imageFile }),
         enhance,
       });
-    } catch (_e) {
-      // non-fatal — state will sync on next update
-    }
+    } catch (_e) {}
   }, []);
 
+  // ── Disconnect (manual — stops recording, no auto-reconnect) ──
   const disconnect = useCallback(async () => {
+    isManualDisconnectRef.current = true;
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+    stopRecording();
     if (realtimeClientRef.current) {
       try { realtimeClientRef.current.disconnect(); } catch (_e) {}
       realtimeClientRef.current = null;
@@ -176,8 +235,9 @@ export function useMirrorStream(videoRef) {
     }
     setConnectionState('idle');
     reconnectAttemptsRef.current = 0;
-  }, [videoRef]);
+  }, [videoRef, stopRecording]);
 
+  // ── Reconnect (manual reset) ──────────────────────────────────
   const reconnect = useCallback(() => {
     if (configRef.current) {
       reconnectAttemptsRef.current = 0;
@@ -185,10 +245,13 @@ export function useMirrorStream(videoRef) {
     }
   }, [connect]);
 
-  // Cleanup on unmount
+  // ── Cleanup on unmount ────────────────────────────────────────
   useEffect(() => {
     return () => {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch (_e) {}
+      }
       if (realtimeClientRef.current) {
         try { realtimeClientRef.current.disconnect(); } catch (_e) {}
       }
@@ -198,5 +261,5 @@ export function useMirrorStream(videoRef) {
     };
   }, []);
 
-  return { connectionState, errorMessage, connect, disconnect, updateState, reconnect };
+  return { connectionState, errorMessage, connect, disconnect, updateState, reconnect, recordingUrl, clearRecording };
 }
