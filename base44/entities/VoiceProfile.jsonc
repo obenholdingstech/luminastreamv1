@@ -1,0 +1,32 @@
+{
+  "name": "VoiceProfile",
+  "type": "object",
+  "properties": {
+    "voiceId": {
+      "type": "string",
+      "description": "ElevenLabs voice ID returned after cloning"
+    },
+    "name": {
+      "type": "string",
+      "description": "Label for this voice profile"
+    },
+    "sampleUrl": {
+      "type": "string",
+      "description": "URL of the original reference audio uploaded by the user"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "cloning",
+        "error"
+      ],
+      "default": "cloning"
+    }
+  },
+  "required": [
+    "voiceId",
+    "name",
+    "status"
+  ]
+}
