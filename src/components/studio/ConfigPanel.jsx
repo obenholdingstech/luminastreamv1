@@ -2,9 +2,10 @@ import { useState, useRef, useEffect } from 'react';
 import AvatarUploader from './AvatarUploader';
 import VoiceUploader from './VoiceUploader';
 import VoiceModeSelector from './VoiceModeSelector';
+import VoiceCloneUploader from './VoiceCloneUploader';
 import StatusBadge from './StatusBadge';
 import { Link } from 'react-router-dom';
-import { Power, Square, EyeOff, Download } from 'lucide-react';
+import { Power, Square, EyeOff, Volume2, VolumeX } from 'lucide-react';
 
 export default function ConfigPanel({
   connectionState,
@@ -17,19 +18,22 @@ export default function ConfigPanel({
   onReconnect,
   onHideUI,
   onStateChange,
-  recordingUrl,
-  onDownload,
   voiceMode,
   setVoiceMode,
   selectedVoiceId,
   onSelectVoice,
   voiceState,
   voiceError,
+  muted,
+  onToggleMute,
+  onVoiceCloned,
+  voiceRefreshTrigger,
 }) {
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [prompt, setPrompt] = useState('');
   const [enhance, setEnhance] = useState(true);
+  const [showCloneUploader, setShowCloneUploader] = useState(false);
   const promptTimerRef = useRef(null);
 
   const isStreaming = connectionState === 'connected';
@@ -112,23 +116,52 @@ export default function ConfigPanel({
           <label className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase mb-2 block">
             Voice Output
           </label>
-          <VoiceModeSelector mode={voiceMode} onModeChange={setVoiceMode} disabled={isStreaming} />
+          <VoiceModeSelector mode={voiceMode} onModeChange={setVoiceMode} />
           {voiceMode === 'converted' && (
-            <div className="mt-3">
-              <VoiceUploader
-                selectedVoiceId={selectedVoiceId}
-                onSelectVoice={onSelectVoice}
-                voiceState={voiceState}
-                voiceError={voiceError}
-                disabled={isStreaming}
-              />
-            </div>
+            <>
+              <div className="mt-3">
+                <VoiceUploader
+                  selectedVoiceId={selectedVoiceId}
+                  onSelectVoice={onSelectVoice}
+                  voiceState={voiceState}
+                  voiceError={voiceError}
+                  refreshTrigger={voiceRefreshTrigger}
+                />
+              </div>
+              <button
+                onClick={() => setShowCloneUploader(!showCloneUploader)}
+                className="mt-2 text-[10px] text-[#6366F1] hover:text-[#5558E0] tracking-wider uppercase transition"
+              >
+                {showCloneUploader ? '− Hide Voice Cloner' : '+ Clone New Voice'}
+              </button>
+              {showCloneUploader && (
+                <div className="mt-3">
+                  <VoiceCloneUploader onVoiceCloned={onVoiceCloned} />
+                </div>
+              )}
+            </>
           )}
           <p className="text-[10px] text-[#4A5568] mt-2 leading-relaxed">
             {voiceMode === 'direct'
               ? 'Your natural microphone voice goes straight to the output with no conversion.'
-              : 'Select a voice. Your speech is converted in real-time using Resemble AI.'}
+              : 'Select a voice. Your speech is converted in real-time using ElevenLabs STS.'}
           </p>
+        </div>
+
+        {/* Audio output toggle */}
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase">Audio Output</span>
+          <button
+            onClick={onToggleMute}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition ${
+              muted
+                ? 'bg-[#2A2A3E] border-[#2A2A3E] text-[#64748B]'
+                : 'bg-[#6366F1]/10 border-[#6366F1] text-white'
+            }`}
+          >
+            {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+            <span className="text-[10px] tracking-wider uppercase">{muted ? 'Muted' : 'On'}</span>
+          </button>
         </div>
 
         {/* Look prompt */}
@@ -212,16 +245,6 @@ export default function ConfigPanel({
           >
             <Square size={16} />
             End Session
-          </button>
-        )}
-
-        {recordingUrl && !isStreaming && (
-          <button
-            onClick={onDownload}
-            className="w-full py-3 bg-[#10B981]/10 border border-[#10B981]/30 hover:bg-[#10B981]/20 text-[#10B981] text-sm font-medium rounded-md transition flex items-center justify-center gap-2"
-          >
-            <Download size={16} />
-            Download Recording
           </button>
         )}
 

@@ -1,5 +1,5 @@
 import StatusBadge from './StatusBadge';
-import { PanelRight, Download } from 'lucide-react';
+import { PanelRight } from 'lucide-react';
 
 export default function VideoCanvas({
   videoRef,
@@ -8,8 +8,6 @@ export default function VideoCanvas({
   uiHidden,
   panelVisible,
   onShowPanel,
-  recordingUrl,
-  onDownload,
 }) {
   const isActive = ['connecting', 'connected', 'disconnected'].includes(connectionState);
 
@@ -49,16 +47,7 @@ export default function VideoCanvas({
         </div>
       )}
 
-      {/* Floating download — appears after session ends when panel is hidden */}
-      {!uiHidden && !panelVisible && recordingUrl && !isActive && (
-        <button
-          onClick={onDownload}
-          className="absolute bottom-6 left-6 z-50 px-4 py-2.5 rounded-full bg-[#10B981]/10 backdrop-blur-sm border border-[#10B981]/30 text-[#10B981] text-sm font-medium hover:bg-[#10B981]/20 transition flex items-center gap-2"
-        >
-          <Download size={16} />
-          Download Recording
-        </button>
-      )}
+
     </div>
   );
 }

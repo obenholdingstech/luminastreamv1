@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Mic, Loader2, Check, ChevronDown } from 'lucide-react';
 
-export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceState, voiceError, disabled }) {
+export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceState, voiceError, disabled, refreshTrigger }) {
   const [voices, setVoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -11,7 +11,7 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
 
   useEffect(() => {
     loadVoices();
-  }, []);
+  }, [refreshTrigger]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -25,7 +25,7 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
 
   const loadVoices = async () => {
     try {
-      const res = await base44.functions.invoke('listResembleVoices', {});
+      const res = await base44.functions.invoke('listVoices', {});
       setVoices(res.data?.voices || []);
     } catch (_err) {
       setLoadError('Failed to load voices');
@@ -93,7 +93,12 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <Mic size={12} className="text-[#64748B] flex-shrink-0" />
-                    <p className="text-white truncate">{voice.name}</p>
+                    <div className="min-w-0">
+                      <p className="text-white truncate">{voice.name}</p>
+                      {voice.category && (
+                        <p className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.category}</p>
+                      )}
+                    </div>
                   </div>
                   {selectedVoiceId === voice.voiceId && (
                     <Check size={12} className="text-[#6366F1] flex-shrink-0" />

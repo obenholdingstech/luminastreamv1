@@ -1,12 +1,27 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
 
+const MAX_VOICES_PER_USER = 5;
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
+    const user = await base44.auth.me();
+    if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+
     const { audioUrl, name } = await req.json();
 
     if (!audioUrl) {
       return Response.json({ error: 'Audio URL is required' }, { status: 400 });
+    }
+
+    // ── Rate limit: max 5 cloned voices per account ──
+    const existingVoices = await base44.asServiceRole.entities.VoiceProfile.filter({
+      created_by_id: user.id,
+    });
+    if (existingVoices.length >= MAX_VOICES_PER_USER) {
+      return Response.json({
+        error: `Voice limit reached (${MAX_VOICES_PER_USER}). Delete an existing voice before cloning a new one.`,
+      }, { status: 403 });
     }
 
     // Fetch the audio file from Base44 storage
@@ -44,8 +59,8 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'No voice ID returned' }, { status: 500 });
     }
 
-    // Store voice profile for reuse
-    await base44.asServiceRole.entities.VoiceProfile.create({
+    // Store voice profile for reuse (user-scoped — created_by_id set automatically)
+    await base44.entities.VoiceProfile.create({
       voiceId: voiceId,
       name: name || `mirror_voice_${Date.now()}`,
       sampleUrl: audioUrl,

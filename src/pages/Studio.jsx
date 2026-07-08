@@ -1,21 +1,33 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import ConfigPanel from '@/components/studio/ConfigPanel';
 import VideoCanvas from '@/components/studio/VideoCanvas';
+import RecordingPreview from '@/components/studio/RecordingPreview';
 import { useMirrorStream } from '@/hooks/useMirrorStream';
 import { useVoiceStream } from '@/hooks/useVoiceStream';
+import { useRecording } from '@/hooks/useRecording';
 
 export default function Studio() {
   const videoRef = useRef(null);
   const [panelVisible, setPanelVisible] = useState(true);
   const [uiHidden, setUiHidden] = useState(false);
   const [displayMode, setDisplayMode] = useState('landscape');
+  const [muted, setMuted] = useState(false);
+  const [voiceRefreshTrigger, setVoiceRefreshTrigger] = useState(0);
 
-  const { connectionState, errorMessage, connect, disconnect, updateState, reconnect, recordingUrl, clearRecording } =
-    useMirrorStream(videoRef);
+  const recording = useRecording();
+
+  // Handle remote video stream — pass to recording hook
+  const handleRemoteStream = useCallback((stream) => {
+    recording.setVideoStream(stream);
+  }, [recording]);
+
+  const { connectionState, errorMessage, connect, disconnect, updateState, reconnect } =
+    useMirrorStream(videoRef, handleRemoteStream);
 
   const [voiceMode, setVoiceMode] = useState('direct');
   const [selectedVoiceId, setSelectedVoiceId] = useState(null);
-  const { voiceState, voiceError, startVoiceStream, stopVoiceStream } = useVoiceStream();
+  const { voiceState, voiceError, startVoiceStream, stopVoiceStream, setMuted: setVoiceMuted, getAudioStream } =
+    useVoiceStream();
 
   // Track current panel state so keyboard shortcuts can use it
   const panelStateRef = useRef({ prompt: '', imageFile: null, enhance: true });
@@ -23,13 +35,84 @@ export default function Studio() {
     panelStateRef.current = state;
   }, []);
 
-  // P: toggle config panel only — floating overlays stay visible
+  // ── Recording wiring ──
+  // When voice becomes active, feed the audio stream to the recording hook
+  useEffect(() => {
+    if (voiceState === 'active') {
+      const audioStream = getAudioStream();
+      if (audioStream) {
+        recording.setAudioStream(audioStream);
+      }
+    }
+  }, [voiceState, getAudioStream, recording]);
+
+  // Stop recording when session ends
+  useEffect(() => {
+    if (connectionState === 'idle' || connectionState === 'error') {
+      recording.stop();
+    }
+  }, [connectionState, recording]);
+
+  // ── Mute control ──
+  useEffect(() => {
+    setVoiceMuted(muted);
+  }, [muted, setVoiceMuted]);
+
+  // ── Voice mode switching ──
+  // When mode changes during streaming, restart the voice stream with the new mode
+  const prevModeRef = useRef(voiceMode);
+  useEffect(() => {
+    if (connectionState === 'connected' && prevModeRef.current !== voiceMode) {
+      prevModeRef.current = voiceMode;
+      stopVoiceStream();
+    }
+  }, [voiceMode, connectionState, stopVoiceStream]);
+
+  // ── Voice coordination ──
+  // Starts/stops the voice stream based on connection state and mode
+  useEffect(() => {
+    if (connectionState === 'connected' && voiceMode && voiceState === 'idle') {
+      if (voiceMode === 'converted' && !selectedVoiceId) return;
+      startVoiceStream({ voiceId: selectedVoiceId, mode: voiceMode, muted });
+    } else if ((connectionState === 'idle' || connectionState === 'error') && voiceState === 'active') {
+      stopVoiceStream();
+    }
+  }, [connectionState, voiceMode, selectedVoiceId, voiceState, muted, startVoiceStream, stopVoiceStream]);
+
+  // ── Connect / Reconnect wrappers (clear previous recording) ──
+  const handleConnect = useCallback((config) => {
+    recording.clear();
+    connect(config);
+  }, [recording, connect]);
+
+  const handleReconnect = useCallback(() => {
+    recording.clear();
+    reconnect();
+  }, [recording, reconnect]);
+
+  // ── Voice clone callback ──
+  const handleVoiceCloned = useCallback(() => {
+    setVoiceRefreshTrigger((prev) => prev + 1);
+  }, []);
+
+  // ── Download recording ──
+  const handleDownload = useCallback(() => {
+    if (recording.recordingUrl) {
+      const a = document.createElement('a');
+      a.href = recording.recordingUrl;
+      a.download = `mirror-session-${Date.now()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  }, [recording.recordingUrl]);
+
+  // ── Keyboard shortcuts ──
   const togglePanel = useCallback(() => {
     setUiHidden(false);
     setPanelVisible((prev) => !prev);
   }, []);
 
-  // H: hide ALL UI (panel + overlays) — pure video. Press again to restore.
   const toggleAllUI = useCallback(() => {
     setUiHidden((prev) => {
       const next = !prev;
@@ -38,38 +121,23 @@ export default function Studio() {
     });
   }, []);
 
-  // Space: Go Live / End Session / Reconnect depending on state
   const handleSpace = useCallback(() => {
     if (connectionState === 'connected') {
       disconnect();
     } else if (connectionState === 'idle') {
       const { prompt, imageFile, enhance } = panelStateRef.current;
-      connect({ prompt, imageFile, enhance });
+      handleConnect({ prompt, imageFile, enhance });
     } else if (connectionState === 'error' || connectionState === 'disconnected') {
-      reconnect();
+      handleReconnect();
     }
-  }, [connectionState, connect, disconnect, reconnect]);
+  }, [connectionState, disconnect, handleConnect, handleReconnect]);
 
-  // R: Reconnect (only in error/disconnected state)
   const handleReconnectKey = useCallback(() => {
     if (connectionState === 'error' || connectionState === 'disconnected') {
-      reconnect();
+      handleReconnect();
     }
-  }, [connectionState, reconnect]);
+  }, [connectionState, handleReconnect]);
 
-  // Download recording
-  const handleDownload = useCallback(() => {
-    if (recordingUrl) {
-      const a = document.createElement('a');
-      a.href = recordingUrl;
-      a.download = `mirror-session-${Date.now()}.webm`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
-  }, [recordingUrl]);
-
-  // Global keyboard shortcuts
   useEffect(() => {
     const handleKey = (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
@@ -86,21 +154,16 @@ export default function Studio() {
       } else if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         handleReconnectKey();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        setMuted((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [toggleAllUI, togglePanel, handleSpace, handleReconnectKey]);
 
-  // Coordinate voice stream with video stream lifecycle
-  useEffect(() => {
-    if (connectionState === 'connected' && voiceMode && voiceState === 'idle') {
-      if (voiceMode === 'converted' && !selectedVoiceId) return;
-      startVoiceStream({ voiceId: selectedVoiceId, mode: voiceMode });
-    } else if ((connectionState === 'idle' || connectionState === 'error') && voiceState === 'active') {
-      stopVoiceStream();
-    }
-  }, [connectionState, voiceMode, selectedVoiceId, voiceState, startVoiceStream, stopVoiceStream]);
+  const isStreaming = connectionState === 'connected';
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-[#080810] flex">
@@ -115,20 +178,22 @@ export default function Studio() {
             errorMessage={errorMessage}
             displayMode={displayMode}
             setDisplayMode={setDisplayMode}
-            onConnect={connect}
+            onConnect={handleConnect}
             onDisconnect={disconnect}
             onUpdateState={updateState}
-            onReconnect={reconnect}
+            onReconnect={handleReconnect}
             onHideUI={toggleAllUI}
             onStateChange={handlePanelStateChange}
-            recordingUrl={recordingUrl}
-            onDownload={handleDownload}
             voiceMode={voiceMode}
             setVoiceMode={setVoiceMode}
             selectedVoiceId={selectedVoiceId}
             onSelectVoice={setSelectedVoiceId}
             voiceState={voiceState}
             voiceError={voiceError}
+            muted={muted}
+            onToggleMute={() => setMuted((prev) => !prev)}
+            onVoiceCloned={handleVoiceCloned}
+            voiceRefreshTrigger={voiceRefreshTrigger}
           />
         </div>
       </div>
@@ -142,9 +207,16 @@ export default function Studio() {
           uiHidden={uiHidden}
           panelVisible={panelVisible}
           onShowPanel={togglePanel}
-          recordingUrl={recordingUrl}
-          onDownload={handleDownload}
         />
+
+        {/* Recording preview — shows after session ends, user can close */}
+        {!isStreaming && recording.recordingUrl && !uiHidden && (
+          <RecordingPreview
+            recordingUrl={recording.recordingUrl}
+            onClose={() => recording.clear()}
+            onDownload={handleDownload}
+          />
+        )}
       </div>
     </div>
   );
