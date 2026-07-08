@@ -112,7 +112,7 @@ export default function ConfigPanel({
           />
           {selectedVoiceId && (
             <div className="flex items-center justify-between mt-3">
-              <span className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase">Voice Clone</span>
+              <span className="text-[11px] font-medium tracking-widest text-[#64748B] uppercase">Voice</span>
               <button
                 onClick={() => setVoiceEnabled(!voiceEnabled)}
                 className={`w-9 h-5 rounded-full transition relative ${voiceEnabled ? 'bg-[#6366F1]' : 'bg-[#2A2A3E]'}`}
@@ -126,7 +126,7 @@ export default function ConfigPanel({
             </div>
           )}
           <p className="text-[10px] text-[#4A5568] mt-2 leading-relaxed">
-            Upload 30s+ of clean speech. Cloned voice replaces your mic audio during stream.
+            Select a voice from your library. Converted audio replaces your mic during stream.
           </p>
         </div>
 
