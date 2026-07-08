@@ -163,6 +163,9 @@ export default function ConfigPanel({
             <span className="text-[10px] tracking-wider uppercase">{muted ? 'Muted' : 'On'}</span>
           </button>
         </div>
+        <p className="text-[9px] text-[#4A5568] leading-relaxed mt-1.5">
+          Mute silences your speakers only — recording always captures full audio. For SplitCam: keep unmuted + use headphones to avoid echo.
+        </p>
 
         {/* Look prompt */}
         <div>

@@ -66,9 +66,12 @@ export default function VoiceCloneUploader({ onVoiceCloned, disabled }) {
         ctx.close();
       }
 
-      // Upload the audio file
+      // Upload — convert Blob to a named File (UploadFile integration requires a File, not a raw Blob)
       setStatus('uploading');
-      const uploadRes = await base44.integrations.Core.UploadFile({ file: audioBlob });
+      const fileToUpload = audioBlob instanceof File
+        ? audioBlob
+        : new File([audioBlob], 'reference.wav', { type: 'audio/wav' });
+      const uploadRes = await base44.integrations.Core.UploadFile({ file: fileToUpload });
       if (!uploadRes?.file_url) throw new Error('Upload failed');
 
       // Clone the voice via backend

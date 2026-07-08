@@ -95,9 +95,11 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
                     <Mic size={12} className="text-[#64748B] flex-shrink-0" />
                     <div className="min-w-0">
                       <p className="text-white truncate">{voice.name}</p>
-                      {voice.category && (
+                      {voice.category === 'cloned' ? (
+                        <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">★ Cloned</span>
+                      ) : voice.category ? (
                         <p className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.category}</p>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                   {selectedVoiceId === voice.voiceId && (

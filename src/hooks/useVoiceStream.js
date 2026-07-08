@@ -72,6 +72,7 @@ export function useVoiceStream() {
   const nextPlaySeqRef = useRef(0);
   const decodedMapRef = useRef({});
   const mutedRef = useRef(false);
+  const consecutiveFailuresRef = useRef(0);
 
   // Expose the audio output MediaStream for recording
   const getAudioStream = useCallback(() => {
@@ -116,6 +117,8 @@ export function useVoiceStream() {
       });
 
       if (res.data?.audioBase64) {
+        consecutiveFailuresRef.current = 0;
+        setVoiceError(null);
         const ctx = ctxRef.current;
         if (!ctx || !activeRef.current) return;
 
@@ -130,9 +133,18 @@ export function useVoiceStream() {
         decodedMapRef.current[seq] = audioBuffer;
       } else {
         decodedMapRef.current[seq] = null;
+        consecutiveFailuresRef.current++;
+        if (consecutiveFailuresRef.current === 3) {
+          setVoiceError(res.data?.error || 'Voice conversion failed — no audio returned from the service.');
+        }
       }
-    } catch (_err) {
+    } catch (err) {
       decodedMapRef.current[seq] = null;
+      consecutiveFailuresRef.current++;
+      if (consecutiveFailuresRef.current === 3) {
+        const apiError = err.response?.data?.error || err.message || 'Voice conversion connection failed.';
+        setVoiceError(apiError);
+      }
     }
     processPlaybackQueue();
   }, [processPlaybackQueue]);
@@ -153,6 +165,7 @@ export function useVoiceStream() {
     bufRef.current = [];
     accRef.current = 0;
     inFlightRef.current = 0;
+    consecutiveFailuresRef.current = 0;
 
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({
@@ -167,7 +180,20 @@ export function useVoiceStream() {
       micRef.current = micStream;
 
       const ctx = new AudioContext({ latencyHint: 'interactive' });
-      if (ctx.state === 'suspended') await ctx.resume();
+      if (ctx.state === 'suspended') {
+        try { await ctx.resume(); } catch (_e) {}
+      }
+      // If still suspended (user gesture expired during Decart connect delay),
+      // resume on the next click/touch anywhere on the page
+      if (ctx.state === 'suspended') {
+        const resumeOnClick = () => {
+          ctx.resume().catch(() => {});
+          document.removeEventListener('click', resumeOnClick);
+          document.removeEventListener('touchstart', resumeOnClick);
+        };
+        document.addEventListener('click', resumeOnClick);
+        document.addEventListener('touchstart', resumeOnClick);
+      }
       ctxRef.current = ctx;
 
       // ── Master output chain ──
