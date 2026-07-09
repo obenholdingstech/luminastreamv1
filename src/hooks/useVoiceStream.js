@@ -1,35 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
+import { voiceCaptureProcessorCode } from '@/worklets/voiceCaptureProcessorCode';
 
 const TARGET_RATE = 16000;
-const CHUNK_SAMPLES = 1920; // 120ms at 16kHz — low latency, safely above API 100ms minimum
+const CHUNK_SAMPLES = 1600; // 100ms at 16kHz — ElevenLabs minimum, lowest possible input latency
 const MAX_IN_FLIGHT = 5;   // Deeper pipeline — absorbs API jitter without audio gaps
 const OUTPUT_RATE = 44100;  // ElevenLabs PCM output format
-const PCM_PLAYBACK_CHUNK_BYTES = OUTPUT_RATE * 2 * 0.05; // 50ms of 16-bit mono = 4410 bytes
-
-// ── Audio helpers ───────────────────────────────────────────────
-function resample(input, inputRate, targetRate) {
-  if (inputRate === targetRate) return input;
-  const ratio = inputRate / targetRate;
-  const out = new Float32Array(Math.floor(input.length / ratio));
-  for (let i = 0; i < out.length; i++) {
-    const idx = i * ratio;
-    const lo = Math.floor(idx);
-    const hi = Math.min(lo + 1, input.length - 1);
-    const frac = idx - lo;
-    out[i] = input[lo] * (1 - frac) + input[hi] * frac;
-  }
-  return out;
-}
-
-function float32ToInt16(float32) {
-  const int16 = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32[i]));
-    int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return int16;
-}
+const PCM_PLAYBACK_CHUNK_BYTES = OUTPUT_RATE * 2 * 0.02; // 20ms of 16-bit mono — faster time-to-first-audio
 
 // Convert raw PCM bytes (44100Hz, 16-bit, little-endian) → AudioBuffer
 function pcmBytesToAudioBuffer(ctx, bytes) {
@@ -52,6 +29,7 @@ export function useVoiceStream() {
   const ctxRef = useRef(null);
   const sourceRef = useRef(null);
   const processorRef = useRef(null);
+  const workletNodeRef = useRef(null);
   const micRef = useRef(null);
   const voiceIdRef = useRef(null);
   const modeRef = useRef('direct');
@@ -103,9 +81,10 @@ export function useVoiceStream() {
         src.connect(gain);
         src.connect(recDest);
         const now = ctx.currentTime;
-        // First chunk: 150ms jitter buffer. Late chunks: 30ms re-buffer.
+        // First chunk: 60ms jitter buffer. Late chunks: 15ms re-buffer.
+        // AudioWorklet + direct connection make the pipeline reliable enough for tight buffers.
         if (playTimeRef.current < now) {
-          playTimeRef.current = now + (playTimeRef.current === 0 ? 0.15 : 0.03);
+          playTimeRef.current = now + (playTimeRef.current === 0 ? 0.06 : 0.015);
         }
         src.start(playTimeRef.current);
         playTimeRef.current += audioBuffer.duration;
@@ -296,43 +275,36 @@ export function useVoiceStream() {
         setVoiceState('active');
       } else {
         // ── Converted Voice ──
-        // mic → ScriptProcessor → silencer (prevents feedback)
-        // converted PCM streamed directly from ElevenLabs → outputGain + recordingDest
-        const inputRate = ctx.sampleRate;
-        const processor = ctx.createScriptProcessor(4096, 1, 1);
-        processorRef.current = processor;
+        // AudioWorklet captures + resamples on a DEDICATED audio thread (zero main-thread contention
+        // with video rendering). 2.67ms quantum vs ScriptProcessor's 85ms buffer.
+        // Converted PCM streamed directly from ElevenLabs → outputGain + recordingDest
+        const blob = new Blob([voiceCaptureProcessorCode], { type: 'application/javascript' });
+        const workletUrl = URL.createObjectURL(blob);
+        await ctx.audioWorklet.addModule(workletUrl);
+        URL.revokeObjectURL(workletUrl);
+
+        const workletNode = new AudioWorkletNode(ctx, 'voice-capture-processor', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          channelCount: 1,
+        });
+        workletNodeRef.current = workletNode;
+        workletNode.port.postMessage({ type: 'config', chunkSamples: CHUNK_SAMPLES, targetRate: TARGET_RATE });
+
+        workletNode.port.onmessage = (e) => {
+          if (e.data.type !== 'chunk' || !activeRef.current || !voiceIdRef.current) return;
+          if (inFlightRef.current >= MAX_IN_FLIGHT) return; // pipeline full — drop this chunk
+          const pcm16 = new Int16Array(e.data.pcm16);
+          inFlightRef.current++;
+          sendChunk(pcm16).finally(() => { inFlightRef.current--; });
+        };
 
         const silencer = ctx.createGain();
         silencer.gain.value = 0;
         silencerRef.current = silencer;
 
-        processor.onaudioprocess = (e) => {
-          if (!activeRef.current || !voiceIdRef.current) return;
-          const input = e.inputBuffer.getChannelData(0);
-          const resampled = resample(input, inputRate, TARGET_RATE);
-          const pcm16 = float32ToInt16(resampled);
-          bufRef.current.push(pcm16);
-          accRef.current += pcm16.length;
-
-          if (accRef.current >= CHUNK_SAMPLES) {
-            if (inFlightRef.current < MAX_IN_FLIGHT) {
-              const totalLen = bufRef.current.reduce((s, c) => s + c.length, 0);
-              const combined = new Int16Array(totalLen);
-              let off = 0;
-              for (const c of bufRef.current) { combined.set(c, off); off += c.length; }
-              bufRef.current = [];
-              accRef.current = 0;
-              inFlightRef.current++;
-              sendChunk(combined).finally(() => { inFlightRef.current--; });
-            } else {
-              bufRef.current = [];
-              accRef.current = 0;
-            }
-          }
-        };
-
-        source.connect(processor);
-        processor.connect(silencer);
+        source.connect(workletNode);
+        workletNode.connect(silencer);
         silencer.connect(ctx.destination);
 
         // Process playback queue at 20ms for smooth, gap-free scheduling
@@ -365,7 +337,11 @@ export function useVoiceStream() {
       clearInterval(queueTimerRef.current);
       queueTimerRef.current = null;
     }
-    if (processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
+    if (workletNodeRef.current) {
+      try { workletNodeRef.current.port.close(); } catch (_e) {}
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
+    }
     if (silencerRef.current) { silencerRef.current.disconnect(); silencerRef.current = null; }
     if (sourceRef.current) { sourceRef.current.disconnect(); sourceRef.current = null; }
     if (outputGainRef.current) { outputGainRef.current.disconnect(); outputGainRef.current = null; }
