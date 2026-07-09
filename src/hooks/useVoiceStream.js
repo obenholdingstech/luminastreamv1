@@ -124,10 +124,20 @@ export function useVoiceStream() {
     const streamSeq = currentStreamSeqRef.current++;
     streamQueuesRef.current[streamSeq] = { buffers: [], complete: false };
 
+    // Safe accessor — queue may be wiped by stopVoiceStream while this chunk is in flight
+    const markComplete = () => {
+      const s = streamQueuesRef.current[streamSeq];
+      if (s) s.complete = true;
+    };
+    const pushBuffer = (buf) => {
+      const s = streamQueuesRef.current[streamSeq];
+      if (s) s.buffers.push(buf);
+    };
+
     try {
       const apiKey = apiKeyRef.current;
       if (!apiKey || !voiceIdRef.current) {
-        streamQueuesRef.current[streamSeq].complete = true;
+        markComplete();
         return;
       }
 
@@ -155,7 +165,7 @@ export function useVoiceStream() {
         if (consecutiveFailuresRef.current === 3) {
           setVoiceError(errorData.detail?.message || errorData.detail || 'Voice conversion failed.');
         }
-        streamQueuesRef.current[streamSeq].complete = true;
+        markComplete();
         processPlaybackQueue();
         return;
       }
@@ -165,7 +175,7 @@ export function useVoiceStream() {
       setVoiceError(null);
       const ctx = ctxRef.current;
       if (!ctx || !activeRef.current) {
-        streamQueuesRef.current[streamSeq].complete = true;
+        markComplete();
         return;
       }
 
@@ -187,7 +197,7 @@ export function useVoiceStream() {
           const chunkBytes = pendingBytes.slice(0, PCM_PLAYBACK_CHUNK_BYTES);
           pendingBytes = pendingBytes.slice(PCM_PLAYBACK_CHUNK_BYTES);
           const audioBuffer = pcmBytesToAudioBuffer(ctx, chunkBytes);
-          streamQueuesRef.current[streamSeq].buffers.push(audioBuffer);
+          pushBuffer(audioBuffer);
         }
 
         processPlaybackQueue();
@@ -199,17 +209,17 @@ export function useVoiceStream() {
         if (evenLength > 0) {
           const chunkBytes = pendingBytes.slice(0, evenLength);
           const audioBuffer = pcmBytesToAudioBuffer(ctx, chunkBytes);
-          streamQueuesRef.current[streamSeq].buffers.push(audioBuffer);
+          pushBuffer(audioBuffer);
         }
       }
 
-      streamQueuesRef.current[streamSeq].complete = true;
+      markComplete();
     } catch (err) {
       consecutiveFailuresRef.current++;
       if (consecutiveFailuresRef.current === 3) {
         setVoiceError(err.message || 'Voice conversion connection failed.');
       }
-      streamQueuesRef.current[streamSeq].complete = true;
+      markComplete();
     }
     processPlaybackQueue();
   }, [processPlaybackQueue]);
