@@ -122,15 +122,17 @@ export function useVoiceStream() {
         const ctx = ctxRef.current;
         if (!ctx || !activeRef.current) return;
 
-        // Convert base64 PCM (44100Hz, 16-bit) directly to AudioBuffer — NO decodeAudioData
-        const int16 = base64ToInt16Array(res.data.audioBase64);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 0x8000;
+        // Decode MP3 → AudioBuffer via Web Audio API's built-in decoder
+        const binary = atob(res.data.audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+        try {
+          const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+          decodedMapRef.current[seq] = audioBuffer;
+        } catch (_e) {
+          decodedMapRef.current[seq] = null;
         }
-        const audioBuffer = ctx.createBuffer(1, float32.length, OUTPUT_RATE);
-        audioBuffer.copyToChannel(float32, 0);
-        decodedMapRef.current[seq] = audioBuffer;
       } else {
         decodedMapRef.current[seq] = null;
         consecutiveFailuresRef.current++;

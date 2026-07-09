@@ -113,8 +113,8 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
       </div>
 
       {loadError && <p className="text-[10px] text-red-400">{loadError}</p>}
-      {voiceError && voiceState === 'error' && (
-        <p className="text-[10px] text-red-400">{voiceError}</p>
+      {voiceError && (
+        <p className="text-[10px] text-red-400 leading-relaxed">{voiceError}</p>
       )}
     </div>
   );

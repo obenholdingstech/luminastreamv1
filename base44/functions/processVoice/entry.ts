@@ -1,7 +1,7 @@
 Deno.serve(async (req) => {
   try {
     const { voiceId, audioBase64, outputFormat } = await req.json();
-    const format = outputFormat || 'pcm_44100';
+    const format = outputFormat || 'mp3_44100_128';
 
     if (!voiceId || !audioBase64) {
       return Response.json({ error: 'voiceId and audioBase64 are required' }, { status: 400 });
@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
     }
     const responseBase64 = btoa(binary);
 
-    return Response.json({ audioBase64: responseBase64 });
+    return Response.json({ audioBase64: responseBase64, mimeType: 'audio/mpeg' });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
