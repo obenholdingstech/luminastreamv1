@@ -2,8 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 
 const TARGET_RATE = 16000;
-const CHUNK_SAMPLES = 2400; // 150ms at 16kHz — smaller chunks = lower latency
-const MAX_IN_FLIGHT = 3;   // Pipeline cap — prevents unbounded latency if API is slow
+const CHUNK_SAMPLES = 1920; // 120ms at 16kHz — low latency, safely above API 100ms minimum
+const MAX_IN_FLIGHT = 5;   // Deeper pipeline — absorbs API jitter without audio gaps
 const OUTPUT_RATE = 44100;  // ElevenLabs output format
 
 // ── Audio helpers ───────────────────────────────────────────────
@@ -97,7 +97,11 @@ export function useVoiceStream() {
         src.connect(gain);
         src.connect(recDest);
         const now = ctx.currentTime;
-        if (playTimeRef.current < now) playTimeRef.current = now + 0.02;
+        // First chunk: 150ms jitter buffer to absorb initial pipeline variance.
+        // Late chunks: 30ms re-buffer — minimizes silence gaps on recovery.
+        if (playTimeRef.current < now) {
+          playTimeRef.current = now + (playTimeRef.current === 0 ? 0.15 : 0.03);
+        }
         src.start(playTimeRef.current);
         playTimeRef.current += audioBuffer.duration;
       }
@@ -122,17 +126,15 @@ export function useVoiceStream() {
         const ctx = ctxRef.current;
         if (!ctx || !activeRef.current) return;
 
-        // Decode MP3 → AudioBuffer via Web Audio API's built-in decoder
-        const binary = atob(res.data.audioBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-        try {
-          const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
-          decodedMapRef.current[seq] = audioBuffer;
-        } catch (_e) {
-          decodedMapRef.current[seq] = null;
+        // Decode raw PCM (44100Hz, 16-bit) → AudioBuffer — zero decode overhead
+        const int16 = base64ToInt16Array(res.data.audioBase64);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) {
+          float32[i] = int16[i] / 0x8000;
         }
+        const audioBuffer = ctx.createBuffer(1, float32.length, OUTPUT_RATE);
+        audioBuffer.copyToChannel(float32, 0);
+        decodedMapRef.current[seq] = audioBuffer;
       } else {
         decodedMapRef.current[seq] = null;
         consecutiveFailuresRef.current++;
@@ -263,10 +265,10 @@ export function useVoiceStream() {
         processor.connect(silencer);
         silencer.connect(ctx.destination);
 
-        // Process playback queue frequently for low-latency playback
+        // Process playback queue at 20ms for smooth, gap-free scheduling
         queueTimerRef.current = setInterval(() => {
           processPlaybackQueue();
-        }, 50);
+        }, 20);
 
         setVoiceState('active');
       }

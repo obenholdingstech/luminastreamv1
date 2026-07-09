@@ -1,7 +1,7 @@
 Deno.serve(async (req) => {
   try {
     const { voiceId, audioBase64, outputFormat } = await req.json();
-    const format = outputFormat || 'mp3_44100_128';
+    const format = outputFormat || 'pcm_44100';
 
     if (!voiceId || !audioBase64) {
       return Response.json({ error: 'voiceId and audioBase64 are required' }, { status: 400 });
@@ -24,9 +24,9 @@ Deno.serve(async (req) => {
     formData.append('file_format', 'pcm_s16le_16');
     formData.append('remove_background_noise', 'false');
 
-    // Call ElevenLabs S2S with max latency optimization + PCM output
+    // Call ElevenLabs S2S streaming endpoint — US region for lowest latency
     const elevenResponse = await fetch(
-      `https://api.elevenlabs.io/v1/speech-to-speech/${voiceId}?output_format=${format}&optimize_streaming_latency=4`,
+      `https://api.us.elevenlabs.io/v1/speech-to-speech/${voiceId}/stream?output_format=${format}&optimize_streaming_latency=4`,
       {
         method: 'POST',
         headers: {
@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
     }
     const responseBase64 = btoa(binary);
 
-    return Response.json({ audioBase64: responseBase64, mimeType: 'audio/mpeg' });
+    return Response.json({ audioBase64: responseBase64, mimeType: 'audio/pcm' });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
