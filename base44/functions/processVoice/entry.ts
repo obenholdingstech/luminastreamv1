@@ -43,20 +43,10 @@ Deno.serve(async (req) => {
       }, { status: 500 });
     }
 
-    // Read converted audio as raw bytes
-    const audioBuffer = await elevenResponse.arrayBuffer();
-    const audioBytes = new Uint8Array(audioBuffer);
-
-    // Convert to base64 for JSON transport
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let i = 0; i < audioBytes.length; i += chunkSize) {
-      const chunk = audioBytes.subarray(i, Math.min(i + chunkSize, audioBytes.length));
-      binary += String.fromCharCode.apply(null, chunk);
-    }
-    const responseBase64 = btoa(binary);
-
-    return Response.json({ audioBase64: responseBase64, mimeType: 'audio/pcm' });
+    // Forward the raw PCM stream directly — zero buffering, zero base64 overhead
+    return new Response(elevenResponse.body, {
+      headers: { 'Content-Type': 'application/octet-stream' }
+    });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }

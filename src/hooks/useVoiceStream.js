@@ -4,7 +4,8 @@ import { base44 } from '@/api/base44Client';
 const TARGET_RATE = 16000;
 const CHUNK_SAMPLES = 1920; // 120ms at 16kHz — low latency, safely above API 100ms minimum
 const MAX_IN_FLIGHT = 5;   // Deeper pipeline — absorbs API jitter without audio gaps
-const OUTPUT_RATE = 44100;  // ElevenLabs output format
+const OUTPUT_RATE = 44100;  // ElevenLabs PCM output format
+const PCM_PLAYBACK_CHUNK_BYTES = OUTPUT_RATE * 2 * 0.05; // 50ms of 16-bit mono = 4410 bytes
 
 // ── Audio helpers ───────────────────────────────────────────────
 function resample(input, inputRate, targetRate) {
@@ -30,21 +31,17 @@ function float32ToInt16(float32) {
   return int16;
 }
 
-function int16ArrayToBase64(int16) {
-  const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunk, bytes.length)));
+// Convert raw PCM bytes (44100Hz, 16-bit, little-endian) → AudioBuffer
+function pcmBytesToAudioBuffer(ctx, bytes) {
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, sampleCount);
+  const float32 = new Float32Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    float32[i] = int16[i] / 0x8000;
   }
-  return btoa(binary);
-}
-
-function base64ToInt16Array(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Int16Array(bytes.buffer);
+  const audioBuffer = ctx.createBuffer(1, sampleCount, OUTPUT_RATE);
+  audioBuffer.copyToChannel(float32, 0);
+  return audioBuffer;
 }
 
 // ── Hook ────────────────────────────────────────────────────────
@@ -58,8 +55,8 @@ export function useVoiceStream() {
   const micRef = useRef(null);
   const voiceIdRef = useRef(null);
   const modeRef = useRef('direct');
-  const outputGainRef = useRef(null);    // Speaker output gain (mute control)
-  const recordingDestRef = useRef(null);  // MediaStream destination (for recording — always full volume)
+  const outputGainRef = useRef(null);
+  const recordingDestRef = useRef(null);
   const silencerRef = useRef(null);
 
   const bufRef = useRef([]);
@@ -68,15 +65,25 @@ export function useVoiceStream() {
   const playTimeRef = useRef(0);
   const queueTimerRef = useRef(null);
   const inFlightRef = useRef(0);
-  const seqRef = useRef(0);
-  const nextPlaySeqRef = useRef(0);
-  const decodedMapRef = useRef({});
   const mutedRef = useRef(false);
   const consecutiveFailuresRef = useRef(0);
 
-  // Expose the audio output MediaStream for recording
+  // Direct-to-ElevenLabs streaming state
+  const apiKeyRef = useRef(null);
+  const streamQueuesRef = useRef({});       // { streamSeq: { buffers: [], complete: false } }
+  const nextStreamToPlayRef = useRef(0);     // Next stream sequence to play
+  const currentStreamSeqRef = useRef(0);     // Sequence counter for sendChunk calls
+
   const getAudioStream = useCallback(() => {
     return recordingDestRef.current?.stream || null;
+  }, []);
+
+  // Fetch ElevenLabs API key — same pattern as video pipeline's createSession
+  const ensureApiKey = useCallback(async () => {
+    if (apiKeyRef.current) return apiKeyRef.current;
+    const res = await base44.functions.invoke('getVoiceApiKey', {});
+    apiKeyRef.current = res.data?.apiKey;
+    return apiKeyRef.current;
   }, []);
 
   const processPlaybackQueue = useCallback(() => {
@@ -85,70 +92,124 @@ export function useVoiceStream() {
     const recDest = recordingDestRef.current;
     if (!ctx || !gain || !recDest || !activeRef.current) return;
 
-    while (decodedMapRef.current[nextPlaySeqRef.current] !== undefined) {
-      const audioBuffer = decodedMapRef.current[nextPlaySeqRef.current];
-      delete decodedMapRef.current[nextPlaySeqRef.current];
-      nextPlaySeqRef.current++;
+    // Play streams in input order — each stream may contain multiple AudioBuffers
+    while (streamQueuesRef.current[nextStreamToPlayRef.current]) {
+      const stream = streamQueuesRef.current[nextStreamToPlayRef.current];
 
-      if (audioBuffer) {
+      if (stream.buffers.length > 0) {
+        const audioBuffer = stream.buffers.shift();
         const src = ctx.createBufferSource();
         src.buffer = audioBuffer;
-        // Connect to both speakers (muteable) and recording (always full volume)
         src.connect(gain);
         src.connect(recDest);
         const now = ctx.currentTime;
-        // First chunk: 150ms jitter buffer to absorb initial pipeline variance.
-        // Late chunks: 30ms re-buffer — minimizes silence gaps on recovery.
+        // First chunk: 150ms jitter buffer. Late chunks: 30ms re-buffer.
         if (playTimeRef.current < now) {
           playTimeRef.current = now + (playTimeRef.current === 0 ? 0.15 : 0.03);
         }
         src.start(playTimeRef.current);
         playTimeRef.current += audioBuffer.duration;
+      } else if (stream.complete) {
+        // Stream finished — advance to next stream
+        delete streamQueuesRef.current[nextStreamToPlayRef.current];
+        nextStreamToPlayRef.current++;
+      } else {
+        // Stream still in flight — wait for more buffers
+        break;
       }
     }
   }, []);
 
   const sendChunk = useCallback(async (pcm16) => {
-    const seq = seqRef.current++;
+    const streamSeq = currentStreamSeqRef.current++;
+    streamQueuesRef.current[streamSeq] = { buffers: [], complete: false };
+
     try {
-      // Convert PCM Int16 to base64 — sent directly to backend, NO storage upload
-      const audioBase64 = int16ArrayToBase64(pcm16);
+      const apiKey = apiKeyRef.current;
+      if (!apiKey || !voiceIdRef.current) {
+        streamQueuesRef.current[streamSeq].complete = true;
+        return;
+      }
 
-      // Call ElevenLabs STS via backend (audio sent inline in POST body)
-      const res = await base44.functions.invoke('processVoice', {
-        voiceId: voiceIdRef.current,
-        audioBase64,
-      });
+      // Build multipart form with raw PCM — sent DIRECTLY to ElevenLabs, NO intermediary
+      const audioBlob = new Blob([pcm16], { type: 'application/octet-stream' });
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'input.pcm');
+      formData.append('model_id', 'eleven_english_sts_v2');
+      formData.append('file_format', 'pcm_s16le_16');
+      formData.append('remove_background_noise', 'false');
 
-      if (res.data?.audioBase64) {
-        consecutiveFailuresRef.current = 0;
-        setVoiceError(null);
-        const ctx = ctxRef.current;
-        if (!ctx || !activeRef.current) return;
-
-        // Decode raw PCM (44100Hz, 16-bit) → AudioBuffer — zero decode overhead
-        const int16 = base64ToInt16Array(res.data.audioBase64);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 0x8000;
+      // DIRECT call to ElevenLabs STS streaming endpoint — bypasses Base44 entirely
+      const response = await fetch(
+        `https://api.us.elevenlabs.io/v1/speech-to-speech/${voiceIdRef.current}/stream?output_format=pcm_44100&optimize_streaming_latency=4`,
+        {
+          method: 'POST',
+          headers: { 'xi-api-key': apiKey },
+          body: formData,
         }
-        const audioBuffer = ctx.createBuffer(1, float32.length, OUTPUT_RATE);
-        audioBuffer.copyToChannel(float32, 0);
-        decodedMapRef.current[seq] = audioBuffer;
-      } else {
-        decodedMapRef.current[seq] = null;
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
         consecutiveFailuresRef.current++;
         if (consecutiveFailuresRef.current === 3) {
-          setVoiceError(res.data?.error || 'Voice conversion failed — no audio returned from the service.');
+          setVoiceError(errorData.detail?.message || errorData.detail || 'Voice conversion failed.');
+        }
+        streamQueuesRef.current[streamSeq].complete = true;
+        processPlaybackQueue();
+        return;
+      }
+
+      // Success — read streaming PCM and play audio as it arrives
+      consecutiveFailuresRef.current = 0;
+      setVoiceError(null);
+      const ctx = ctxRef.current;
+      if (!ctx || !activeRef.current) {
+        streamQueuesRef.current[streamSeq].complete = true;
+        return;
+      }
+
+      const reader = response.body.getReader();
+      let pendingBytes = new Uint8Array(0);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || !activeRef.current) break;
+
+        // Accumulate incoming PCM bytes
+        const combined = new Uint8Array(pendingBytes.length + value.length);
+        combined.set(pendingBytes, 0);
+        combined.set(value, pendingBytes.length);
+        pendingBytes = combined;
+
+        // Extract 50ms playback chunks — enables immediate playback as bytes arrive
+        while (pendingBytes.length >= PCM_PLAYBACK_CHUNK_BYTES) {
+          const chunkBytes = pendingBytes.slice(0, PCM_PLAYBACK_CHUNK_BYTES);
+          pendingBytes = pendingBytes.slice(PCM_PLAYBACK_CHUNK_BYTES);
+          const audioBuffer = pcmBytesToAudioBuffer(ctx, chunkBytes);
+          streamQueuesRef.current[streamSeq].buffers.push(audioBuffer);
+        }
+
+        processPlaybackQueue();
+      }
+
+      // Process any remaining bytes (< 50ms)
+      if (pendingBytes.length >= 2 && activeRef.current) {
+        const evenLength = pendingBytes.length - (pendingBytes.length % 2);
+        if (evenLength > 0) {
+          const chunkBytes = pendingBytes.slice(0, evenLength);
+          const audioBuffer = pcmBytesToAudioBuffer(ctx, chunkBytes);
+          streamQueuesRef.current[streamSeq].buffers.push(audioBuffer);
         }
       }
+
+      streamQueuesRef.current[streamSeq].complete = true;
     } catch (err) {
-      decodedMapRef.current[seq] = null;
       consecutiveFailuresRef.current++;
       if (consecutiveFailuresRef.current === 3) {
-        const apiError = err.response?.data?.error || err.message || 'Voice conversion connection failed.';
-        setVoiceError(apiError);
+        setVoiceError(err.message || 'Voice conversion connection failed.');
       }
+      streamQueuesRef.current[streamSeq].complete = true;
     }
     processPlaybackQueue();
   }, [processPlaybackQueue]);
@@ -162,9 +223,9 @@ export function useVoiceStream() {
     setVoiceError(null);
 
     // Reset pipeline state
-    seqRef.current = 0;
-    nextPlaySeqRef.current = 0;
-    decodedMapRef.current = {};
+    streamQueuesRef.current = {};
+    nextStreamToPlayRef.current = 0;
+    currentStreamSeqRef.current = 0;
     playTimeRef.current = 0;
     bufRef.current = [];
     accRef.current = 0;
@@ -172,6 +233,14 @@ export function useVoiceStream() {
     consecutiveFailuresRef.current = 0;
 
     try {
+      // For converted voice: fetch API key for direct ElevenLabs connection
+      if (mode === 'converted') {
+        await ensureApiKey();
+        if (!apiKeyRef.current) {
+          throw new Error('Unable to retrieve voice service credentials.');
+        }
+      }
+
       const micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -187,8 +256,6 @@ export function useVoiceStream() {
       if (ctx.state === 'suspended') {
         try { await ctx.resume(); } catch (_e) {}
       }
-      // If still suspended (user gesture expired during Decart connect delay),
-      // resume on the next click/touch anywhere on the page
       if (ctx.state === 'suspended') {
         const resumeOnClick = () => {
           ctx.resume().catch(() => {});
@@ -201,9 +268,6 @@ export function useVoiceStream() {
       ctxRef.current = ctx;
 
       // ── Master output chain ──
-      // outputGain controls SPEAKER output only (mute toggle).
-      // recordingDest captures audio at FULL VOLUME always (so recording
-      // has audio even when the user mutes speakers to prevent echo).
       const outputGain = ctx.createGain();
       outputGain.gain.value = mutedRef.current ? 0 : 1;
       outputGain.connect(ctx.destination);
@@ -217,15 +281,13 @@ export function useVoiceStream() {
 
       if (mode === 'direct') {
         // ── Direct Voice: mic → speakers + recording ──
-        // Zero processing, zero API calls, zero latency.
-        // Natural voice passes straight through.
         source.connect(outputGain);
         source.connect(recordingDest);
         setVoiceState('active');
       } else {
         // ── Converted Voice ──
-        // mic → ScriptProcessor → silencer (no speaker passthrough, prevents feedback)
-        // converted PCM → outputGain (speakers, muteable) + recordingDest (recording)
+        // mic → ScriptProcessor → silencer (prevents feedback)
+        // converted PCM streamed directly from ElevenLabs → outputGain + recordingDest
         const inputRate = ctx.sampleRate;
         const processor = ctx.createScriptProcessor(4096, 1, 1);
         processorRef.current = processor;
@@ -242,7 +304,6 @@ export function useVoiceStream() {
           bufRef.current.push(pcm16);
           accRef.current += pcm16.length;
 
-          // Pipelined: send immediately when chunk is ready, don't wait for response
           if (accRef.current >= CHUNK_SAMPLES) {
             if (inFlightRef.current < MAX_IN_FLIGHT) {
               const totalLen = bufRef.current.reduce((s, c) => s + c.length, 0);
@@ -254,7 +315,6 @@ export function useVoiceStream() {
               inFlightRef.current++;
               sendChunk(combined).finally(() => { inFlightRef.current--; });
             } else {
-              // API can't keep up — drop chunk to prevent unbounded latency
               bufRef.current = [];
               accRef.current = 0;
             }
@@ -277,18 +337,19 @@ export function useVoiceStream() {
       setVoiceState('error');
       activeRef.current = false;
     }
-  }, [sendChunk, processPlaybackQueue]);
+  }, [sendChunk, processPlaybackQueue, ensureApiKey]);
 
   const stopVoiceStream = useCallback(() => {
     activeRef.current = false;
     voiceIdRef.current = null;
     bufRef.current = [];
     accRef.current = 0;
-    seqRef.current = 0;
-    nextPlaySeqRef.current = 0;
-    decodedMapRef.current = {};
+    streamQueuesRef.current = {};
+    nextStreamToPlayRef.current = 0;
+    currentStreamSeqRef.current = 0;
     playTimeRef.current = 0;
     inFlightRef.current = 0;
+    consecutiveFailuresRef.current = 0;
 
     if (queueTimerRef.current) {
       clearInterval(queueTimerRef.current);
