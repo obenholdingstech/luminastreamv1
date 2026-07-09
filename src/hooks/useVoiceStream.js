@@ -1,12 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { voiceCaptureProcessorCode } from '@/worklets/voiceCaptureProcessorCode';
+import { createOvcFrame, connectOvc } from '@/lib/ovcClient';
 
 const TARGET_RATE = 16000;
 const CHUNK_SAMPLES = 1600; // 100ms at 16kHz — ElevenLabs minimum, lowest possible input latency
 const MAX_IN_FLIGHT = 5;   // Deeper pipeline — absorbs API jitter without audio gaps
 const OUTPUT_RATE = 44100;  // ElevenLabs PCM output format
 const PCM_PLAYBACK_CHUNK_BYTES = OUTPUT_RATE * 2 * 0.02; // 20ms of 16-bit mono — faster time-to-first-audio
+
+// RVC / OpenVoiceChanger config — WebSocket-based real-time voice conversion on a GPU server
+const OVC_RATE = 44100;   // OVC server sample rate — matches AudioContext for zero-resample playback
+const OVC_CHUNK = 4096;    // OVC processing window (~93ms at 44100Hz) — RVC's natural chunk size
 
 // Convert raw PCM bytes (44100Hz, 16-bit, little-endian) → AudioBuffer
 function pcmBytesToAudioBuffer(ctx, bytes) {
@@ -18,6 +23,13 @@ function pcmBytesToAudioBuffer(ctx, bytes) {
   }
   const audioBuffer = ctx.createBuffer(1, sampleCount, OUTPUT_RATE);
   audioBuffer.copyToChannel(float32, 0);
+  return audioBuffer;
+}
+
+// Convert float32 samples → AudioBuffer (for RVC/OpenVoiceChanger output at 44100Hz)
+function float32ToAudioBuffer(ctx, samples) {
+  const audioBuffer = ctx.createBuffer(1, samples.length, OVC_RATE);
+  audioBuffer.copyToChannel(samples, 0);
   return audioBuffer;
 }
 
@@ -48,6 +60,13 @@ export function useVoiceStream() {
 
   // Direct-to-ElevenLabs streaming state
   const apiKeyRef = useRef(null);
+
+  // RVC / OpenVoiceChanger WebSocket state
+  const wsRef = useRef(null);
+  const voiceBackendRef = useRef('elevenlabs');  // 'elevenlabs' or 'rvc'
+  const rvcServerUrlRef = useRef(null);
+  const ovcSendSeqRef = useRef(0);
+  const ovcRecvSeqRef = useRef(0);
   const streamQueuesRef = useRef({});       // { streamSeq: { buffers: [], complete: false } }
   const nextStreamToPlayRef = useRef(0);     // Next stream sequence to play
   const currentStreamSeqRef = useRef(0);     // Sequence counter for sendChunk calls
@@ -62,6 +81,15 @@ export function useVoiceStream() {
     const res = await base44.functions.invoke('getVoiceApiKey', {});
     apiKeyRef.current = res.data?.apiKey;
     return apiKeyRef.current;
+  }, []);
+
+  // Fetch voice backend config — determines whether to use RVC server or ElevenLabs
+  const ensureVoiceConfig = useCallback(async () => {
+    const res = await base44.functions.invoke('getVoiceConfig', {});
+    const { backend, serverUrl } = res.data || {};
+    voiceBackendRef.current = backend || 'elevenlabs';
+    rvcServerUrlRef.current = serverUrl || null;
+    return voiceBackendRef.current;
   }, []);
 
   const processPlaybackQueue = useCallback(() => {
@@ -215,6 +243,8 @@ export function useVoiceStream() {
     streamQueuesRef.current = {};
     nextStreamToPlayRef.current = 0;
     currentStreamSeqRef.current = 0;
+    ovcSendSeqRef.current = 0;
+    ovcRecvSeqRef.current = 0;
     playTimeRef.current = 0;
     bufRef.current = [];
     accRef.current = 0;
@@ -222,11 +252,16 @@ export function useVoiceStream() {
     consecutiveFailuresRef.current = 0;
 
     try {
-      // For converted voice: fetch API key for direct ElevenLabs connection
+      // For converted voice: determine backend (RVC server vs ElevenLabs)
       if (mode === 'converted') {
-        await ensureApiKey();
-        if (!apiKeyRef.current) {
-          throw new Error('Unable to retrieve voice service credentials.');
+        await ensureVoiceConfig();
+        if (voiceBackendRef.current === 'elevenlabs') {
+          await ensureApiKey();
+          if (!apiKeyRef.current) {
+            throw new Error('Unable to retrieve voice service credentials.');
+          }
+        } else if (!rvcServerUrlRef.current) {
+          throw new Error('RVC server not configured.');
         }
       }
 
@@ -276,8 +311,12 @@ export function useVoiceStream() {
       } else {
         // ── Converted Voice ──
         // AudioWorklet captures + resamples on a DEDICATED audio thread (zero main-thread contention
-        // with video rendering). 2.67ms quantum vs ScriptProcessor's 85ms buffer.
-        // Converted PCM streamed directly from ElevenLabs → outputGain + recordingDest
+        // with video rendering). Backend is auto-detected: RVC WebSocket or ElevenLabs HTTP.
+        const isRvc = voiceBackendRef.current === 'rvc';
+        const captureRate = isRvc ? OVC_RATE : TARGET_RATE;
+        const captureChunk = isRvc ? OVC_CHUNK : CHUNK_SAMPLES;
+        const outputFormat = isRvc ? 'float32' : 'int16';
+
         const blob = new Blob([voiceCaptureProcessorCode], { type: 'application/javascript' });
         const workletUrl = URL.createObjectURL(blob);
         await ctx.audioWorklet.addModule(workletUrl);
@@ -289,19 +328,59 @@ export function useVoiceStream() {
           channelCount: 1,
         });
         workletNodeRef.current = workletNode;
-        workletNode.port.postMessage({ type: 'config', chunkSamples: CHUNK_SAMPLES, targetRate: TARGET_RATE });
-
-        workletNode.port.onmessage = (e) => {
-          if (e.data.type !== 'chunk' || !activeRef.current || !voiceIdRef.current) return;
-          if (inFlightRef.current >= MAX_IN_FLIGHT) return; // pipeline full — drop this chunk
-          const pcm16 = new Int16Array(e.data.pcm16);
-          inFlightRef.current++;
-          sendChunk(pcm16).finally(() => { inFlightRef.current--; });
-        };
+        workletNode.port.postMessage({ type: 'config', chunkSamples: captureChunk, targetRate: captureRate, outputFormat });
 
         const silencer = ctx.createGain();
         silencer.gain.value = 0;
         silencerRef.current = silencer;
+
+        if (isRvc) {
+          // ── RVC path: WebSocket to OpenVoiceChanger GPU server ──
+          ovcSendSeqRef.current = 0;
+          ovcRecvSeqRef.current = 0;
+
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('RVC server connection timeout.')), 10000);
+            const ws = connectOvc(rvcServerUrlRef.current, {
+              onOpen: () => { clearTimeout(timeout); resolve(); },
+              onAudio: (samples) => {
+                if (!activeRef.current || !ctxRef.current) return;
+                const audioBuffer = float32ToAudioBuffer(ctxRef.current, samples);
+                const seq = ovcRecvSeqRef.current++;
+                streamQueuesRef.current[seq] = { buffers: [audioBuffer], complete: true };
+                processPlaybackQueue();
+              },
+              onStatus: (_status) => {},
+              onClose: () => {
+                clearTimeout(timeout);
+                if (activeRef.current) {
+                  setVoiceError('RVC server connection closed.');
+                  setVoiceState('error');
+                }
+              },
+              onError: () => { clearTimeout(timeout); reject(new Error('Failed to connect to RVC server.')); },
+            }, OVC_RATE, OVC_CHUNK);
+            wsRef.current = ws;
+          });
+
+          // AudioWorklet → WebSocket: wrap float32 chunks in OVC binary frames and send
+          workletNode.port.onmessage = (e) => {
+            if (e.data.type !== 'chunk' || !activeRef.current) return;
+            if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+            const samples = new Float32Array(e.data.samples);
+            const frame = createOvcFrame(ovcSendSeqRef.current++, samples);
+            wsRef.current.send(frame);
+          };
+        } else {
+          // ── ElevenLabs path: direct HTTP streaming ──
+          workletNode.port.onmessage = (e) => {
+            if (e.data.type !== 'chunk' || !activeRef.current || !voiceIdRef.current) return;
+            if (inFlightRef.current >= MAX_IN_FLIGHT) return; // pipeline full — drop this chunk
+            const pcm16 = new Int16Array(e.data.pcm16);
+            inFlightRef.current++;
+            sendChunk(pcm16).finally(() => { inFlightRef.current--; });
+          };
+        }
 
         source.connect(workletNode);
         workletNode.connect(silencer);
@@ -319,7 +398,7 @@ export function useVoiceStream() {
       setVoiceState('error');
       activeRef.current = false;
     }
-  }, [sendChunk, processPlaybackQueue, ensureApiKey]);
+  }, [sendChunk, processPlaybackQueue, ensureApiKey, ensureVoiceConfig]);
 
   const stopVoiceStream = useCallback(() => {
     activeRef.current = false;
@@ -329,6 +408,8 @@ export function useVoiceStream() {
     streamQueuesRef.current = {};
     nextStreamToPlayRef.current = 0;
     currentStreamSeqRef.current = 0;
+    ovcSendSeqRef.current = 0;
+    ovcRecvSeqRef.current = 0;
     playTimeRef.current = 0;
     inFlightRef.current = 0;
     consecutiveFailuresRef.current = 0;
@@ -336,6 +417,10 @@ export function useVoiceStream() {
     if (queueTimerRef.current) {
       clearInterval(queueTimerRef.current);
       queueTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch (_e) {}
+      wsRef.current = null;
     }
     if (workletNodeRef.current) {
       try { workletNodeRef.current.port.close(); } catch (_e) {}
