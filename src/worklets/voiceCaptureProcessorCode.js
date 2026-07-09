@@ -9,6 +9,7 @@ class VoiceCaptureProcessor extends AudioWorkletProcessor {
     super();
     this.targetRate = 16000;
     this.chunkSamples = 1600; // 100ms at 16kHz — ElevenLabs minimum
+    this.outputFormat = 'int16'; // 'int16' (ElevenLabs) or 'float32' (RVC/OpenVoiceChanger)
     this.inputRate = sampleRate; // global in AudioWorkletGlobalScope
     this.buffer = [];
     this.bufferLength = 0;
@@ -17,6 +18,7 @@ class VoiceCaptureProcessor extends AudioWorkletProcessor {
       if (e.data.type === 'config') {
         this.chunkSamples = e.data.chunkSamples || 1600;
         this.targetRate = e.data.targetRate || 16000;
+        this.outputFormat = e.data.outputFormat || 'int16';
       }
     };
   }
@@ -54,15 +56,19 @@ class VoiceCaptureProcessor extends AudioWorkletProcessor {
         }
       }
 
-      // Convert to Int16 PCM (little-endian)
-      const pcm16 = new Int16Array(chunk.length);
-      for (let i = 0; i < chunk.length; i++) {
-        const s = Math.max(-1, Math.min(1, chunk[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      // Send to main thread — format depends on backend (int16 for ElevenLabs, float32 for RVC)
+      if (this.outputFormat === 'float32') {
+        // RVC/OpenVoiceChanger: raw float32 samples
+        this.port.postMessage({ type: 'chunk', samples: chunk.buffer }, [chunk.buffer]);
+      } else {
+        // ElevenLabs: Int16 PCM (little-endian)
+        const pcm16 = new Int16Array(chunk.length);
+        for (let i = 0; i < chunk.length; i++) {
+          const s = Math.max(-1, Math.min(1, chunk[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        this.port.postMessage({ type: 'chunk', pcm16: pcm16.buffer }, [pcm16.buffer]);
       }
-
-      // Transfer the buffer to main thread (zero-copy via Transferable)
-      this.port.postMessage({ type: 'chunk', pcm16: pcm16.buffer }, [pcm16.buffer]);
     }
 
     return true;
