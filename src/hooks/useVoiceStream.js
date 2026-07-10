@@ -11,7 +11,7 @@ const PCM_PLAYBACK_CHUNK_BYTES = OUTPUT_RATE * 2 * 0.02; // 20ms of 16-bit mono 
 
 // RVC / OpenVoiceChanger config — WebSocket-based real-time voice conversion on a GPU server
 const OVC_RATE = 44100;   // OVC server sample rate — matches AudioContext for zero-resample playback
-const OVC_CHUNK = 4096;    // OVC processing window (~93ms at 44100Hz) — RVC's natural chunk size
+const OVC_CHUNK = 2048;    // Tuning (Phase 2A): smaller window (~46ms at 44100Hz) — halves latency floor vs 4096
 
 // Convert raw PCM bytes (44100Hz, 16-bit, little-endian) → AudioBuffer
 function pcmBytesToAudioBuffer(ctx, bytes) {
