@@ -84,9 +84,14 @@ export default function ConfigPanel({
             <h1 className="text-[13px] font-semibold tracking-[0.3em] text-white uppercase">Mirror</h1>
             <p className="text-[10px] tracking-widest text-[#64748B] uppercase mt-1">Realtime Studio</p>
           </div>
-          <Link to="/text-to-speech" className="text-[10px] text-[#64748B] hover:text-white tracking-wider uppercase transition">
-            TTS
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link to="/roadmap" className="text-[10px] text-[#64748B] hover:text-white tracking-wider uppercase transition">
+              Roadmap
+            </Link>
+            <Link to="/text-to-speech" className="text-[10px] text-[#64748B] hover:text-white tracking-wider uppercase transition">
+              TTS
+            </Link>
+          </div>
         </div>
       </div>
 

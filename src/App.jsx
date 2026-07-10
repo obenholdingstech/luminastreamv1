@@ -10,6 +10,7 @@ import ScrollToTop from './components/ScrollToTop';
 import Studio from './pages/Studio';
 import Admin from './pages/Admin';
 import TextToSpeech from './pages/TextToSpeech';
+import Roadmap from './pages/Roadmap';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -41,6 +42,7 @@ const AuthenticatedApp = () => {
       <Route path="/" element={<Studio />} />
       <Route path="/text-to-speech" element={<TextToSpeech />} />
       <Route path="/admin" element={<Admin />} />
+      <Route path="/roadmap" element={<Roadmap />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
