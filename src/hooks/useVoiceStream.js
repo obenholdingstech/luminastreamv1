@@ -11,7 +11,10 @@ const PCM_PLAYBACK_CHUNK_BYTES = OUTPUT_RATE * 2 * 0.02; // 20ms of 16-bit mono 
 
 // RVC / OpenVoiceChanger config — WebSocket-based real-time voice conversion on a GPU server
 const OVC_RATE = 44100;   // OVC server sample rate — matches AudioContext for zero-resample playback
-const OVC_CHUNK = 2048;    // Tuning (Phase 2A): smaller window (~46ms at 44100Hz) — halves latency floor vs 4096
+const OVC_CHUNK = 8192;    // Tuning: larger window (~185ms at 44100Hz) — fewer round-trips over high-latency/satellite links
+const OVC_MAX_IN_FLIGHT = 3;      // Backpressure cap — drop new frames instead of flooding a slow link
+const JITTER_BUFFER = 0.15;       // 150ms initial playback buffer — smooths Starlink jitter
+const MAX_PLAYBACK_BUFFER = 0.30; // 300ms max scheduled-ahead — drain/skip beyond this, never accumulate
 
 // Convert raw PCM bytes (44100Hz, 16-bit, little-endian) → AudioBuffer
 function pcmBytesToAudioBuffer(ctx, bytes) {
@@ -106,29 +109,41 @@ export function useVoiceStream(sessionId) {
     const gain = outputGainRef.current;
     const recDest = recordingDestRef.current;
     if (!ctx || !gain || !recDest || !activeRef.current) return;
+    const now = ctx.currentTime;
 
     // Play streams in input order — each stream may contain multiple AudioBuffers
     while (streamQueuesRef.current[nextStreamToPlayRef.current]) {
       const stream = streamQueuesRef.current[nextStreamToPlayRef.current];
 
-      if (stream.buffers.length > 0) {
-        const audioBuffer = stream.buffers.shift();
-        const src = ctx.createBufferSource();
-        src.buffer = audioBuffer;
-        src.connect(gain);
-        src.connect(recDest);
-        const now = ctx.currentTime;
-        if (playTimeRef.current < now) {
-          playTimeRef.current = now + (playTimeRef.current === 0 ? 0.06 : 0.015);
+      if (stream.buffers.length === 0) {
+        if (stream.complete) {
+          delete streamQueuesRef.current[nextStreamToPlayRef.current];
+          nextStreamToPlayRef.current++;
+          continue;
         }
-        src.start(playTimeRef.current);
-        playTimeRef.current += audioBuffer.duration;
-      } else if (stream.complete) {
-        delete streamQueuesRef.current[nextStreamToPlayRef.current];
-        nextStreamToPlayRef.current++;
-      } else {
+        break; // waiting for more buffers in this stream
+      }
+
+      // CATCH-UP: scheduled too far ahead → reset to jitter buffer (drop accumulated delay, never grow unbounded)
+      if (playTimeRef.current - now > MAX_PLAYBACK_BUFFER) {
+        playTimeRef.current = now + JITTER_BUFFER;
+      }
+      // RE-BUFFER: after a gap (server fell behind), restart from the jitter buffer
+      if (playTimeRef.current < now) {
+        playTimeRef.current = now + JITTER_BUFFER;
+      }
+      // CAP: don't schedule beyond max buffer — leave queued for the next tick so delay can't accumulate
+      if (playTimeRef.current - now >= MAX_PLAYBACK_BUFFER - 0.02) {
         break;
       }
+
+      const audioBuffer = stream.buffers.shift();
+      const src = ctx.createBufferSource();
+      src.buffer = audioBuffer;
+      src.connect(gain);
+      src.connect(recDest);
+      src.start(playTimeRef.current);
+      playTimeRef.current += audioBuffer.duration;
     }
   }, []);
 
@@ -384,10 +399,15 @@ export function useVoiceStream(sessionId) {
             wsRef.current = ws;
           });
 
-          // AudioWorklet → WebSocket: wrap float32 chunks in OVC binary frames and send
+          // AudioWorklet → WebSocket: wrap float32 chunks in OVC binary frames and send.
+          // BACKPRESSURE: cap in-flight frames — if the link/server is falling behind, drop the
+          // new frame instead of flooding the connection. A growing queue is what creates
+          // multi-second delay; it is better to drop a frame than fall behind.
           workletNode.port.onmessage = (e) => {
             if (e.data.type !== 'chunk' || !activeRef.current) return;
             if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+            const inFlight = Object.keys(sendTimestampsRef.current).length;
+            if (inFlight >= OVC_MAX_IN_FLIGHT) return; // drop — keeps sent ≈ received
             const seq = ovcSendSeqRef.current++;
             sendTimestampsRef.current[seq] = performance.now();
             voiceMetricsRef.current.framesSent++;
@@ -417,6 +437,11 @@ export function useVoiceStream(sessionId) {
 
         // Voice metrics — sample every 1s for live UI, report to backend every 5s
         metricsTimerRef.current = setInterval(() => {
+          // Clean up stale in-flight timestamps (frames lost in transit) so backpressure never stalls
+          const staleCutoff = performance.now() - 3000;
+          Object.keys(sendTimestampsRef.current).forEach((k) => {
+            if (sendTimestampsRef.current[k] < staleCutoff) delete sendTimestampsRef.current[k];
+          });
           const m = voiceMetricsRef.current;
           const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
           const processingMs = Math.round(avg(m.processingSamples) * 10) / 10;
