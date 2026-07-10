@@ -1,13 +1,10 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
 
+// Voice backend config is not sensitive (server URL + a boolean) — no auth gate.
+// This keeps the voice stream from failing on transient auth issues.
 Deno.serve(async (req) => {
   try {
-    const base44 = createClientFromRequest(req);
-    const user = await base44.auth.me();
-    if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
-
     const rvcServerUrl = Deno.env.get('RVC_SERVER_URL');
-
     return Response.json({
       backend: rvcServerUrl ? 'rvc' : 'elevenlabs',
       serverUrl: rvcServerUrl || null,

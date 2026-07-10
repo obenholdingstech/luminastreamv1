@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Mic, Loader2, Check, ChevronDown, Cpu } from 'lucide-react';
+import { Mic, Loader2, Check, ChevronDown, Cpu, Search, Server } from 'lucide-react';
 
 export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceState, voiceError, disabled, refreshTrigger }) {
   const [voices, setVoices] = useState([]);
@@ -8,37 +8,50 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const dropdownRef = useRef(null);
+  const searchInputRef = useRef(null);
 
-  // Determine which voice backend is active
   useEffect(() => {
-    base44.functions
-      .invoke('getVoiceConfig', {})
-      .then((res) => setBackend(res.data?.backend || 'elevenlabs'))
-      .catch(() => setBackend('elevenlabs'));
-  }, []);
-
-  // Load voices whenever backend is known or refresh is triggered
-  useEffect(() => {
-    if (!backend) return;
     loadVoices();
-  }, [backend, refreshTrigger]);
+  }, [refreshTrigger]);
 
   useEffect(() => {
     const handleClick = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
         setIsOpen(false);
+        setSearch('');
       }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
+  useEffect(() => {
+    if (isOpen) {
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  }, [isOpen]);
+
   const loadVoices = async () => {
     setLoading(true);
+    setLoadError(null);
+    // Try the RVC GPU server first — if it has models, prefer it
     try {
-      const fn = backend === 'rvc' ? 'listRvcModels' : 'listVoices';
-      const res = await base44.functions.invoke(fn, {});
+      const rvcRes = await base44.functions.invoke('listRvcModels', {});
+      if (rvcRes.data?.voices?.length > 0) {
+        setBackend('rvc');
+        setVoices(rvcRes.data.voices);
+        setLoading(false);
+        return;
+      }
+    } catch (_e) {
+      // RVC server unavailable or not configured — fall through to ElevenLabs
+    }
+    // Fallback: ElevenLabs library + user-cloned voices
+    try {
+      const res = await base44.functions.invoke('listVoices', {});
+      setBackend('elevenlabs');
       setVoices(res.data?.voices || []);
     } catch (_err) {
       setLoadError('Failed to load voices');
@@ -46,16 +59,30 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
     setLoading(false);
   };
 
-  const selectedVoice = voices.find((v) => v.voiceId === selectedVoiceId);
   const isRvc = backend === 'rvc';
+  const selectedVoice = voices.find((v) => v.voiceId === selectedVoiceId);
+  const filtered = search.trim()
+    ? voices.filter((v) => v.name.toLowerCase().includes(search.toLowerCase()))
+    : voices;
 
   const handleSelect = (voice) => {
     onSelectVoice(voice.voiceId);
     setIsOpen(false);
+    setSearch('');
   };
 
   return (
     <div className="space-y-2">
+      {backend && (
+        <div className="flex items-center gap-1.5 text-[9px] tracking-widest uppercase text-[#64748B]">
+          <Server size={9} className={isRvc ? 'text-[#10B981]' : 'text-[#6366F1]'} />
+          <span className={isRvc ? 'text-[#10B981]' : 'text-[#6366F1]'}>
+            {isRvc ? 'RVC GPU Server' : 'ElevenLabs STS'}
+          </span>
+          <span className="text-[#4A5568]">· {voices.length} {isRvc ? 'models' : 'voices'}</span>
+        </div>
+      )}
+
       <div className="relative" ref={dropdownRef}>
         <button
           onClick={() => !disabled && !loading && setIsOpen(!isOpen)}
@@ -93,47 +120,66 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
         </button>
 
         {isOpen && !loading && (
-          <div className="absolute z-50 w-full mt-1 bg-[#13131F] border border-[#2A2A3E] rounded-md max-h-56 overflow-y-auto custom-scrollbar shadow-xl">
-            {voices.length === 0 ? (
-              <p className="px-3 py-3 text-xs text-[#64748B]">No voices available</p>
-            ) : (
-              voices.map((voice) => (
-                <button
-                  key={voice.voiceId}
-                  onClick={() => handleSelect(voice)}
-                  className={`w-full text-left px-3 py-2.5 text-xs hover:bg-[#1A1A2E] transition flex items-center justify-between ${
-                    selectedVoiceId === voice.voiceId ? 'bg-[#6366F1]/10' : ''
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    {isRvc ? <Cpu size={12} className="text-[#64748B] flex-shrink-0" /> : <Mic size={12} className="text-[#64748B] flex-shrink-0" />}
-                    <div className="min-w-0">
-                      <p className="text-white truncate">{voice.name}</p>
-                      {isRvc ? (
-                        <div className="flex items-center gap-2">
-                          {voice.active && (
-                            <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">● Active</span>
-                          )}
-                          {!voice.hasIndex && (
-                            <span className="text-[9px] text-[#F59E0B] uppercase tracking-wider">no index</span>
-                          )}
-                          {voice.sampleRate && (
-                            <span className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.sampleRate}Hz</span>
-                          )}
-                        </div>
-                      ) : voice.category === 'cloned' ? (
-                        <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">★ Cloned</span>
-                      ) : voice.category ? (
-                        <p className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.category}</p>
-                      ) : null}
+          <div className="absolute z-50 w-full mt-1 bg-[#13131F] border border-[#2A2A3E] rounded-md shadow-xl">
+            {/* Search filter */}
+            <div className="p-2 border-b border-[#2A2A3E] sticky top-0 bg-[#13131F]">
+              <div className="relative">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#64748B]" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search voices…"
+                  className="w-full bg-[#0F0F1A] border border-[#2A2A3E] rounded pl-8 pr-2 py-1.5 text-xs text-white placeholder:text-[#4A5568] focus:outline-none focus:border-[#6366F1] transition"
+                />
+              </div>
+            </div>
+
+            <div className="max-h-48 overflow-y-auto custom-scrollbar">
+              {filtered.length === 0 ? (
+                <p className="px-3 py-3 text-xs text-[#64748B]">
+                  {voices.length === 0 ? 'No voices available' : 'No matches'}
+                </p>
+              ) : (
+                filtered.map((voice) => (
+                  <button
+                    key={voice.voiceId}
+                    onClick={() => handleSelect(voice)}
+                    className={`w-full text-left px-3 py-2.5 text-xs hover:bg-[#1A1A2E] transition flex items-center justify-between ${
+                      selectedVoiceId === voice.voiceId ? 'bg-[#6366F1]/10' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isRvc ? <Cpu size={12} className="text-[#64748B] flex-shrink-0" /> : <Mic size={12} className="text-[#64748B] flex-shrink-0" />}
+                      <div className="min-w-0">
+                        <p className="text-white truncate">{voice.name}</p>
+                        {isRvc ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {voice.active && (
+                              <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">● Active</span>
+                            )}
+                            {!voice.hasIndex && (
+                              <span className="text-[9px] text-[#F59E0B] uppercase tracking-wider">no index</span>
+                            )}
+                            {voice.sampleRate && (
+                              <span className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.sampleRate}Hz</span>
+                            )}
+                          </div>
+                        ) : voice.category === 'cloned' ? (
+                          <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">★ Cloned</span>
+                        ) : voice.category ? (
+                          <p className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.category}</p>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                  {selectedVoiceId === voice.voiceId && (
-                    <Check size={12} className="text-[#6366F1] flex-shrink-0" />
-                  )}
-                </button>
-              ))
-            )}
+                    {selectedVoiceId === voice.voiceId && (
+                      <Check size={12} className="text-[#6366F1] flex-shrink-0" />
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
           </div>
         )}
       </div>

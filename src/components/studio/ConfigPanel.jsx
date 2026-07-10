@@ -144,7 +144,7 @@ export default function ConfigPanel({
           <p className="text-[10px] text-[#4A5568] mt-2 leading-relaxed">
             {voiceMode === 'direct'
               ? 'Your natural microphone voice goes straight to the output with no conversion.'
-              : 'Select a voice. Your speech is converted in real-time using ElevenLabs STS.'}
+              : 'Select a voice model. Your speech is converted in real-time on the voice server.'}
           </p>
         </div>
 
