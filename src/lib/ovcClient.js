@@ -84,8 +84,20 @@ export function connectOvc(url, { onAudio, onStatus, onOpen, onClose, onError },
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    // Send initial config — tells the server our sample rate and chunk size
-    ws.send(JSON.stringify({ sample_rate: sampleRate, chunk_size: chunkSize }));
+    // Send initial config as the FIRST message, before any audio frames.
+    // RVC quality settings (rmvpe pitch detection + index + protect) materially improve clarity.
+    const config = {
+      sample_rate: sampleRate,
+      chunk_size: chunkSize,
+      f0_method: 'rmvpe',
+      index_rate: 0.75,
+      protect: 0.33,
+      rms_mix_rate: 0.25,
+      filter_radius: 3,
+    };
+    const configStr = JSON.stringify(config);
+    ws.send(configStr);
+    console.log('[OVC] config sent on open:', configStr);
     onOpen?.();
   };
 
