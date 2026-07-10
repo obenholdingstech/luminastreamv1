@@ -36,6 +36,22 @@ export function parseOvcFrame(arrayBuffer) {
 }
 
 /**
+ * Convert a base HTTP(S) server URL into the OVC WebSocket audio endpoint.
+ * e.g. 'https://host.proxy.runpod.net' → 'wss://host.proxy.runpod.net/ws/audio'
+ * @param {string} baseUrl
+ * @returns {string}
+ */
+export function buildOvcWsUrl(baseUrl) {
+  if (!baseUrl) return '';
+  let url = baseUrl.trim().replace(/\/+$/, '');
+  url = url.replace(/^https:\/\//i, 'wss://').replace(/^http:\/\//i, 'ws://');
+  if (!/^wss?:\/\//i.test(url)) url = 'wss://' + url;
+  // Idempotent: if the endpoint path is already present, don't append it again
+  if (/\/ws\/audio$/i.test(url)) return url;
+  return url + '/ws/audio';
+}
+
+/**
  * Connect to an OpenVoiceChanger WebSocket server.
  * @param {string} url — e.g. 'wss://server/ws/audio'
  * @param {Object} handlers

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { voiceCaptureProcessorCode } from '@/worklets/voiceCaptureProcessorCode';
-import { createOvcFrame, connectOvc } from '@/lib/ovcClient';
+import { createOvcFrame, connectOvc, buildOvcWsUrl } from '@/lib/ovcClient';
 
 const TARGET_RATE = 16000;
 const CHUNK_SAMPLES = 1600; // 100ms at 16kHz — ElevenLabs minimum, lowest possible input latency
@@ -341,7 +341,7 @@ export function useVoiceStream() {
 
           await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error('RVC server connection timeout.')), 10000);
-            const ws = connectOvc(rvcServerUrlRef.current, {
+            const ws = connectOvc(buildOvcWsUrl(rvcServerUrlRef.current), {
               onOpen: () => { clearTimeout(timeout); resolve(); },
               onAudio: (samples) => {
                 if (!activeRef.current || !ctxRef.current) return;
