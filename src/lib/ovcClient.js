@@ -52,6 +52,21 @@ export function buildOvcWsUrl(baseUrl) {
 }
 
 /**
+ * Convert a raw RVC server URL (http/https/ws/wss, with or without /ws/audio) into the base HTTP URL.
+ * e.g. 'wss://host.proxy.runpod.net/ws/audio' → 'https://host.proxy.runpod.net'
+ * @param {string} baseUrl
+ * @returns {string}
+ */
+export function buildOvcHttpUrl(baseUrl) {
+  if (!baseUrl) return '';
+  let url = baseUrl.trim().replace(/\/+$/, '');
+  url = url.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  url = url.replace(/\/ws\/audio$/i, '');
+  return url;
+}
+
+/**
  * Connect to an OpenVoiceChanger WebSocket server.
  * @param {string} url — e.g. 'wss://server/ws/audio'
  * @param {Object} handlers
@@ -85,8 +100,8 @@ export function connectOvc(url, { onAudio, onStatus, onOpen, onClose, onError },
       }
     } else {
       // Binary audio frame
-      const { samples, processingTime } = parseOvcFrame(event.data);
-      onAudio?.(samples, processingTime);
+      const { seqNum, samples, processingTime } = parseOvcFrame(event.data);
+      onAudio?.(samples, processingTime, seqNum);
     }
   };
 

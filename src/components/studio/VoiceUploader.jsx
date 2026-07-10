@@ -1,17 +1,28 @@
 import { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Mic, Loader2, Check, ChevronDown } from 'lucide-react';
+import { Mic, Loader2, Check, ChevronDown, Cpu } from 'lucide-react';
 
 export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceState, voiceError, disabled, refreshTrigger }) {
   const [voices, setVoices] = useState([]);
+  const [backend, setBackend] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
+  // Determine which voice backend is active
   useEffect(() => {
+    base44.functions
+      .invoke('getVoiceConfig', {})
+      .then((res) => setBackend(res.data?.backend || 'elevenlabs'))
+      .catch(() => setBackend('elevenlabs'));
+  }, []);
+
+  // Load voices whenever backend is known or refresh is triggered
+  useEffect(() => {
+    if (!backend) return;
     loadVoices();
-  }, [refreshTrigger]);
+  }, [backend, refreshTrigger]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -24,8 +35,10 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
   }, []);
 
   const loadVoices = async () => {
+    setLoading(true);
     try {
-      const res = await base44.functions.invoke('listVoices', {});
+      const fn = backend === 'rvc' ? 'listRvcModels' : 'listVoices';
+      const res = await base44.functions.invoke(fn, {});
       setVoices(res.data?.voices || []);
     } catch (_err) {
       setLoadError('Failed to load voices');
@@ -34,6 +47,7 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
   };
 
   const selectedVoice = voices.find((v) => v.voiceId === selectedVoiceId);
+  const isRvc = backend === 'rvc';
 
   const handleSelect = (voice) => {
     onSelectVoice(voice.voiceId);
@@ -60,13 +74,13 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
               </>
             ) : selectedVoice ? (
               <>
-                <Mic size={14} className="text-[#6366F1] flex-shrink-0" />
+                {isRvc ? <Cpu size={14} className="text-[#6366F1] flex-shrink-0" /> : <Mic size={14} className="text-[#6366F1] flex-shrink-0" />}
                 <span className="truncate">{selectedVoice.name}</span>
               </>
             ) : (
               <>
-                <Mic size={14} className="flex-shrink-0" />
-                Select a voice
+                {isRvc ? <Cpu size={14} className="flex-shrink-0" /> : <Mic size={14} className="flex-shrink-0" />}
+                {isRvc ? 'Select a voice model' : 'Select a voice'}
               </>
             )}
           </span>
@@ -92,10 +106,22 @@ export default function VoiceUploader({ selectedVoiceId, onSelectVoice, voiceSta
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <Mic size={12} className="text-[#64748B] flex-shrink-0" />
+                    {isRvc ? <Cpu size={12} className="text-[#64748B] flex-shrink-0" /> : <Mic size={12} className="text-[#64748B] flex-shrink-0" />}
                     <div className="min-w-0">
                       <p className="text-white truncate">{voice.name}</p>
-                      {voice.category === 'cloned' ? (
+                      {isRvc ? (
+                        <div className="flex items-center gap-2">
+                          {voice.active && (
+                            <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">● Active</span>
+                          )}
+                          {!voice.hasIndex && (
+                            <span className="text-[9px] text-[#F59E0B] uppercase tracking-wider">no index</span>
+                          )}
+                          {voice.sampleRate && (
+                            <span className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.sampleRate}Hz</span>
+                          )}
+                        </div>
+                      ) : voice.category === 'cloned' ? (
                         <span className="text-[9px] text-[#10B981] uppercase tracking-wider font-medium">★ Cloned</span>
                       ) : voice.category ? (
                         <p className="text-[9px] text-[#64748B] uppercase tracking-wider">{voice.category}</p>

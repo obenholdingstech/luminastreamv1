@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { voiceCaptureProcessorCode } from '@/worklets/voiceCaptureProcessorCode';
-import { createOvcFrame, connectOvc, buildOvcWsUrl } from '@/lib/ovcClient';
+import { createOvcFrame, connectOvc, buildOvcWsUrl, buildOvcHttpUrl } from '@/lib/ovcClient';
 
 const TARGET_RATE = 16000;
 const CHUNK_SAMPLES = 1600; // 100ms at 16kHz — ElevenLabs minimum, lowest possible input latency
@@ -34,9 +34,10 @@ function float32ToAudioBuffer(ctx, samples) {
 }
 
 // ── Hook ────────────────────────────────────────────────────────
-export function useVoiceStream() {
+export function useVoiceStream(sessionId) {
   const [voiceState, setVoiceState] = useState('idle');
   const [voiceError, setVoiceError] = useState(null);
+  const [voiceMetrics, setVoiceMetrics] = useState(null);
 
   const ctxRef = useRef(null);
   const sourceRef = useRef(null);
@@ -70,6 +71,14 @@ export function useVoiceStream() {
   const streamQueuesRef = useRef({});       // { streamSeq: { buffers: [], complete: false } }
   const nextStreamToPlayRef = useRef(0);     // Next stream sequence to play
   const currentStreamSeqRef = useRef(0);     // Sequence counter for sendChunk calls
+
+  // Voice metrics — server processing time, round-trip latency, frame counts
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  const sendTimestampsRef = useRef({});       // { sendSeq: performance.now() }
+  const voiceMetricsRef = useRef({ framesSent: 0, framesReceived: 0, processingSamples: [], rttSamples: [] });
+  const metricsTimerRef = useRef(null);
+  const metricsReportTickRef = useRef(0);
 
   const getAudioStream = useCallback(() => {
     return recordingDestRef.current?.stream || null;
@@ -109,19 +118,15 @@ export function useVoiceStream() {
         src.connect(gain);
         src.connect(recDest);
         const now = ctx.currentTime;
-        // First chunk: 60ms jitter buffer. Late chunks: 15ms re-buffer.
-        // AudioWorklet + direct connection make the pipeline reliable enough for tight buffers.
         if (playTimeRef.current < now) {
           playTimeRef.current = now + (playTimeRef.current === 0 ? 0.06 : 0.015);
         }
         src.start(playTimeRef.current);
         playTimeRef.current += audioBuffer.duration;
       } else if (stream.complete) {
-        // Stream finished — advance to next stream
         delete streamQueuesRef.current[nextStreamToPlayRef.current];
         nextStreamToPlayRef.current++;
       } else {
-        // Stream still in flight — wait for more buffers
         break;
       }
     }
@@ -131,7 +136,6 @@ export function useVoiceStream() {
     const streamSeq = currentStreamSeqRef.current++;
     streamQueuesRef.current[streamSeq] = { buffers: [], complete: false };
 
-    // Safe accessor — queue may be wiped by stopVoiceStream while this chunk is in flight
     const markComplete = () => {
       const s = streamQueuesRef.current[streamSeq];
       if (s) s.complete = true;
@@ -148,7 +152,6 @@ export function useVoiceStream() {
         return;
       }
 
-      // Build multipart form with raw PCM — sent DIRECTLY to ElevenLabs, NO intermediary
       const audioBlob = new Blob([pcm16], { type: 'application/octet-stream' });
       const formData = new FormData();
       formData.append('audio', audioBlob, 'input.pcm');
@@ -156,7 +159,6 @@ export function useVoiceStream() {
       formData.append('file_format', 'pcm_s16le_16');
       formData.append('remove_background_noise', 'false');
 
-      // DIRECT call to ElevenLabs STS streaming endpoint — bypasses Base44 entirely
       const response = await fetch(
         `https://api.us.elevenlabs.io/v1/speech-to-speech/${voiceIdRef.current}/stream?output_format=pcm_44100&optimize_streaming_latency=4`,
         {
@@ -177,7 +179,6 @@ export function useVoiceStream() {
         return;
       }
 
-      // Success — read streaming PCM and play audio as it arrives
       consecutiveFailuresRef.current = 0;
       setVoiceError(null);
       const ctx = ctxRef.current;
@@ -193,13 +194,11 @@ export function useVoiceStream() {
         const { done, value } = await reader.read();
         if (done || !activeRef.current) break;
 
-        // Accumulate incoming PCM bytes
         const combined = new Uint8Array(pendingBytes.length + value.length);
         combined.set(pendingBytes, 0);
         combined.set(value, pendingBytes.length);
         pendingBytes = combined;
 
-        // Extract 50ms playback chunks — enables immediate playback as bytes arrive
         while (pendingBytes.length >= PCM_PLAYBACK_CHUNK_BYTES) {
           const chunkBytes = pendingBytes.slice(0, PCM_PLAYBACK_CHUNK_BYTES);
           pendingBytes = pendingBytes.slice(PCM_PLAYBACK_CHUNK_BYTES);
@@ -210,7 +209,6 @@ export function useVoiceStream() {
         processPlaybackQueue();
       }
 
-      // Process any remaining bytes (< 50ms)
       if (pendingBytes.length >= 2 && activeRef.current) {
         const evenLength = pendingBytes.length - (pendingBytes.length % 2);
         if (evenLength > 0) {
@@ -239,7 +237,7 @@ export function useVoiceStream() {
     mutedRef.current = muted || false;
     setVoiceError(null);
 
-    // Reset pipeline state
+    // Reset pipeline + metrics state
     streamQueuesRef.current = {};
     nextStreamToPlayRef.current = 0;
     currentStreamSeqRef.current = 0;
@@ -250,9 +248,12 @@ export function useVoiceStream() {
     accRef.current = 0;
     inFlightRef.current = 0;
     consecutiveFailuresRef.current = 0;
+    sendTimestampsRef.current = {};
+    voiceMetricsRef.current = { framesSent: 0, framesReceived: 0, processingSamples: [], rttSamples: [] };
+    metricsReportTickRef.current = 0;
+    setVoiceMetrics(null);
 
     try {
-      // For converted voice: determine backend (RVC server vs ElevenLabs)
       if (mode === 'converted') {
         await ensureVoiceConfig();
         if (voiceBackendRef.current === 'elevenlabs') {
@@ -310,8 +311,6 @@ export function useVoiceStream() {
         setVoiceState('active');
       } else {
         // ── Converted Voice ──
-        // AudioWorklet captures + resamples on a DEDICATED audio thread (zero main-thread contention
-        // with video rendering). Backend is auto-detected: RVC WebSocket or ElevenLabs HTTP.
         const isRvc = voiceBackendRef.current === 'rvc';
         const captureRate = isRvc ? OVC_RATE : TARGET_RATE;
         const captureChunk = isRvc ? OVC_CHUNK : CHUNK_SAMPLES;
@@ -335,7 +334,13 @@ export function useVoiceStream() {
         silencerRef.current = silencer;
 
         if (isRvc) {
-          // ── RVC path: WebSocket to OpenVoiceChanger GPU server ──
+          // ── RVC path: activate model, then WebSocket to OpenVoiceChanger GPU server ──
+          // Activate the selected model server-side (no-op if already active)
+          try {
+            const httpBase = buildOvcHttpUrl(rvcServerUrlRef.current);
+            await fetch(`${httpBase}/api/models/${encodeURIComponent(voiceIdRef.current)}/activate`, { method: 'POST' });
+          } catch (_e) { /* non-fatal — model may already be active */ }
+
           ovcSendSeqRef.current = 0;
           ovcRecvSeqRef.current = 0;
 
@@ -343,8 +348,24 @@ export function useVoiceStream() {
             const timeout = setTimeout(() => reject(new Error('RVC server connection timeout.')), 10000);
             const ws = connectOvc(buildOvcWsUrl(rvcServerUrlRef.current), {
               onOpen: () => { clearTimeout(timeout); resolve(); },
-              onAudio: (samples) => {
+              onAudio: (samples, processingTime, seqNum) => {
                 if (!activeRef.current || !ctxRef.current) return;
+                // Round-trip latency: match returned seq to its send timestamp
+                const sendTs = sendTimestampsRef.current[seqNum];
+                if (sendTs) {
+                  const rtt = performance.now() - sendTs;
+                  voiceMetricsRef.current.rttSamples.push(rtt);
+                  if (voiceMetricsRef.current.rttSamples.length > 30) voiceMetricsRef.current.rttSamples.shift();
+                  delete sendTimestampsRef.current[seqNum];
+                }
+                // Server GPU processing time (reserved field = hundredths of a millisecond)
+                if (processingTime) {
+                  const ms = processingTime / 100;
+                  voiceMetricsRef.current.processingSamples.push(ms);
+                  if (voiceMetricsRef.current.processingSamples.length > 30) voiceMetricsRef.current.processingSamples.shift();
+                }
+                voiceMetricsRef.current.framesReceived++;
+
                 const audioBuffer = float32ToAudioBuffer(ctxRef.current, samples);
                 const seq = ovcRecvSeqRef.current++;
                 streamQueuesRef.current[seq] = { buffers: [audioBuffer], complete: true };
@@ -367,15 +388,18 @@ export function useVoiceStream() {
           workletNode.port.onmessage = (e) => {
             if (e.data.type !== 'chunk' || !activeRef.current) return;
             if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+            const seq = ovcSendSeqRef.current++;
+            sendTimestampsRef.current[seq] = performance.now();
+            voiceMetricsRef.current.framesSent++;
             const samples = new Float32Array(e.data.samples);
-            const frame = createOvcFrame(ovcSendSeqRef.current++, samples);
+            const frame = createOvcFrame(seq, samples);
             wsRef.current.send(frame);
           };
         } else {
           // ── ElevenLabs path: direct HTTP streaming ──
           workletNode.port.onmessage = (e) => {
             if (e.data.type !== 'chunk' || !activeRef.current || !voiceIdRef.current) return;
-            if (inFlightRef.current >= MAX_IN_FLIGHT) return; // pipeline full — drop this chunk
+            if (inFlightRef.current >= MAX_IN_FLIGHT) return;
             const pcm16 = new Int16Array(e.data.pcm16);
             inFlightRef.current++;
             sendChunk(pcm16).finally(() => { inFlightRef.current--; });
@@ -390,6 +414,35 @@ export function useVoiceStream() {
         queueTimerRef.current = setInterval(() => {
           processPlaybackQueue();
         }, 20);
+
+        // Voice metrics — sample every 1s for live UI, report to backend every 5s
+        metricsTimerRef.current = setInterval(() => {
+          const m = voiceMetricsRef.current;
+          const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+          const processingMs = Math.round(avg(m.processingSamples) * 10) / 10;
+          const rttMs = Math.round(avg(m.rttSamples));
+          setVoiceMetrics({
+            backend: voiceBackendRef.current,
+            model: voiceIdRef.current,
+            processingMs,
+            rttMs,
+            framesSent: m.framesSent,
+            framesReceived: m.framesReceived,
+          });
+          metricsReportTickRef.current++;
+          if (metricsReportTickRef.current % 5 === 0 && sessionIdRef.current) {
+            base44.functions.invoke('reportMetrics', {
+              sessionId: sessionIdRef.current,
+              voiceBackend: voiceBackendRef.current,
+              voiceModel: voiceIdRef.current,
+              voiceProcessingMs: processingMs,
+              voiceRttMs: rttMs,
+              voiceFramesSent: m.framesSent,
+              voiceFramesReceived: m.framesReceived,
+              voiceActive: true,
+            }).catch(() => {});
+          }
+        }, 1000);
 
         setVoiceState('active');
       }
@@ -413,6 +466,20 @@ export function useVoiceStream() {
     playTimeRef.current = 0;
     inFlightRef.current = 0;
     consecutiveFailuresRef.current = 0;
+    sendTimestampsRef.current = {};
+
+    if (metricsTimerRef.current) {
+      clearInterval(metricsTimerRef.current);
+      metricsTimerRef.current = null;
+    }
+    // Final report — mark voice inactive
+    if (sessionIdRef.current) {
+      base44.functions.invoke('reportMetrics', {
+        sessionId: sessionIdRef.current,
+        voiceActive: false,
+      }).catch(() => {});
+    }
+    setVoiceMetrics(null);
 
     if (queueTimerRef.current) {
       clearInterval(queueTimerRef.current);
@@ -451,6 +518,7 @@ export function useVoiceStream() {
   return {
     voiceState,
     voiceError,
+    voiceMetrics,
     startVoiceStream,
     stopVoiceStream,
     setMuted,

@@ -21,13 +21,13 @@ export default function Studio() {
     recording.setVideoElement(videoRef.current);
   }, [recording]);
 
-  const { connectionState, errorMessage, connect, disconnect, updateState, reconnect } =
+  const { connectionState, errorMessage, connect, disconnect, updateState, reconnect, sessionId } =
     useMirrorStream(videoRef, handleRemoteStream);
 
   const [voiceMode, setVoiceMode] = useState('direct');
   const [selectedVoiceId, setSelectedVoiceId] = useState(null);
   const { voiceState, voiceError, startVoiceStream, stopVoiceStream, setMuted: setVoiceMuted, getAudioStream } =
-    useVoiceStream();
+    useVoiceStream(sessionId);
 
   // Track current panel state so keyboard shortcuts can use it
   const panelStateRef = useRef({ prompt: '', imageFile: null, enhance: true });

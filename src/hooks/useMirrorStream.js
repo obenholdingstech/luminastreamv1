@@ -290,5 +290,5 @@ export function useMirrorStream(videoRef, onRemoteStream) {
     };
   }, []);
 
-  return { connectionState, errorMessage, connect, disconnect, updateState, reconnect };
+  return { connectionState, errorMessage, connect, disconnect, updateState, reconnect, sessionId: sessionIdRef.current };
 }

@@ -67,6 +67,34 @@
       "type": "string",
       "format": "date-time",
       "description": "Timestamp of the last metrics report"
+    },
+    "voiceBackend": {
+      "type": "string",
+      "description": "Active voice conversion backend: 'rvc' or 'elevenlabs'"
+    },
+    "voiceModel": {
+      "type": "string",
+      "description": "Active voice model name (RVC .pth name or ElevenLabs voice id)"
+    },
+    "voiceProcessingMs": {
+      "type": "number",
+      "description": "Server-side GPU processing time per audio chunk (ms)"
+    },
+    "voiceRttMs": {
+      "type": "number",
+      "description": "Audio round-trip latency: send chunk \u2192 receive converted audio (ms)"
+    },
+    "voiceFramesSent": {
+      "type": "number",
+      "description": "Total audio frames sent to the voice server"
+    },
+    "voiceFramesReceived": {
+      "type": "number",
+      "description": "Total converted audio frames received from the voice server"
+    },
+    "voiceActive": {
+      "type": "boolean",
+      "description": "Whether voice conversion is currently active for this session"
     }
   },
   "required": [
