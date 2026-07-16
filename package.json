@@ -12,7 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@base44/sdk": "^0.8.37",
+    "@base44/sdk": "^0.8.39",
     "@base44/vite-plugin": "^1.0.30",
     "@decartai/sdk": "^0.1.13",
     "@hello-pangea/dnd": "^17.0.0",
