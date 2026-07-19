@@ -29,6 +29,16 @@ export function useLiveKitVoice(url, token) {
   const tokenRef = useRef(token);
   tokenRef.current = token;
 
+  // Shared UI reset for a session ending — used by the Disconnected handler
+  // (unexpected drops) and by disconnect() (user-initiated, where the handler
+  // is deliberately skipped because the ref was already released)
+  const resetSessionState = useCallback(() => {
+    setRoom(null);
+    setConnectionQuality(ConnectionQuality.Unknown);
+    setStats(EMPTY_STATS);
+    prevSampleRef.current = null;
+  }, []);
+
   const connect = useCallback(async () => {
     if (roomRef.current) return; // one active room at a time
     setError(null);
@@ -38,48 +48,79 @@ export function useLiveKitVoice(url, token) {
     const newRoom = new Room();
     roomRef.current = newRoom;
 
-    newRoom.on(RoomEvent.ConnectionStateChanged, (state) => setConnectionState(state));
+    // roomRef.current === newRoom is the "still the active session" check.
+    // disconnect() and unmount release the ref first, so a superseded room's
+    // late events and in-flight awaits must never mutate the current UI state.
+    newRoom.on(RoomEvent.ConnectionStateChanged, (state) => {
+      if (roomRef.current === newRoom) setConnectionState(state);
+    });
     newRoom.on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
-      if (participant.isLocal) setConnectionQuality(quality);
+      if (roomRef.current === newRoom && participant.isLocal) setConnectionQuality(quality);
     });
     newRoom.on(RoomEvent.Disconnected, () => {
+      // Unexpected end (network drop, server close) while still the active room.
+      // Also sets connectionState directly — don't rely on event ordering between
+      // Disconnected and ConnectionStateChanged once the ref is released.
+      if (roomRef.current !== newRoom) return;
       roomRef.current = null;
-      setRoom(null);
-      setConnectionQuality(ConnectionQuality.Unknown);
-      setStats(EMPTY_STATS);
-      prevSampleRef.current = null;
+      setConnectionState(ConnectionState.Disconnected);
+      resetSessionState();
     });
 
     try {
       await newRoom.connect(urlRef.current, tokenRef.current);
+      if (roomRef.current !== newRoom) {
+        // disconnect()/unmount won the race mid-connect — this room is orphaned
+        await newRoom.disconnect().catch(() => {});
+        return;
+      }
+
       // Publish the mic — rejects if permission is denied, which lands in catch below
       await newRoom.localParticipant.setMicrophoneEnabled(true);
+      if (roomRef.current !== newRoom) {
+        await newRoom.disconnect().catch(() => {});
+        return;
+      }
+
       setRoom(newRoom);
     } catch (err) {
-      setError(err?.message || 'Failed to connect to LiveKit.');
-      roomRef.current = null;
+      // Only surface the failure if this attempt is still the active one — a
+      // cancelled attempt (user disconnected mid-connect) is not an error
+      if (roomRef.current === newRoom) {
+        roomRef.current = null;
+        setError(err?.message || 'Failed to connect to LiveKit.');
+        setConnectionState(ConnectionState.Disconnected);
+      }
       await newRoom.disconnect().catch(() => {});
-      setConnectionState(ConnectionState.Disconnected);
     }
-  }, []);
+  }, [resetSessionState]);
 
   const disconnect = useCallback(async () => {
     const activeRoom = roomRef.current;
+    if (!activeRoom) return;
+    // Release the ref first — this is the cancellation signal that in-flight
+    // connect() awaits and the room's own event handlers check against
     roomRef.current = null;
-    if (activeRoom) {
-      await activeRoom.disconnect(); // stops the mic track and fires Disconnected → state cleanup
-    }
-  }, []);
+    await activeRoom.disconnect(); // stops the mic track
+    setConnectionState(ConnectionState.Disconnected);
+    resetSessionState();
+  }, [resetSessionState]);
 
   // Sample WebRTC stats every second while connected.
   // RTT / jitter / packetsLost come from remote-inbound-rtp — the SFU's RTCP receiver
   // reports about OUR outbound audio — so they appear a few seconds after connecting.
+  //
+  // Deliberately NOT using LocalAudioTrack.getSenderStats(): in livekit-client 2.20.1
+  // its audio implementation reads packetsLost/roundTripTime/jitter off the outbound-rtp
+  // entry, where those fields don't exist per the WebRTC spec (they live on
+  // remote-inbound-rtp), so it returns them as undefined — verified against
+  // dist/livekit-client.esm.mjs and confirmed live in headless Chrome.
   useEffect(() => {
     if (connectionState !== ConnectionState.Connected) return undefined;
 
     const timer = setInterval(async () => {
       const activeRoom = roomRef.current;
-      const micTrack = activeRoom?.localParticipant?.getTrackPublication(Track.Source.Microphone)?.track;
+      const micTrack = activeRoom?.localParticipant?.getTrackPublication(Track.Source.Microphone)?.audioTrack;
       const sender = micTrack?.sender;
       if (!sender) return;
 
@@ -133,13 +174,13 @@ export function useLiveKitVoice(url, token) {
     return () => clearInterval(timer);
   }, [connectionState]);
 
-  // Leave the room if the component unmounts mid-session
+  // Leave the room if the component unmounts mid-session. Releases the ref first
+  // so guarded handlers skip setState on the unmounted component.
   useEffect(() => {
     return () => {
-      if (roomRef.current) {
-        roomRef.current.disconnect().catch(() => {});
-        roomRef.current = null;
-      }
+      const activeRoom = roomRef.current;
+      roomRef.current = null;
+      if (activeRoom) activeRoom.disconnect().catch(() => {});
     };
   }, []);
 
