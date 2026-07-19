@@ -11,6 +11,7 @@ import Studio from './pages/Studio';
 import Admin from './pages/Admin';
 import TextToSpeech from './pages/TextToSpeech';
 import Roadmap from './pages/Roadmap';
+import LiveKitTest from './pages/LiveKitTest';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -43,6 +44,7 @@ const AuthenticatedApp = () => {
       <Route path="/text-to-speech" element={<TextToSpeech />} />
       <Route path="/admin" element={<Admin />} />
       <Route path="/roadmap" element={<Roadmap />} />
+      <Route path="/livekit-test" element={<LiveKitTest />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
