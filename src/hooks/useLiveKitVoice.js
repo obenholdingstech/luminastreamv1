@@ -18,8 +18,14 @@ export function useLiveKitVoice(url, token) {
   const [room, setRoom] = useState(null);
   const [stats, setStats] = useState(EMPTY_STATS);
   const [error, setError] = useState(null);
+  // Remote audio playback (the echo agent's returned track): [{ sid, identity }]
+  const [remoteAudio, setRemoteAudio] = useState([]);
+  // True when the browser's autoplay policy blocked playback — fix via enableAudio()
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   const roomRef = useRef(null);
+  // trackSid → { track, identity } for every remote audio track we attached
+  const remoteAudioRef = useRef(new Map());
   // Previous cumulative counters — bitrate and loss % are per-interval deltas
   const prevSampleRef = useRef(null);
 
@@ -29,15 +35,27 @@ export function useLiveKitVoice(url, token) {
   const tokenRef = useRef(token);
   tokenRef.current = token;
 
+  // Refs/DOM only — safe from unmount cleanup where setState must be avoided.
+  // track.detach() detaches ALL elements for the track and returns them.
+  const detachAllRemoteAudio = useCallback(() => {
+    remoteAudioRef.current.forEach(({ track }) => {
+      track.detach().forEach((el) => el.remove());
+    });
+    remoteAudioRef.current.clear();
+  }, []);
+
   // Shared UI reset for a session ending — used by the Disconnected handler
   // (unexpected drops) and by disconnect() (user-initiated, where the handler
   // is deliberately skipped because the ref was already released)
   const resetSessionState = useCallback(() => {
+    detachAllRemoteAudio();
+    setRemoteAudio([]);
+    setAudioBlocked(false);
     setRoom(null);
     setConnectionQuality(ConnectionQuality.Unknown);
     setStats(EMPTY_STATS);
     prevSampleRef.current = null;
-  }, []);
+  }, [detachAllRemoteAudio]);
 
   const connect = useCallback(async () => {
     if (roomRef.current) return; // one active room at a time
@@ -56,6 +74,30 @@ export function useLiveKitVoice(url, token) {
     });
     newRoom.on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
       if (roomRef.current === newRoom && participant.isLocal) setConnectionQuality(quality);
+    });
+    newRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      if (roomRef.current !== newRoom || track.kind !== Track.Kind.Audio) return;
+      // attach() creates an <audio> element and attempts autoplay; a blocked
+      // attempt surfaces via AudioPlaybackStatusChanged below
+      const element = track.attach();
+      document.body.appendChild(element);
+      remoteAudioRef.current.set(publication.trackSid, { track, identity: participant.identity });
+      setRemoteAudio(
+        Array.from(remoteAudioRef.current, ([sid, entry]) => ({ sid, identity: entry.identity })),
+      );
+    });
+    newRoom.on(RoomEvent.TrackUnsubscribed, (track, publication) => {
+      if (roomRef.current !== newRoom) return;
+      const entry = remoteAudioRef.current.get(publication.trackSid);
+      if (!entry) return;
+      entry.track.detach().forEach((el) => el.remove());
+      remoteAudioRef.current.delete(publication.trackSid);
+      setRemoteAudio(
+        Array.from(remoteAudioRef.current, ([sid, e]) => ({ sid, identity: e.identity })),
+      );
+    });
+    newRoom.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+      if (roomRef.current === newRoom) setAudioBlocked(!newRoom.canPlaybackAudio);
     });
     newRoom.on(RoomEvent.Disconnected, () => {
       // Unexpected end (network drop, server close) while still the active room.
@@ -91,9 +133,13 @@ export function useLiveKitVoice(url, token) {
         setError(err?.message || 'Failed to connect to LiveKit.');
         setConnectionState(ConnectionState.Disconnected);
       }
+      // A remote track can attach between connect() resolving and the mic
+      // publish failing — the guarded TrackUnsubscribed handler won't clean it
+      // up once the ref is released, so detach explicitly
+      detachAllRemoteAudio();
       await newRoom.disconnect().catch(() => {});
     }
-  }, [resetSessionState]);
+  }, [resetSessionState, detachAllRemoteAudio]);
 
   const disconnect = useCallback(async () => {
     const activeRoom = roomRef.current;
@@ -105,6 +151,19 @@ export function useLiveKitVoice(url, token) {
     setConnectionState(ConnectionState.Disconnected);
     resetSessionState();
   }, [resetSessionState]);
+
+  // Browsers may block autoplay until a user gesture — LiveKit surfaces that
+  // via AudioPlaybackStatusChanged; calling startAudio() from a click fixes it
+  const enableAudio = useCallback(async () => {
+    const activeRoom = roomRef.current;
+    if (!activeRoom) return;
+    try {
+      await activeRoom.startAudio();
+      setAudioBlocked(!activeRoom.canPlaybackAudio);
+    } catch (_e) {
+      // still blocked — the indicator stays on and the user can retry
+    }
+  }, []);
 
   // Sample WebRTC stats every second while connected.
   // RTT / jitter / packetsLost come from remote-inbound-rtp — the SFU's RTCP receiver
@@ -175,14 +234,16 @@ export function useLiveKitVoice(url, token) {
   }, [connectionState]);
 
   // Leave the room if the component unmounts mid-session. Releases the ref first
-  // so guarded handlers skip setState on the unmounted component.
+  // so guarded handlers skip setState on the unmounted component; audio elements
+  // are detached ref-only (no setState) so nothing lingers in the DOM.
   useEffect(() => {
     return () => {
+      detachAllRemoteAudio();
       const activeRoom = roomRef.current;
       roomRef.current = null;
       if (activeRoom) activeRoom.disconnect().catch(() => {});
     };
-  }, []);
+  }, [detachAllRemoteAudio]);
 
   return {
     connectionState,
@@ -190,7 +251,10 @@ export function useLiveKitVoice(url, token) {
     room,
     stats,
     error,
+    remoteAudio,
+    audioBlocked,
     connect,
     disconnect,
+    enableAudio,
   };
 }

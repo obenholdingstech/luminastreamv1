@@ -12,6 +12,8 @@ import {
   SignalHigh,
   SignalLow,
   SignalMedium,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -67,8 +69,18 @@ export default function LiveKitTest() {
   const [url, setUrl] = useState(() => localStorage.getItem(URL_STORAGE_KEY) || '');
   const [token, setToken] = useState('');
 
-  const { connectionState, connectionQuality, room, stats, error, connect, disconnect } =
-    useLiveKitVoice(url.trim(), token.trim());
+  const {
+    connectionState,
+    connectionQuality,
+    room,
+    stats,
+    error,
+    remoteAudio,
+    audioBlocked,
+    connect,
+    disconnect,
+    enableAudio,
+  } = useLiveKitVoice(url.trim(), token.trim());
 
   const status = STATUS[connectionState] || STATUS[ConnectionState.Disconnected];
   const quality = QUALITY[connectionQuality] || QUALITY[ConnectionQuality.Unknown];
@@ -106,6 +118,23 @@ export default function LiveKitTest() {
                 <Mic size={11} /> mic live
               </span>
             )}
+            {!isDisconnected &&
+              (audioBlocked ? (
+                <button
+                  onClick={enableAudio}
+                  className="flex items-center gap-1 text-[#F59E0B] border border-[#F59E0B]/30 rounded px-1.5 py-0.5 hover:bg-[#F59E0B]/10 transition-colors"
+                >
+                  <VolumeX size={11} /> remote audio blocked — enable
+                </button>
+              ) : remoteAudio.length > 0 ? (
+                <span className="flex items-center gap-1 text-[#10B981]">
+                  <Volume2 size={11} /> remote audio: playing ({remoteAudio[0].identity})
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[#64748B]">
+                  <VolumeX size={11} /> remote audio: none
+                </span>
+              ))}
           </span>
         </div>
 
