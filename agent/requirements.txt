@@ -1,3 +1,8 @@
 livekit==1.1.13
 livekit-api==1.2.0
 python-dotenv==1.2.1
+# Move 2b — RVC bridge
+websockets==15.0.1
+numpy==2.0.2
+scipy==1.13.1
+pytest==8.4.2

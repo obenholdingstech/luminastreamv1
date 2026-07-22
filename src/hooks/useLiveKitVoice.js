@@ -22,6 +22,10 @@ export function useLiveKitVoice(url, token) {
   const [remoteAudio, setRemoteAudio] = useState([]);
   // True when the browser's autoplay policy blocked playback — fix via enableAudio()
   const [audioBlocked, setAudioBlocked] = useState(false);
+  // Convert agent's CONFIRMED mode ('passthrough' | 'convert') — the agent is
+  // the source of truth; null until the first agent_mode message arrives
+  const [agentMode, setAgentMode] = useState(null);
+  const [agentModeReason, setAgentModeReason] = useState(null);
 
   const roomRef = useRef(null);
   // trackSid → { track, identity } for every remote audio track we attached
@@ -51,6 +55,8 @@ export function useLiveKitVoice(url, token) {
     detachAllRemoteAudio();
     setRemoteAudio([]);
     setAudioBlocked(false);
+    setAgentMode(null);
+    setAgentModeReason(null);
     setRoom(null);
     setConnectionQuality(ConnectionQuality.Unknown);
     setStats(EMPTY_STATS);
@@ -98,6 +104,20 @@ export function useLiveKitVoice(url, token) {
     });
     newRoom.on(RoomEvent.AudioPlaybackStatusChanged, () => {
       if (roomRef.current === newRoom) setAudioBlocked(!newRoom.canPlaybackAudio);
+    });
+    newRoom.on(RoomEvent.DataReceived, (payload) => {
+      if (roomRef.current !== newRoom) return;
+      // The convert agent publishes {"type":"agent_mode","mode":...,"reason"?}
+      // as JSON — its confirmations drive the UI, not the toggle button
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(payload));
+        if (msg?.type === 'agent_mode' && typeof msg.mode === 'string') {
+          setAgentMode(msg.mode);
+          setAgentModeReason(msg.reason ?? null);
+        }
+      } catch (_e) {
+        // non-JSON data from some other publisher — not ours
+      }
     });
     newRoom.on(RoomEvent.Disconnected, () => {
       // Unexpected end (network drop, server close) while still the active room.
@@ -151,6 +171,21 @@ export function useLiveKitVoice(url, token) {
     setConnectionState(ConnectionState.Disconnected);
     resetSessionState();
   }, [resetSessionState]);
+
+  // Ask the convert agent to switch modes. Fire-and-forget: the UI only
+  // changes when the agent confirms via agent_mode (it is the source of truth)
+  const requestAgentMode = useCallback(async (mode) => {
+    const activeRoom = roomRef.current;
+    if (!activeRoom) return;
+    try {
+      await activeRoom.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify({ type: 'set_mode', mode })),
+        { reliable: true },
+      );
+    } catch (_e) {
+      // transient publish failure — the user can click again
+    }
+  }, []);
 
   // Browsers may block autoplay until a user gesture — LiveKit surfaces that
   // via AudioPlaybackStatusChanged; calling startAudio() from a click fixes it
@@ -253,8 +288,11 @@ export function useLiveKitVoice(url, token) {
     error,
     remoteAudio,
     audioBlocked,
+    agentMode,
+    agentModeReason,
     connect,
     disconnect,
     enableAudio,
+    requestAgentMode,
   };
 }
