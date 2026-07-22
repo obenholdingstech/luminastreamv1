@@ -4,7 +4,163 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 22 July 2026, ~04:35 — Move 2b: RVC convert agent built & verified live
+## 22 July 2026, ~14:05 — Phase 1: capture mode, analysis tooling, smoke gate & DR runbook
+
+### Task (verbatim)
+
+> Phase 1 build — three deliverables on one branch. This is diagnostic
+> infrastructure; nothing touches the real-time behavior of the pipeline
+> unless capture is explicitly enabled.
+>
+> ── 1. CAPTURE MODE on convert_agent.py ──
+> Add --capture-dir <path>. When set, each session writes a timestamped
+> subdirectory containing:
+>   - input_48k.wav  — mono 48k frames exactly as received from LiveKit
+>     (post-AudioStream), BOTH modes. This is "what the pipeline received."
+>   - output_48k.wav — frames as published back (passthrough: the passthrough
+>     audio; convert: the stitched converted audio).
+>   - meta.jsonl — one JSON line per event: session header (mode, RVC_WS_URL,
+>     HOP/CTX/XFADE/SOLA, priming depth); per-window {seq, t_sent, t_recv,
+>     turnaround_ms}; drops (with seq); underruns (with sample count);
+>     stale discards; mode changes; jitter-buffer depth sampled every hop.
+> CRITICAL: zero synchronous disk I/O in the frame loop — buffer in memory,
+> flush via background task (aiofiles is already pinned). Capture must be
+> provably inert when the flag is absent.
+>
+> ── 2. ANALYSIS SCRIPT agent/analyze_capture.py ──
+> Takes a capture directory, produces:
+>   - aligned waveform plot (input vs output, latency offset computed via
+>     cross-correlation and reported in ms)
+>   - spectrogram pair (this is where "chunky gibberish" becomes visible)
+>   - RMS envelope overlay with utterance-tail comparison: flag any utterance
+>     whose input tail energy has no corresponding output tail (the
+>     word-clipping detector)
+>   - dropout map: output silence regions annotated with meta.jsonl events
+>     (drop/underrun markers on the timeline — starvation vs garbling)
+>   - text report summarizing all of the above
+> matplotlib as a new dep — add to requirements.txt (runs on the Mac; fine).
+> Include a docstring documenting the test protocol: record "the quick brown
+> fox jumps over the lazy dog" plus 3s of keyboard typing, in both modes.
+>
+> ── 3. HOUSEKEEPING ──
+>   - Create agent/lk_smoke.py (portable: resolves secrets.env at repo root
+>     relative to its own path; prints CONNECTED OK on success) and commit it.
+>   - Create runbook.md at repo root: full disaster-recovery recipe. Sources:
+>     devlog/SESSIONS.md + notes.md + these session facts that MUST appear:
+>     POD: ubuntu2204/py3.10/cu118 community template (rehabc image) — NEVER
+>     ubuntu2404 (RunPod runtime futex-crashes LiveKit Rust FFI; never run the
+>     agent on RunPod at all). Deploy from volume koehrg7i63 (EU-RO-1),
+>     /workspace mount. ALL ports at deploy time, never edit-after (edit →
+>     restart → host slot lost to scheduler): HTTP 8888, TCP 22 + 8000.
+>     TCP-direct is mandatory for agent↔RVC (Cloudflare proxy blocks
+>     machine-to-machine WS upgrades); NAT external port CHANGES every
+>     deploy — RVC_WS_URL must be refreshed. First commands: nvidia-smi;
+>     apt install -y tmux (not on image). RVC venv rebuild recipe (glibc-
+>     bound: pyworld compiles against image libc): uv venv --python 3.10 →
+>     requirements → --no-deps git RVC → setuptools<80 → uv pip swap
+>     onnxruntime→onnxruntime-gpu (.venv/bin/pip doesn't exist in uv venvs).
+>     torch pin: requirements resolve cu13 > driver 12.8 → uv pip install
+>     --reinstall "torch==2.8.*" "torchaudio==2.8.*" --index-url
+>     https://download.pytorch.org/whl/cu128; verify torch.cuda.is_available().
+>     Stateless launch (both RVC_STREAM_CONTEXT_SECONDS=0 spellings, tmux);
+>     activation response MUST say "device":"cuda:0". Stop-not-Terminate
+>     discipline. VPS: any real KVM VM, EU; setup = python3-venv git tmux,
+>     non-root user, hand-typed secrets.env, agent venv, ufw+fail2ban;
+>     GATE = lk_smoke.py CONNECTED OK before anything else. Agent launch in
+>     tmux with current RVC_WS_URL.
+>
+> ── VERIFY ──
+> Full capture→analyze cycle against the mock on this Mac: capture a spoken
+> sentence + keyboard noise in both modes, run analyze_capture.py, confirm
+> plots render, latency offset is sane (~375ms convert / ~0 passthrough),
+> and meta events align with the timeline. Unit-test the tail-clip detector
+> on synthetic data. Lint/build/typecheck no new errors. Branch → PR →
+> CodeRabbit per convention. Log session per CLAUDE.md.
+
+### What was built
+
+- **`agent/capture.py`** (new) — `SessionCapture`: one instance per processing
+  session, writing `<capture-dir>/<timestamp>/{input_48k.wav, output_48k.wav,
+  meta.jsonl}`. Hot-path methods (`add_input`/`add_output`/`event`/`window_*`)
+  are pure in-memory appends; ALL disk I/O (even mkdir) lives in one
+  background task using aiofiles, flushing every 0.5 s. WAVs are written with
+  a placeholder header patched with real sizes on close (abort-safe). Every
+  meta line carries `t` (monotonic since session start) + `in_pos`/`out_pos`
+  (sample positions) — the alignment keys the analyzer pins events with.
+  Windows still in flight at close are recorded as `window_lost`.
+- **`agent/convert_agent.py`** — `--capture-dir` flag; every hook is a single
+  `if self.capture:` on a None when disabled. Events wired: session header
+  (mode, RVC_WS_URL, HOP/CTX/XFADE/SOLA, prime depth), per-window
+  {seq, t_sent, t_recv, turnaround_ms}, drop(seq), underrun(samples),
+  stale(seq), mode_change, buffer_depth every hop (with in_flight).
+  `aclose()` now awaits the cancelled process task so capture finalizes.
+- **`agent/analyze_capture.py`** (new) — produces `aligned_waveforms.png`
+  (min/max-decimated, offset via RMS-envelope cross-correlation),
+  `spectrograms.png` (shared dB scale, output time-shifted), `rms_envelope.png`
+  (utterance segmentation + tail-clip flags), `dropout_map.png` (silences
+  classified **benign vs DROPOUT** by whether the aligned input was active;
+  meta events pinned by out_pos), `report.txt`. Test protocol in the
+  docstring (fox sentence + 3 s typing, both modes). Pure-math helpers
+  (envelope/offset/utterances/tail-clips/silences/classification) have no I/O.
+- **`agent/test_analyze.py`** (new) — 12 tests: offset recovery at exactly
+  375 ms and 0 ms; utterance merge/blip rules; tail-clip detector — flagged
+  when body survives but tail dies, NOT flagged when intact / whole-utterance
+  loss (that's a dropout) / offset-shifted / beyond captured output; silence
+  classification benign vs dropout; envelope values; SessionCapture end-to-end
+  (valid WAVs, meta ordering, window_lost, alignment keys on every line).
+- **`agent/lk_smoke.py`** (new) — portable connectivity gate: resolves
+  secrets.env relative to its own path, mints its own token, `CONNECTED OK`
+  + exit 0 / `FAIL` + exit 1. Identity `echo-smoke` so agents ignore it.
+- **`runbook.md`** (new, repo root) — full disaster-recovery recipe (pod
+  template/ports/TCP-direct/NAT-port-changes, uv venv rebuild + torch cu128
+  pin, stateless launch + cuda:0 check, Stop-not-Terminate, VPS setup,
+  lk_smoke gate, bring-up checklist, local mock fallback).
+- Housekeeping: `captures/` gitignored; README got a capture section + a
+  SUPERSEDED banner on the old "agent on the pod" RunPod runbook (agent must
+  never run on RunPod); requirements.txt pins aiofiles==25.1.0 (was installed
+  but unpinned) and matplotlib==3.9.4.
+
+### Key findings / surprises
+
+- aiofiles was claimed pinned but wasn't in requirements.txt (installed
+  25.1.0 in the venv) — now actually pinned.
+- A leftover mock_rvc_server.py from the morning session (system Python,
+  PID 12597) was still holding port 8000; used it rather than killing it.
+- Convert-mode offset measured **340 ms** by cross-correlation (vs ~375
+  expected) — consistent with the jitter buffer riding slightly below 1.5
+  hops that run (median depth 1.44 hops); passthrough measured exactly 0 ms,
+  peak correlation 1.000.
+- First-cut dropout report listed every inter-keystroke gap as a "silence
+  region"; fixed by classifying output silences against the aligned input
+  (benign when input silent too, DROPOUT only when audio went in and nothing
+  came out).
+
+### Files changed
+
+New: `agent/capture.py`, `agent/analyze_capture.py`, `agent/test_analyze.py`,
+`agent/lk_smoke.py`, `runbook.md`.
+Modified: `agent/convert_agent.py`, `agent/requirements.txt`,
+`agent/README.md`, `agent/.gitignore`, `devlog/SESSIONS.md`, `notes.md`.
+Untouched: everything else (no frontend changes).
+
+### Verification results
+
+- Unit tests **20/20 pass** (12 new + 8 existing bridge tests).
+- Full capture→analyze cycle vs the mock on LiveKit Cloud, macOS `say`
+  speaking the fox sentence + 3 s synthetic keyboard transients published by
+  a scripted real-time participant, one session per mode:
+  - passthrough: offset **0 ms** (corr 1.000), 2 utterances, 0 clipped tails,
+    all 14 silences benign, meta = header + session_end only.
+  - convert: offset **340 ms** (corr 0.978), 86/86 windows returned,
+    turnaround p50/p95 78/156 ms (mock is 70 ms + spikes), buffer median
+    1.44 hops, 0 drops/underruns/stale, 0 clipped tails, 0 dropouts.
+  - All four plots rendered and visually inspected — waveforms/spectrograms
+    line up after the shift; meta events pin correctly to the timeline.
+- Inertness: agent run WITHOUT the flag over the same probe — zero capture
+  log lines, no directories written, stats identical (87/87 windows, 0 drops).
+- `lk_smoke.py` → `CONNECTED OK`, exit 0.
+- py_compile clean; eslint on the two frontend files clean; `vite build`
+  clean (only the pre-existing chunk-size warning).
 
 ### Task (verbatim)
 

@@ -18,7 +18,12 @@ cold model). If the RVC connection is missing/drops while converting, the agent
 falls back to passthrough (reason "rvc_unavailable"), retries in the
 background, and restores convert mode automatically once RVC recovers.
 
-Run:  python convert_agent.py [--mode passthrough|convert]
+Diagnostics: --capture-dir PATH records each processing session (input/output
+WAVs + meta.jsonl event log) for offline analysis with analyze_capture.py.
+The hot path only ever does in-memory appends (see capture.py); without the
+flag every hook is a single `if self.capture` on a None.
+
+Run:  python convert_agent.py [--mode passthrough|convert] [--capture-dir PATH]
       RVC_WS_URL=ws://127.0.0.1:8000/ws/audio (default; see README.md)
 The RVC server must run with RVC_STREAM_CONTEXT_SECONDS=0 (stateless windows).
 """
@@ -35,7 +40,8 @@ import numpy as np
 from dotenv import load_dotenv
 from livekit import api, rtc
 
-from bridge import HOP, SolaStitcher, WindowAssembler
+from bridge import CTX, HOP, SOLA, XFADE, SolaStitcher, WindowAssembler
+from capture import SessionCapture
 from rvc_client import RvcClient
 
 DEFAULT_ROOM = "luminastream-test"
@@ -80,9 +86,12 @@ def mint_token(key, secret, room, identity):
 
 
 class ConvertAgent:
-    def __init__(self, room_name, identity, rvc_url, requested_mode):
+    def __init__(self, room_name, identity, rvc_url, requested_mode, capture_dir=None):
         self.room_name = room_name
         self.identity = identity
+        self.rvc_url = rvc_url
+        self.capture_dir = capture_dir  # None ⇒ capture fully disabled
+        self.capture = None             # SessionCapture while a session runs
         self.room = rtc.Room()
         self.source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
 
@@ -216,6 +225,8 @@ class ConvertAgent:
             self._min_valid_seq = self.assembler.seq + 1
         self.mode = mode
         self.mode_reason = reason
+        if self.capture:
+            self.capture.event("mode_change", mode=mode, reason=reason)
         log.info("mode → %s%s", mode, f" ({reason})" if reason else "")
 
     async def _publish_mode(self):
@@ -237,10 +248,16 @@ class ConvertAgent:
         """Called from the RVC receive loop for every converted window."""
         if seq < self._min_valid_seq or seq <= self._last_pushed_seq:
             self.windows_stale += 1
+            if self.capture:
+                self.capture.event("stale", seq=seq)
             return
         if self.mode != "convert":
             self.windows_stale += 1
+            if self.capture:
+                self.capture.event("stale", seq=seq, reason="mode")
             return
+        if self.capture:
+            self.capture.window_recv(seq)
         self._last_pushed_seq = seq
         self.stitcher.push(pcm)
 
@@ -280,20 +297,37 @@ class ConvertAgent:
         stream = rtc.AudioStream.from_track(
             track=track, sample_rate=SAMPLE_RATE, num_channels=NUM_CHANNELS
         )
+        if self.capture_dir:
+            self.capture = SessionCapture(self.capture_dir, {
+                "participant": identity,
+                "mode": self.mode,
+                "rvc_ws_url": self.rvc_url,
+                "sample_rate": SAMPLE_RATE,
+                "hop": HOP, "ctx": CTX, "xfade": XFADE, "sola": SOLA,
+                "prime_samples": PRIME_SAMPLES,
+            }).start()
+            log.info("capture ON → %s", self.capture.session_dir)
         try:
             async for event in stream:
                 self.frames_in += 1
                 frame = event.frame
+                if self.capture:
+                    self.capture.add_input(bytes(frame.data))
                 if self.mode == "convert":
                     await self._convert_frame(frame)
                 else:
                     # Passthrough — the await IS the flow control
+                    if self.capture:
+                        self.capture.add_output(bytes(frame.data))
                     await self.source.capture_frame(frame)
                 self.frames_out += 1
         except asyncio.CancelledError:
             pass
         finally:
             await stream.aclose()
+            if self.capture:
+                capture, self.capture = self.capture, None
+                await capture.aclose()
             log.info("processing ended for %s", identity)
             self.processed_identity = None
 
@@ -303,15 +337,25 @@ class ConvertAgent:
 
         # Input side: window assembly + send with backpressure
         for seq, window in self.assembler.feed(pcm):
+            if self.capture:  # jitter-buffer depth, sampled every hop
+                self.capture.event("buffer_depth", seq=seq,
+                                   depth=self.stitcher.available,
+                                   in_flight=self.rvc.in_flight)
             if not self.rvc.connected:
                 break  # drop fires fallback; frames keep flowing meanwhile
             if self.rvc.in_flight >= MAX_IN_FLIGHT:
                 self.windows_dropped += 1  # skip the hop; stitcher underrun covers it
+                if self.capture:
+                    self.capture.event("drop", seq=seq)
                 continue
+            if self.capture:
+                self.capture.window_sent(seq)
             try:
                 await self.rvc.send_window(seq, window)
             except Exception as exc:
                 log.warning("send_window failed: %s", exc)
+                if self.capture:
+                    self.capture.window_send_failed(seq)
 
         # Output side: 1 frame in → 1 frame out keeps the pacing of the input.
         # Before the jitter buffer is primed we emit silence instead of racing
@@ -320,7 +364,10 @@ class ConvertAgent:
             self._primed = True
             log.info("jitter buffer primed (%d samples)", self.stitcher.available)
         if self._primed:
+            underruns_before = self.stitcher.underrun_events
             samples = self.stitcher.read(n)
+            if self.capture and self.stitcher.underrun_events > underruns_before:
+                self.capture.event("underrun", samples=n)
         else:
             samples = np.zeros(n, dtype=np.float32)
 
@@ -328,6 +375,8 @@ class ConvertAgent:
         np.frombuffer(out.data, dtype=np.int16)[:] = (
             np.clip(samples, -1.0, 1.0) * 32767.0
         ).astype(np.int16)
+        if self.capture:
+            self.capture.add_output(bytes(out.data))
         await self.source.capture_frame(out)
 
     # ── Stats ────────────────────────────────────────────────────────
@@ -376,6 +425,10 @@ class ConvertAgent:
             self._rvc_retry_task.cancel()
         if self.process_task:
             self.process_task.cancel()
+            try:
+                await self.process_task  # lets the capture finalize its files
+            except (asyncio.CancelledError, Exception):
+                pass
         await self.rvc.close()
         await self.room.disconnect()
 
@@ -387,6 +440,9 @@ async def main():
     parser.add_argument("--room", default=DEFAULT_ROOM)
     parser.add_argument("--identity", default=DEFAULT_IDENTITY)
     parser.add_argument("--rvc-url", default=os.environ.get("RVC_WS_URL", DEFAULT_RVC_WS_URL))
+    parser.add_argument("--capture-dir", default=None, metavar="PATH",
+                        help="write per-session diagnostic captures (WAVs + meta.jsonl) "
+                             "under PATH; capture is fully disabled when absent")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -397,7 +453,8 @@ async def main():
     url, key, secret = load_credentials()
     token = mint_token(key, secret, args.room, args.identity)
 
-    agent = ConvertAgent(args.room, args.identity, args.rvc_url, args.mode)
+    agent = ConvertAgent(args.room, args.identity, args.rvc_url, args.mode,
+                         capture_dir=args.capture_dir)
 
     # Warm up RVC BEFORE joining the room — the stream never sees a cold model
     try:

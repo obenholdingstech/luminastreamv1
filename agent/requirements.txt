@@ -6,3 +6,6 @@ websockets==15.0.1
 numpy==2.0.2
 scipy==1.13.1
 pytest==8.4.2
+# Phase 1 — capture diagnostics (capture.py / analyze_capture.py)
+aiofiles==25.1.0
+matplotlib==3.9.4
