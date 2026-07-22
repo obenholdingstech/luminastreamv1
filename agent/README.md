@@ -1,15 +1,25 @@
-# LuminaStream Echo Agent
+# LuminaStream Agents
 
-First server-side piece of the voice engine (Stage 1). Joins the
-`luminastream-test` LiveKit room as **`echo-agent`**, subscribes to the human
-participant's audio, and republishes the frames **unchanged** as its own track.
-The passthrough loop is exactly where the real voice-conversion model will slot
-in later — same subscribe → process → publish shape, on a GPU worker.
+Server-side pieces of the voice engine, built on the plain `livekit` rtc SDK
+(v1.1.13), **not** the `livekit-agents` framework: the framework (v1.6.x) is
+designed around STT/LLM/TTS voice-AI pipelines and worker dispatch —
+unnecessary for raw frame processing. We revisit it when the conversion worker
+needs orchestration.
 
-Built on the plain `livekit` rtc SDK (v1.1.13), **not** the `livekit-agents`
-framework: the framework (v1.6.x) is designed around STT/LLM/TTS voice-AI
-pipelines and worker dispatch — unnecessary for raw frame passthrough. We
-revisit it when the real conversion worker needs orchestration.
+Two agents:
+
+- **`echo_agent.py`** (Stage 1, kept as the known-good transport reference) —
+  joins `luminastream-test` as `echo-agent` and republishes the human
+  participant's frames **unchanged**.
+- **`convert_agent.py`** (Move 2b) — same transport skeleton plus a **live
+  passthrough/convert toggle**. In convert mode, frames flow through the
+  proven stateless sliding-window RVC pipeline (`bridge.py` + `rvc_client.py`,
+  transplanted from `bridge_test_v3.py`): 14336-sample windows (8192 context +
+  6144 hop) over a WebSocket to the RVC server, SOLA-aligned equal-power
+  crossfade on the way back. Modes are switched at runtime from the
+  `/livekit-test` page via LiveKit data messages
+  (`{"type":"set_mode","mode":"convert"}`), and the agent confirms with
+  `{"type":"agent_mode","mode":...}` — the agent is the source of truth.
 
 ## Prerequisites
 
@@ -26,7 +36,7 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```
 
-## Run
+## Run the echo agent (Stage 1 reference)
 
 ```bash
 cd agent
@@ -45,22 +55,83 @@ Expected output:
 
 Stop with Ctrl-C.
 
+## Convert agent — Mac runbook (mock RVC, no GPU)
+
+Full plumbing test on a laptop: the mock server speaks the exact RVC WebSocket
+protocol and echoes windows back after ~70 ms (occasional 150 ms spike),
+resampled ×1.008 to exercise SOLA the way the real server does.
+
+```bash
+cd agent
+
+# 1. Unit tests
+./.venv/bin/python -m pytest test_bridge.py -q
+
+# 2. Mock RVC server (terminal 1)
+./.venv/bin/python mock_rvc_server.py            # ws://127.0.0.1:8000/ws/audio
+
+# 3. Convert agent (terminal 2) — warms up RVC BEFORE joining the room
+./.venv/bin/python convert_agent.py              # starts in passthrough
+```
+
+Then open `/livekit-test`, connect as `test-user`, and use the
+**Passthrough | Convert** buttons. Expectations:
+
+- **passthrough** — you hear yourself at ~echo-agent latency; RVC idle.
+- **convert** — you hear yourself ~200 ms later (window hop 128 ms + mock
+  70 ms + jitter buffer), no stutter; the "Agent mode" indicator flips only
+  when the agent confirms.
+- Kill the mock server while converting → agent auto-falls back to
+  passthrough (`reason: rvc_unavailable`), retries every 5 s, and restores
+  convert mode by itself when the mock comes back.
+
+Agent stats every 5 s: mode, frames in/out, windows sent/recv/dropped,
+underruns, turnaround p50/p95, buffer depth.
+
+## Convert agent — RunPod runbook (real RVC)
+
+The agent runs **on the same pod as the RVC server**; the hop is loopback.
+
+```bash
+# 1. RVC server MUST be stateless — the bridge re-sends its own left context
+#    (8192 samples) in every window; server-side context would pollute it.
+export RVC_STREAM_CONTEXT_SECONDS=0
+# ... launch the RVC server as usual (port 8000), then activate the model,
+# e.g. aloy_beta12333333.pth from Move 1.
+
+# 2. Agent (same box; needs secrets.env at the repo root)
+export RVC_WS_URL=ws://127.0.0.1:8000/ws/audio    # this is also the default
+python convert_agent.py --mode convert
+```
+
+`--mode convert` warms the model with a zero-window **before** the agent joins
+the room, so the stream never sees a cold model. If RVC is down at startup or
+drops mid-stream, the agent keeps the room alive in passthrough and recovers
+on its own.
+
+CLI/env: `RVC_WS_URL` (or `--rvc-url`), `--mode passthrough|convert`
+(default passthrough), `--room`, `--identity`.
+
 ## Testing against the browser
 
 Open `/livekit-test` in the app, generate a token
 (`node scripts/generate-livekit-token.js` from the repo root), and connect as
 `test-user` while the agent is running. The agent's log shows frames flowing.
 
-**Note:** the `/livekit-test` page currently only *publishes* your mic — it does
-not yet attach remote audio to a speaker element, so you won't *hear* the echo
-in the browser yet. Wiring up remote-audio playback in the test page is the
-natural next step; the agent's stats plus the browser's subscribed-track stats
-already prove the full loop end to end.
+The page plays the agent's returned track automatically (enable audio if the
+browser blocks autoplay) — with either agent running you hear yourself echoed
+back through the server.
 
 ## Troubleshooting
 
 - `secrets.env must define …` — the file lives at the repo root (one level up
   from `agent/`), not inside `agent/`.
 - Agent connects but never echoes — make sure the browser side joined with a
-  different identity (the agent deliberately ignores identities starting with
-  `echo-`, and only adopts one human track at a time).
+  different identity (the agents deliberately ignore identities starting with
+  `echo-`, and only adopt one human track at a time).
+- Convert mode sounds doubled/echoey on the pod — the RVC server was started
+  **without** `RVC_STREAM_CONTEXT_SECONDS=0`. The bridge is stateless by
+  design; server-side context pollutes the windows (proven in Move 2a).
+- Convert button snaps back to passthrough with `rvc_unavailable` — the RVC
+  server (or mock) isn't reachable at `RVC_WS_URL`; the agent retries every
+  5 s and switches back automatically once it reconnects.

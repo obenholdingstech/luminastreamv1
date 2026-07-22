@@ -8,10 +8,12 @@ import {
   Clock,
   Gauge,
   Mic,
+  Repeat,
   Signal,
   SignalHigh,
   SignalLow,
   SignalMedium,
+  Sparkles,
   Volume2,
   VolumeX,
   Wifi,
@@ -77,9 +79,12 @@ export default function LiveKitTest() {
     error,
     remoteAudio,
     audioBlocked,
+    agentMode,
+    agentModeReason,
     connect,
     disconnect,
     enableAudio,
+    requestAgentMode,
   } = useLiveKitVoice(url.trim(), token.trim());
 
   const status = STATUS[connectionState] || STATUS[ConnectionState.Disconnected];
@@ -189,6 +194,60 @@ export default function LiveKitTest() {
               <span>{error}</span>
             </div>
           )}
+        </div>
+
+        {/* Voice mode — talks to the convert agent over the data channel.
+            The buttons only REQUEST a mode; the indicator shows what the
+            agent CONFIRMED via agent_mode (the agent is the source of truth). */}
+        <div className="bg-[#0F0F1A] border border-[#1A1A2E] rounded-lg p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-[11px] tracking-widest uppercase text-[#64748B]">Voice Mode</h2>
+            <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase">
+              {agentMode ? (
+                <span
+                  className="flex items-center gap-1.5"
+                  style={{ color: agentMode === 'convert' ? '#10B981' : '#6366F1' }}
+                >
+                  {agentMode === 'convert' ? <Sparkles size={12} /> : <Repeat size={12} />}
+                  Agent mode: {agentMode}
+                  {agentModeReason && (
+                    <span className="text-[#F59E0B] normal-case tracking-normal">
+                      ({agentModeReason})
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-[#64748B]">Agent mode: awaiting agent…</span>
+              )}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => requestAgentMode('passthrough')}
+              disabled={isDisconnected}
+              className={`flex items-center gap-1.5 text-xs tracking-wide rounded-md px-5 py-2 transition-colors disabled:opacity-40 ${
+                agentMode === 'passthrough'
+                  ? 'bg-[#6366F1] text-white'
+                  : 'border border-[#1A1A2E] text-[#94A3B8] hover:border-[#6366F1]/50'
+              }`}
+            >
+              <Repeat size={13} /> Passthrough
+            </button>
+            <button
+              onClick={() => requestAgentMode('convert')}
+              disabled={isDisconnected}
+              className={`flex items-center gap-1.5 text-xs tracking-wide rounded-md px-5 py-2 transition-colors disabled:opacity-40 ${
+                agentMode === 'convert'
+                  ? 'bg-[#10B981] text-white'
+                  : 'border border-[#1A1A2E] text-[#94A3B8] hover:border-[#10B981]/50'
+              }`}
+            >
+              <Sparkles size={13} /> Convert
+            </button>
+            <span className="text-[9px] text-[#4A5568] ml-auto">
+              passthrough = RVC idle · convert = ~200 ms pipeline
+            </span>
+          </div>
         </div>
 
         {/* Live stats */}
