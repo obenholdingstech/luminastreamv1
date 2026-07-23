@@ -23,7 +23,14 @@ WAVs + meta.jsonl event log) for offline analysis with analyze_capture.py.
 The hot path only ever does in-memory appends (see capture.py); without the
 flag every hook is a single `if self.capture` on a None.
 
+Phase 3: a Silero VAD gate (vad.py) sits between the assembler and the RVC
+websocket — only speech hops (plus a hangover tail) are sent; gated periods
+become clean silence on the output with equal-power edge ramps. Fail-open:
+if the model can't load or errors, the agent runs ungated (same philosophy
+as the RVC-failure fallback). --no-vad disables it entirely.
+
 Run:  python convert_agent.py [--mode passthrough|convert] [--capture-dir PATH]
+      [--no-vad] [--vad-threshold 0.5] [--vad-hangover-ms 300]
       RVC_WS_URL=ws://127.0.0.1:8000/ws/audio (default; see README.md)
 The RVC server must run with RVC_STREAM_CONTEXT_SECONDS=0 (stateless windows).
 """
@@ -43,6 +50,7 @@ from livekit import api, rtc
 from bridge import CTX, HOP, SOLA, XFADE, SolaStitcher, WindowAssembler
 from capture import SessionCapture
 from rvc_client import RvcClient
+from vad import DEFAULT_HANGOVER_MS, DEFAULT_THRESHOLD, OutputGate, VadGate
 
 DEFAULT_ROOM = "luminastream-test"
 DEFAULT_IDENTITY = "echo-convert-agent"  # echo-* prefix: agents ignore each other
@@ -86,7 +94,8 @@ def mint_token(key, secret, room, identity):
 
 
 class ConvertAgent:
-    def __init__(self, room_name, identity, rvc_url, requested_mode, capture_dir=None):
+    def __init__(self, room_name, identity, rvc_url, requested_mode, capture_dir=None,
+                 vad=None):
         self.room_name = room_name
         self.identity = identity
         self.rvc_url = rvc_url
@@ -101,12 +110,16 @@ class ConvertAgent:
 
         self.assembler = WindowAssembler()
         self.stitcher = SolaStitcher()
+        self.vad = vad                     # VadGate or None (--no-vad)
+        self.outgate = OutputGate(self.stitcher, PRIME_SAMPLES)
+        self.windows_gated = 0             # hops withheld from RVC by the VAD
+        self._vad_fail_published = False   # fail-open reported once on the data channel
+        self._last_hop_seq = 0             # context-accounting monotonicity assert
         self.rvc = RvcClient(
             rvc_url,
             on_window=self._on_converted,
             on_disconnect=self._on_rvc_drop,
         )
-        self._primed = False
         self._min_valid_seq = 1   # converted windows below this are stale (pre-toggle)
         self._last_pushed_seq = 0
         self._rvc_retry_task = None
@@ -218,7 +231,7 @@ class ConvertAgent:
             # returns from the previous convert period are discarded by seq
             self.assembler.reset()
             self.stitcher.reset()
-            self._primed = False
+            self.outgate.reset()
             self._min_valid_seq = self.assembler.seq + 1
         else:
             # Anything still in flight is now stale
@@ -235,6 +248,20 @@ class ConvertAgent:
         payload = {"type": "agent_mode", "mode": self.mode}
         if self.mode_reason:
             payload["reason"] = self.mode_reason
+        # Additive, backward-compatible: the current frontend only reads
+        # type/mode/reason (verified in useLiveKitVoice.js) and ignores extras.
+        # Phase 4's console consumes this.
+        if self.vad is not None:
+            payload["vad"] = {
+                "enabled": self.vad.active,
+                "gate": "open" if self.vad.gate_open else "closed",
+                "threshold": self.vad.threshold,
+                "hangover_ms": self.vad.hangover_ms,
+            }
+            if self.vad.fail_reason:
+                payload["vad"]["reason"] = self.vad.fail_reason
+        else:
+            payload["vad"] = {"enabled": False, "reason": "disabled_by_flag"}
         try:
             await self.room.local_participant.publish_data(
                 json.dumps(payload), reliable=True
@@ -305,6 +332,12 @@ class ConvertAgent:
                 "sample_rate": SAMPLE_RATE,
                 "hop": HOP, "ctx": CTX, "xfade": XFADE, "sola": SOLA,
                 "prime_samples": PRIME_SAMPLES,
+                "vad": None if self.vad is None else {
+                    "active": self.vad.active,
+                    "threshold": self.vad.threshold,
+                    "hangover_ms": self.vad.hangover_ms,
+                    "hangover_hops": self.vad.hangover_hops,
+                },
             }).start()
             log.info("capture ON → %s", self.capture.session_dir)
         try:
@@ -335,12 +368,39 @@ class ConvertAgent:
         n = frame.samples_per_channel
         pcm = np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0
 
-        # Input side: window assembly + send with backpressure
+        # Input side: window assembly + VAD gate + send with backpressure.
+        # GATING NEVER TOUCHES THE ASSEMBLER: it keeps accumulating through
+        # gated periods, so the first window after gate-open carries real
+        # acoustic context. The seq assert below enforces that accounting.
         for seq, window in self.assembler.feed(pcm):
+            assert seq == self._last_hop_seq + 1, \
+                "context accounting broken: hop seq must be monotonic across gating"
+            self._last_hop_seq = seq
+
             if self.capture:  # jitter-buffer depth, sampled every hop
                 self.capture.event("buffer_depth", seq=seq,
                                    depth=self.stitcher.available,
                                    in_flight=self.rvc.in_flight)
+
+            if self.vad is not None:
+                was_open = self.vad.gate_open
+                send = self.vad.decide_hop(window[-HOP:])
+                if not self.vad.active and not self._vad_fail_published:
+                    # fail-open just tripped — report once over the data channel
+                    self._vad_fail_published = True
+                    asyncio.ensure_future(self._publish_mode())
+                elif self.vad.gate_open != was_open:
+                    state = "open" if self.vad.gate_open else "closed"
+                    log.info("VAD gate %s (prob %.2f)", state, self.vad.last_prob or 0.0)
+                    if self.capture:
+                        self.capture.event("vad_gate", state=state, seq=seq,
+                                           prob=round(self.vad.last_prob or 0.0, 3))
+                if not send:
+                    # Gated: nothing enqueued to the websocket (idle GPU is the
+                    # point) and NOT a backpressure drop
+                    self.windows_gated += 1
+                    continue
+
             if not self.rvc.connected:
                 break  # drop fires fallback; frames keep flowing meanwhile
             if self.rvc.in_flight >= MAX_IN_FLIGHT:
@@ -358,18 +418,24 @@ class ConvertAgent:
                     self.capture.window_send_failed(seq)
 
         # Output side: 1 frame in → 1 frame out keeps the pacing of the input.
-        # Before the jitter buffer is primed we emit silence instead of racing
-        # ahead of the converter.
-        if not self._primed and self.stitcher.available >= PRIME_SAMPLES:
-            self._primed = True
-            log.info("jitter buffer primed (%d samples)", self.stitcher.available)
-        if self._primed:
-            underruns_before = self.stitcher.underrun_events
-            samples = self.stitcher.read(n)
-            if self.capture and self.stitcher.underrun_events > underruns_before:
-                self.capture.event("underrun", samples=n)
-        else:
-            samples = np.zeros(n, dtype=np.float32)
+        # OutputGate wraps the Phase 1 priming/underrun behavior and adds the
+        # VAD edges: fade-out drain at gate close, silence while closed,
+        # re-prime + fade-in at gate open. gate_open=True (no VAD / fail-open)
+        # reproduces the old path exactly.
+        gate_open = self.vad is None or not self.vad.active or self.vad.gate_open
+        was_primed = self.outgate.primed
+        underruns_before = self.stitcher.underrun_events
+        samples = self.outgate.read_frame(n, gate_open)
+        if self.outgate.primed and not was_primed:
+            log.info("jitter buffer primed (%d samples)", self.stitcher.available + n)
+        if self.capture and self.stitcher.underrun_events > underruns_before:
+            self.capture.event("underrun", samples=n)
+        if self.outgate.drained:
+            # Tail played out after gate close — any window still in flight
+            # belongs to the closed period; discard it as stale on arrival
+            self._min_valid_seq = self.assembler.seq + 1
+            if self.capture:
+                self.capture.event("vad_drained")
 
         out = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, n)
         np.frombuffer(out.data, dtype=np.int16)[:] = (
@@ -389,12 +455,15 @@ class ConvertAgent:
             p50, p95 = self.rvc.turnaround_ms()
             log.info(
                 "stats: mode=%s frames in=%d (+%d) out=%d (+%d) | windows sent=%d recv=%d "
-                "dropped=%d stale=%d | underruns=%d (%d samples) | turnaround p50/p95=%s/%s ms | "
-                "buffer=%d samples (%.2f hops)",
+                "dropped=%d stale=%d gated=%d vad=%s | underruns=%d (%d samples) | "
+                "turnaround p50/p95=%s/%s ms | buffer=%d samples (%.2f hops)",
                 self.mode,
                 cur[0], cur[0] - prev[0], cur[1], cur[1] - prev[1],
                 self.rvc.windows_sent, self.rvc.windows_received,
-                self.windows_dropped, self.windows_stale,
+                self.windows_dropped, self.windows_stale, self.windows_gated,
+                "off" if self.vad is None
+                else ("open" if self.vad.gate_open else "closed") if self.vad.active
+                else "FAILED-OPEN",
                 self.stitcher.underrun_events, self.stitcher.underrun_samples,
                 "-" if p50 is None else f"{p50:.0f}",
                 "-" if p95 is None else f"{p95:.0f}",
@@ -443,6 +512,14 @@ async def main():
     parser.add_argument("--capture-dir", default=None, metavar="PATH",
                         help="write per-session diagnostic captures (WAVs + meta.jsonl) "
                              "under PATH; capture is fully disabled when absent")
+    parser.add_argument("--no-vad", action="store_true",
+                        help="disable the Silero VAD gate (default: VAD on)")
+    parser.add_argument("--vad-threshold", type=float, default=DEFAULT_THRESHOLD,
+                        help=f"speech probability threshold (default {DEFAULT_THRESHOLD}, "
+                             "silero's own default)")
+    parser.add_argument("--vad-hangover-ms", type=float, default=DEFAULT_HANGOVER_MS,
+                        help=f"keep the gate open this long after the last speech "
+                             f"(default {DEFAULT_HANGOVER_MS} ms; rounded UP to whole hops)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -453,8 +530,23 @@ async def main():
     url, key, secret = load_credentials()
     token = mint_token(key, secret, args.room, args.identity)
 
+    # VAD loads BEFORE the room join, same philosophy as the RVC warmup.
+    # Load failure ⇒ fail-open (ungated), the stream still runs.
+    vad = None
+    if not args.no_vad:
+        vad = VadGate(threshold=args.vad_threshold,
+                      hangover_ms=args.vad_hangover_ms).load()
+        if vad.active:
+            log.info("VAD on: threshold=%.2f hangover=%dms (%d hops of %dms)",
+                     vad.threshold, vad.hangover_ms, vad.hangover_hops,
+                     HOP * 1000 // SAMPLE_RATE)
+        else:
+            log.warning("VAD failed to load (%s) — running ungated", vad.fail_reason)
+    else:
+        log.info("VAD off (--no-vad)")
+
     agent = ConvertAgent(args.room, args.identity, args.rvc_url, args.mode,
-                         capture_dir=args.capture_dir)
+                         capture_dir=args.capture_dir, vad=vad)
 
     # Warm up RVC BEFORE joining the room — the stream never sees a cold model
     try:
