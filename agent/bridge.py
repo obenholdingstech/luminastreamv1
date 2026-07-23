@@ -137,6 +137,17 @@ class SolaStitcher:
         self._buf = self._buf[n:]
         return out
 
+    def drain(self, n):
+        """Up to n samples INCLUDING the provisional XFADE tail; no underrun count.
+
+        For intentional end-of-stream drains (VAD gate close): no further window
+        will rewrite the tail, so it is released as-is. Returns what exists —
+        possibly fewer than n samples, possibly zero.
+        """
+        out = self._buf[:n].copy()
+        self._buf = self._buf[n:]
+        return out
+
     def reset(self):
         """Drop buffered output (mode re-entry); counters keep accumulating."""
         self._buf = np.zeros(0, dtype=np.float32)
