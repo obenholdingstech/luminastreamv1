@@ -79,6 +79,16 @@ New: `agent/vad.py`, `agent/test_vad.py`. Modified: `agent/bridge.py`
 `agent/test_analyze.py`, `agent/requirements.txt`, `agent/README.md`,
 `devlog/SESSIONS.md`, `notes.md`. Frontend untouched.
 
+### CodeRabbit round (PR #10)
+
+1 actionable + 5 nitpicks, all applied in c2e5ec4 (37/37 tests after):
+notes.md stray kernel line labeled + verdict sentence completed; unused
+`sent` → `_sent`; fail-open load test now exercises public `load()` via
+monkeypatch; redundant `int(round())` removed; context-invariant assert →
+explicit check + loud log (survives -O, keeps the stream alive); fail-open
+publish task strongly referenced. Threaded reply + itemized evidence
+comment posted on the PR.
+
 ### Task (verbatim)
 
 > The CTO has reviewed your PR and requested the following mandatory updates on the current branch before merge:
