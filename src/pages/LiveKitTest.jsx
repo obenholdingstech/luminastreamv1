@@ -28,6 +28,14 @@ import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 
 const URL_STORAGE_KEY = 'livekit-test-url';
 
+// Phase 2 experiment — browser mic processing toggles. Keys match
+// livekit-client's AudioCaptureOptions; all ON is the browser default.
+const MIC_PROCESSING = [
+  { key: 'noiseSuppression', label: 'Noise Suppression', short: 'NS' },
+  { key: 'echoCancellation', label: 'Echo Cancellation', short: 'EC' },
+  { key: 'autoGainControl', label: 'Auto Gain', short: 'AGC' },
+];
+
 const STATUS = {
   [ConnectionState.Disconnected]: { label: 'Disconnected', color: '#64748B', pulse: false },
   [ConnectionState.Connecting]: { label: 'Connecting…', color: '#F59E0B', pulse: true },
@@ -81,10 +89,12 @@ export default function LiveKitTest() {
     audioBlocked,
     agentMode,
     agentModeReason,
+    captureConstraints,
     connect,
     disconnect,
     enableAudio,
     requestAgentMode,
+    setCaptureConstraint,
   } = useLiveKitVoice(url.trim(), token.trim());
 
   const status = STATUS[connectionState] || STATUS[ConnectionState.Disconnected];
@@ -202,7 +212,20 @@ export default function LiveKitTest() {
         <div className="bg-[#0F0F1A] border border-[#1A1A2E] rounded-lg p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-[11px] tracking-widest uppercase text-[#64748B]">Voice Mode</h2>
-            <span className="flex items-center gap-1.5 text-[10px] tracking-widest uppercase">
+            <span className="flex items-center gap-3 text-[10px] tracking-widest uppercase">
+              {/* Active mic-processing state — mirrors the toggles below */}
+              <span className="flex items-center gap-1.5 font-mono normal-case tracking-normal">
+                {MIC_PROCESSING.map(({ key, short }) => (
+                  <span
+                    key={key}
+                    title={`${key}: ${captureConstraints[key] ? 'on' : 'off'}`}
+                    style={{ color: captureConstraints[key] ? '#10B981' : '#64748B' }}
+                  >
+                    {short}
+                    {captureConstraints[key] ? '✓' : '✗'}
+                  </span>
+                ))}
+              </span>
               {agentMode ? (
                 <span
                   className="flex items-center gap-1.5"
@@ -247,6 +270,39 @@ export default function LiveKitTest() {
             <span className="text-[9px] text-[#4A5568] ml-auto">
               passthrough = RVC idle · convert = ~200 ms pipeline
             </span>
+          </div>
+
+          {/* Mic processing constraints — applied at publish; toggling while
+              connected re-acquires the mic in place (no reconnect needed) */}
+          <div className="mt-4 pt-4 border-t border-[#1A1A2E]">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-[10px] tracking-widest uppercase text-[#64748B]">
+                Mic Processing
+              </span>
+              {MIC_PROCESSING.map(({ key, label }) => {
+                const on = captureConstraints[key];
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setCaptureConstraint(key, !on)}
+                    className={`flex items-center gap-1.5 text-[11px] tracking-wide rounded-md px-3 py-1.5 transition-colors ${
+                      on
+                        ? 'bg-[#10B981]/15 border border-[#10B981]/40 text-[#10B981]'
+                        : 'border border-[#1A1A2E] text-[#64748B] hover:border-[#64748B]/50'
+                    }`}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: on ? '#10B981' : '#4A5568' }}
+                    />
+                    {label}: {on ? 'on' : 'off'}
+                  </button>
+                );
+              })}
+              <span className="text-[9px] text-[#4A5568] ml-auto">
+                applies live — mic re-acquired on toggle
+              </span>
+            </div>
           </div>
         </div>
 

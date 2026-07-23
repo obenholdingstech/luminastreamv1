@@ -4,7 +4,88 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 22 July 2026, ~17:50 — Phase 1 review fixes: CodeRabbit findings on feat/capture-analysis-runbook
+## 22 July 2026, ~19:30 — Phase 2: mic-processing constraint toggles on the LiveKit test page
+
+### Task (verbatim)
+
+> Phase 2 — capture-settings experiment (frontend only, then I run the pod session).
+>
+> Add audio-capture constraint controls to the LiveKit test page:
+> - In src/hooks/useLiveKitVoice.js + src/pages/LiveKitTest.jsx ONLY: add three
+>   toggles — noiseSuppression, echoCancellation, autoGainControl — default ON
+>   (current browser behavior). Apply them as audio capture constraints when
+>   publishing the mic track. BEFORE CODING: verify the exact constraint API
+>   against installed livekit-client 2.20.1 (audioCaptureDefaults vs per-track
+>   options — check the types, not memory).
+> - Changing a toggle while connected should re-acquire/republish the mic with
+>   the new constraints (or clearly require reconnect if the SDK demands it —
+>   report which).
+> - Show the active constraint state in the UI next to the mode indicator.
+> - Update the agent README test protocol: the Phase 2 experiment is two
+>   capture sessions (fox sentence + "mic test one two" x3), one with all
+>   processing ON, one with all OFF, convert mode, --capture-dir enabled,
+>   then analyze_capture.py on both and compare tail-clip reports.
+> Branch → PR → CodeRabbit per convention. Log per CLAUDE.md.
+
+### APIs verified against installed livekit-client 2.20.1 (types + live, never memory)
+
+- `AudioCaptureOptions` (dist/src/room/track/options.d.ts:222) carries exactly
+  `noiseSuppression` / `echoCancellation` / `autoGainControl` (ConstrainBoolean)
+  plus deviceId etc. Two ways in: `RoomOptions.audioCaptureDefaults`
+  (options.d.ts:35) or per-call — chose per-call:
+  `setMicrophoneEnabled(enabled, options?: AudioCaptureOptions, publishOptions?)`
+  (LocalParticipant.d.ts:100) since constraints can change per session.
+- **Live toggle verdict: NO reconnect needed.**
+  `LocalAudioTrack.restartTrack(options?: AudioCaptureOptions)`
+  (LocalAudioTrack.d.ts:26) stops the old MediaStreamTrack, getUserMedias with
+  the new constraints, and swaps via setMediaStreamTrack → sender.replaceTrack —
+  publication and track SID survive.
+- **Live-verified in headless Chrome** (fake mic, real LiveKit Cloud room, via a
+  minimal harness page + result-POST server; no puppeteer on this machine):
+  publish with all-ON → settings all true; restartTrack all-OFF → settings all
+  false; back ON → all true; `trackSid` identical throughout; room stays
+  connected. Chrome headless needed `--auto-accept-camera-and-microphone-capture`
+  (the old fake-ui flag alone now yields NotAllowedError).
+- Source-reading correction caught by the live test: I initially believed
+  restartTrack dropped audio constraints without a deviceId (LocalTrack.restart
+  maps audio to `audio: true` when constraints have no deviceId). Live run
+  showed constraints DO apply — because `constraintsForOptions` injects
+  `deviceId: {ideal:'default'}` when none is given, so the deviceId path is
+  always taken. Real implication: without an explicit deviceId a toggle could
+  silently jump to the system-default mic — so the hook pins the current device
+  (`getSourceTrackSettings().deviceId`, fallback `getDeviceId(false)`) with
+  `{exact: …}` on every restart.
+
+### What was built (only the two allowed files + README)
+
+- `useLiveKitVoice.js` — `captureConstraints` state (+ ref mirror), defaults
+  all ON; `connect()` publishes with
+  `setMicrophoneEnabled(true, {...captureConstraintsRef.current})`;
+  `setCaptureConstraint(name, enabled)` updates state and, when connected,
+  restarts the mic track in place with the device pinned; orphaned-room race
+  guards match the file's existing pattern; getUserMedia failure during a
+  restart surfaces via the existing `error` state.
+- `LiveKitTest.jsx` — "Mic Processing" toggle row inside the Voice Mode card
+  (three labeled on/off buttons, usable also while disconnected — they set the
+  state for the next connect) + compact live state readout (NS✓ EC✓ AGC✓,
+  green/gray) next to the agent-mode indicator.
+- `agent/README.md` — Phase 2 experiment protocol: two convert-mode capture
+  sessions (all-ON vs all-OFF), fox sentence + "mic test one two" ×3,
+  `--capture-dir` on, analyze both, compare clipped-tail counts; hypothesis
+  stated (browser processing eats word tails before the pipeline sees them).
+
+### Verification results
+
+- Headless-Chrome live run (above): 4/4 constraint states applied, same
+  trackSid, room connected at end.
+- eslint clean on both touched files; `vite build` clean; `tsc --noEmit`
+  reports zero errors touching the two files (pre-existing errors elsewhere
+  unchanged).
+
+### Files changed
+
+Modified: `src/hooks/useLiveKitVoice.js`, `src/pages/LiveKitTest.jsx`,
+`agent/README.md`, `devlog/SESSIONS.md`, `notes.md`. Nothing else touched.
 
 ### Task (verbatim)
 

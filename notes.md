@@ -4,6 +4,15 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 22 July 2026 (night) — Phase 2 frontend: mic-processing toggles (full record: devlog/SESSIONS.md)
+
+- `/livekit-test` now has NS/EC/AGC toggles (default ON = browser default), applied via `setMicrophoneEnabled(true, AudioCaptureOptions)` at publish and `restartTrack` live — **no reconnect needed**, track SID survives (live-verified in headless Chrome against LiveKit Cloud). Active state shown next to the agent-mode indicator.
+- Gotcha found: livekit-client injects `deviceId {ideal:'default'}` into restart constraints — hook pins the current device with `{exact}` so toggles never switch mics. Headless Chrome now needs `--auto-accept-camera-and-microphone-capture` for fake-mic runs.
+- README: Phase 2 protocol = two convert-mode captures (all-ON vs all-OFF, fox + "mic test one two"×3), compare clipped-tail reports.
+- Next: run the experiment on the pod session and compare `report.txt` tail-clip counts between the two sessions.
+
+---
+
 ## 22 July 2026 (eve) — CodeRabbit fixes on feat/capture-analysis-runbook (full record: devlog/SESSIONS.md)
 
 - capture.py is now unkillable-by-design: 60s un-flushed-audio bound, 1h duration cap (WAV uint32 headroom), writer-failure handling — any trip disables capture for the session (ONE loud log, buffers freed, hot path no-ops), agent audio untouched.

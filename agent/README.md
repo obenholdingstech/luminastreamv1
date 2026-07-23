@@ -106,6 +106,35 @@ Analyze a session (plots + report written into the session dir):
 The test protocol (fox sentence + keyboard typing, both modes) is documented
 in the `analyze_capture.py` docstring.
 
+### Phase 2 experiment — browser mic processing vs word clipping
+
+Hypothesis under test: the browser's mic processing (noise suppression /
+echo cancellation / auto gain) eats word tails before the pipeline ever sees
+them. The `/livekit-test` page has **Mic Processing** toggles (default all
+ON = browser default); toggling while connected re-acquires the mic in place
+— no reconnect needed. The active state is shown next to the agent-mode
+indicator (NS✓ EC✓ AGC✓).
+
+Protocol — two capture sessions, **convert mode**, agent running with
+`--capture-dir`:
+
+1. Session A: all three toggles **ON**. Speak the fox sentence, then
+   **"mic test one two" × 3** (short utterances with hard stops — the
+   tail-clip probe).
+2. Disconnect (closes the session), reconnect. Session B: all three toggles
+   **OFF**. Same script.
+3. Analyze both sessions and compare the utterance/tail table and clipped
+   counts in `report.txt`:
+
+```bash
+./.venv/bin/python analyze_capture.py captures/<session-A>/
+./.venv/bin/python analyze_capture.py captures/<session-B>/
+```
+
+If ON shows clipped tails that OFF doesn't, the browser processing is the
+word-clipper and the fix belongs client-side (constraints), not in the
+agent pipeline.
+
 `lk_smoke.py` is the connectivity gate for any new environment: it must print
 `CONNECTED OK` before anything else is worth debugging (see `runbook.md`).
 
