@@ -88,7 +88,33 @@ Then open `/livekit-test`, connect as `test-user`, and use the
 Agent stats every 5 s: mode, frames in/out, windows sent/recv/dropped,
 underruns, turnaround p50/p95, buffer depth.
 
+## Capture diagnostics (Phase 1)
+
+Add `--capture-dir captures/` to record each processing session for offline
+analysis: `input_48k.wav` (frames as received), `output_48k.wav` (frames as
+published), and `meta.jsonl` (per-window turnaround, drops, underruns, stale
+discards, mode changes, jitter-buffer depth per hop). The frame loop only
+ever appends to memory — a background task does all disk I/O — and without
+the flag capture is fully disabled.
+
+Analyze a session (plots + report written into the session dir):
+
+```bash
+./.venv/bin/python analyze_capture.py captures/<timestamp>/
+```
+
+The test protocol (fox sentence + keyboard typing, both modes) is documented
+in the `analyze_capture.py` docstring.
+
+`lk_smoke.py` is the connectivity gate for any new environment: it must print
+`CONNECTED OK` before anything else is worth debugging (see `runbook.md`).
+
 ## Convert agent — RunPod runbook (real RVC)
+
+> **SUPERSEDED (22 Jul):** the agent must NOT run on RunPod — the RunPod
+> runtime futex-crashes the LiveKit Rust FFI. Agent runs on a VPS, RVC on the
+> pod, connected TCP-direct. See `runbook.md` at the repo root for the
+> current deploy recipe; the section below is kept for the RVC-side details.
 
 The agent runs **on the same pod as the RVC server**; the hop is loopback.
 
