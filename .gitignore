@@ -32,3 +32,6 @@ dist-ssr
 base44/.app.jsonc
 secrets.env
 *.env
+
+# Ops handover notes — contain raw VPS IPs/port maps; never commit
+CTO_HANDOVER*.md

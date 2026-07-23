@@ -4,7 +4,130 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 22 July 2026, ~17:50 — Phase 1 review fixes: CodeRabbit findings on feat/capture-analysis-runbook
+## 22 July 2026, ~20:30 — Phase 2 CTO review fixes (applied-truth readout, handover gitignore, protocol prereqs)
+
+### Task (verbatim)
+
+> The CTO has reviewed your PR and requested the following mandatory updates on the current branch before merge:
+>
+> 1. THE "APPLIED TRUTH" UI FIX: The NS/EC/AGC readout currently renders React state (the requested constraints). Browsers frequently ignore these constraints silently. After publish and after each restartTrack, you must read `micTrack.mediaStreamTrack.getSettings()`, render the UI readout strictly from that actual state, and visually flag any mismatch between the button state and the applied state.
+> 2. SECURITY HOTFIX: Add `CTO_HANDOVER*.md` to `.gitignore` immediately. The repo is public, and that file contains raw VPS IPs and port maps.
+> 3. README PROTOCOL UPDATE: Add to the test protocol that macOS mic mode MUST be set to "Standard" (not Voice Isolation) via Control Center, and the user must use the built-in Mac microphone (no AirPods, to avoid headset DSP confounds).
+> 4. GITHUB CLI PATH: You mentioned `gh` isn't installed. It is, but it's not on your PATH. Use the absolute path `/opt/homebrew/bin/gh` for your PR commands.
+>
+> Please push these changes to the existing Phase 2 branch, update the PR using `/opt/homebrew/bin/gh`, and await CodeRabbit's review.
+
+### What was done
+
+1. **Applied-truth readout** — hook gained `appliedConstraints` state read from
+   `micTrack.mediaStreamTrack.getSettings()` after publish and after every
+   `restartTrack` attempt (in `finally` — a failed restart still leaves a track
+   whose real settings matter); cleared on disconnect/reset. The header readout
+   now renders ONLY the applied state: green ✓/gray ✗ when it matches the
+   buttons, **amber ⚠ with a requested-vs-applied tooltip on mismatch**,
+   muted `NS–` when there is no live mic or the browser doesn't report a key.
+2. **Security** — `CTO_HANDOVER*.md` added to the root `.gitignore`. Verified
+   first: the file exists locally but was never tracked (`git ls-files` empty
+   for it), so ignoring is sufficient — no history scrub needed.
+3. **README protocol prereqs** — macOS mic mode MUST be "Standard" (Voice
+   Isolation is OS-level DSP that clips tails upstream of the toggles) and
+   built-in Mac mic only (no AirPods — onboard headset DSP is a second
+   uncontrolled stage).
+4. **gh works at `/opt/homebrew/bin/gh`** (it was installed since the earlier
+   sessions' checks) — used for the PR update below.
+
+### Verification
+
+- eslint clean on both touched files; `vite build` clean; `tsc --noEmit` zero
+  errors touching them. The applied-state read path (getSettings after
+  publish/restart) was already live-proven by the Phase 2 headless-Chrome
+  harness, which asserts on exactly those values.
+
+### Files changed
+
+`src/hooks/useLiveKitVoice.js`, `src/pages/LiveKitTest.jsx`, `.gitignore`,
+`agent/README.md`, `devlog/SESSIONS.md`, `notes.md`.
+
+### Task (verbatim)
+
+> Phase 2 — capture-settings experiment (frontend only, then I run the pod session).
+>
+> Add audio-capture constraint controls to the LiveKit test page:
+> - In src/hooks/useLiveKitVoice.js + src/pages/LiveKitTest.jsx ONLY: add three
+>   toggles — noiseSuppression, echoCancellation, autoGainControl — default ON
+>   (current browser behavior). Apply them as audio capture constraints when
+>   publishing the mic track. BEFORE CODING: verify the exact constraint API
+>   against installed livekit-client 2.20.1 (audioCaptureDefaults vs per-track
+>   options — check the types, not memory).
+> - Changing a toggle while connected should re-acquire/republish the mic with
+>   the new constraints (or clearly require reconnect if the SDK demands it —
+>   report which).
+> - Show the active constraint state in the UI next to the mode indicator.
+> - Update the agent README test protocol: the Phase 2 experiment is two
+>   capture sessions (fox sentence + "mic test one two" x3), one with all
+>   processing ON, one with all OFF, convert mode, --capture-dir enabled,
+>   then analyze_capture.py on both and compare tail-clip reports.
+> Branch → PR → CodeRabbit per convention. Log per CLAUDE.md.
+
+### APIs verified against installed livekit-client 2.20.1 (types + live, never memory)
+
+- `AudioCaptureOptions` (dist/src/room/track/options.d.ts:222) carries exactly
+  `noiseSuppression` / `echoCancellation` / `autoGainControl` (ConstrainBoolean)
+  plus deviceId etc. Two ways in: `RoomOptions.audioCaptureDefaults`
+  (options.d.ts:35) or per-call — chose per-call:
+  `setMicrophoneEnabled(enabled, options?: AudioCaptureOptions, publishOptions?)`
+  (LocalParticipant.d.ts:100) since constraints can change per session.
+- **Live toggle verdict: NO reconnect needed.**
+  `LocalAudioTrack.restartTrack(options?: AudioCaptureOptions)`
+  (LocalAudioTrack.d.ts:26) stops the old MediaStreamTrack, getUserMedias with
+  the new constraints, and swaps via setMediaStreamTrack → sender.replaceTrack —
+  publication and track SID survive.
+- **Live-verified in headless Chrome** (fake mic, real LiveKit Cloud room, via a
+  minimal harness page + result-POST server; no puppeteer on this machine):
+  publish with all-ON → settings all true; restartTrack all-OFF → settings all
+  false; back ON → all true; `trackSid` identical throughout; room stays
+  connected. Chrome headless needed `--auto-accept-camera-and-microphone-capture`
+  (the old fake-ui flag alone now yields NotAllowedError).
+- Source-reading correction caught by the live test: I initially believed
+  restartTrack dropped audio constraints without a deviceId (LocalTrack.restart
+  maps audio to `audio: true` when constraints have no deviceId). Live run
+  showed constraints DO apply — because `constraintsForOptions` injects
+  `deviceId: {ideal:'default'}` when none is given, so the deviceId path is
+  always taken. Real implication: without an explicit deviceId a toggle could
+  silently jump to the system-default mic — so the hook pins the current device
+  (`getSourceTrackSettings().deviceId`, fallback `getDeviceId(false)`) with
+  `{exact: …}` on every restart.
+
+### What was built (only the two allowed files + README)
+
+- `useLiveKitVoice.js` — `captureConstraints` state (+ ref mirror), defaults
+  all ON; `connect()` publishes with
+  `setMicrophoneEnabled(true, {...captureConstraintsRef.current})`;
+  `setCaptureConstraint(name, enabled)` updates state and, when connected,
+  restarts the mic track in place with the device pinned; orphaned-room race
+  guards match the file's existing pattern; getUserMedia failure during a
+  restart surfaces via the existing `error` state.
+- `LiveKitTest.jsx` — "Mic Processing" toggle row inside the Voice Mode card
+  (three labeled on/off buttons, usable also while disconnected — they set the
+  state for the next connect) + compact live state readout (NS✓ EC✓ AGC✓,
+  green/gray) next to the agent-mode indicator.
+- `agent/README.md` — Phase 2 experiment protocol: two convert-mode capture
+  sessions (all-ON vs all-OFF), fox sentence + "mic test one two" ×3,
+  `--capture-dir` on, analyze both, compare clipped-tail counts; hypothesis
+  stated (browser processing eats word tails before the pipeline sees them).
+
+### Verification results
+
+- Headless-Chrome live run (above): 4/4 constraint states applied, same
+  trackSid, room connected at end.
+- eslint clean on both touched files; `vite build` clean; `tsc --noEmit`
+  reports zero errors touching the two files (pre-existing errors elsewhere
+  unchanged).
+
+### Files changed
+
+Modified: `src/hooks/useLiveKitVoice.js`, `src/pages/LiveKitTest.jsx`,
+`agent/README.md`, `devlog/SESSIONS.md`, `notes.md`. Nothing else touched.
 
 ### Task (verbatim)
 
