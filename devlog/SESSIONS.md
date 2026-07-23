@@ -4,7 +4,90 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 22 July 2026, ~20:30 — Phase 2 CTO review fixes (applied-truth readout, handover gitignore, protocol prereqs)
+## 23 July 2026, ~07:30 — Phase 3: Silero VAD gating in the convert agent
+
+### Task (abridged; full text in the PR)
+
+> Gate the pipeline with Silero VAD on the VPS so only speech is sent to the
+> RVC server; everything else becomes clean silence in the output. Verify the
+> silero distribution/API before coding; per-hop gate; onset protection
+> (context accumulates through gates — assert it); tail protection (300 ms
+> hangover, flag-tunable); fail-open; --no-vad/--vad-threshold/
+> --vad-hangover-ms; capture gate events; analyzer gains a third dropout
+> attribution "VAD-gated (intentional)"; data-channel state backward-
+> compatibly; gated hops enqueue nothing and are not drops. Test locally vs
+> the mock; README Phase 3 section + acceptance protocol; atomic commits;
+> PR via /opt/homebrew/bin/gh; await CodeRabbit and reply with evidence.
+
+### Verified before coding (live docs + the venv, never memory)
+
+- pip `silero-vad` **6.2.1** (Feb 2026) installs cleanly in agent/.venv
+  (py3.9), pulling torch 2.8.0 + torchaudio 2.8.0 — all three pinned.
+- API verified by introspection + live calls: `load_silero_vad(onnx=False)` →
+  TorchScript model; `model(chunk, 16000)` returns a speech prob and
+  **requires exactly 512-sample chunks** (256 rejected live); LSTM state kept
+  across calls, `reset_states()` present; `VADIterator` default threshold
+  0.5 → mirrored as our default (we implement hangover ourselves, calling
+  the model directly per chunk).
+- Geometry: HOP 6144 @48k = 2048 @16k = exactly 4 silero chunks per hop —
+  gate decisions land on hop boundaries by construction.
+
+### What was built (4 atomic commits)
+
+1. `vad.py` + `SolaStitcher.drain()` + `test_vad.py` — `Resampler48to16`
+   (FIR anti-aliased 3:1 decimation, filter state carried: chunked ==
+   one-shot bit-identical), `VadGate` (max-prob threshold + hangover rounded
+   UP to whole hops; fail-open on load/runtime error), `OutputGate`
+   (fade-out drain of the stitcher tail at gate close — `drain()` releases
+   the provisional XFADE tail, no underrun counting; silence while closed;
+   re-prime + 15 ms equal-power fade-in at open; gate_open=True ==
+   pre-Phase-3 behavior, proven byte-identical in a test).
+2. convert_agent wiring — per-hop decision on `window[-HOP:]`; gated hops
+   `continue` before the websocket (nothing enqueued, `gated` counter, not
+   drops); assembler untouched by gating with a runtime seq-monotonicity
+   assert; on output drain, in-flight windows from the closed period are
+   marked stale by seq; fail-open published once on the data channel;
+   `agent_mode` payload gains additive `vad` field; flags + startup config
+   log; capture header + `vad_gate`/`vad_drained` events.
+3. Analyzer third attribution — `gated_spans_from_events` (input-timeline
+   spans, open-ended tail), `classify_silences` → benign / vad_gated /
+   dropout, violet dropout-map shading, per-category report.
+4. Classifier fix from E2E evidence — sparse transients (typing ≈ 9% of
+   envelope frames) fell under the 30% activity bar and read as benign;
+   gate-overlap is now checked first with a 5% floor.
+
+### Verification
+
+- **37/37 tests** (14 new). Deterministic stub prob_fn (sustained-energy,
+  so impulses score 0 like real silero); assertions: gated spans exactly
+  zero, hangover hops still sent, max sample-to-sample jump at gate edges
+  0.014 (< 0.05 — no clicks), first post-gate window bit-equal to the raw
+  input's last WINDOW samples (context continuity), fail-open pipeline ==
+  ungated pipeline, OutputGate == legacy path when gate always open.
+- **E2E vs mock with the REAL silero model** (fox → typing 3 s → clap →
+  fox): gate opened only for the two spoken sections (prob 1.00 open /
+  0.02 close), typing and clap never opened it; 49 windows sent vs 70
+  gated; 0 drops, 0 stale, 0 underruns; analyzer: 0 clipped tails,
+  0 dropouts, typing+clap span attributed **VAD-GATED 5.02–9.60s
+  (intentional)**; dropout map renders the violet gated block; latency
+  340→360 ms unchanged by gating.
+
+### Files changed
+
+New: `agent/vad.py`, `agent/test_vad.py`. Modified: `agent/bridge.py`
+(drain), `agent/convert_agent.py`, `agent/analyze_capture.py`,
+`agent/test_analyze.py`, `agent/requirements.txt`, `agent/README.md`,
+`devlog/SESSIONS.md`, `notes.md`. Frontend untouched.
+
+### CodeRabbit round (PR #10)
+
+1 actionable + 5 nitpicks, all applied in c2e5ec4 (37/37 tests after):
+notes.md stray kernel line labeled + verdict sentence completed; unused
+`sent` → `_sent`; fail-open load test now exercises public `load()` via
+monkeypatch; redundant `int(round())` removed; context-invariant assert →
+explicit check + loud log (survives -O, keeps the stream alive); fail-open
+publish task strongly referenced. Threaded reply + itemized evidence
+comment posted on the PR.
 
 ### Task (verbatim)
 

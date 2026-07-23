@@ -146,6 +146,53 @@ agent pipeline.
 `lk_smoke.py` is the connectivity gate for any new environment: it must print
 `CONNECTED OK` before anything else is worth debugging (see `runbook.md`).
 
+## Phase 3 — Silero VAD gate
+
+Non-speech audio (keyboard, doors, breaths) reaching RVC comes back as
+hallucinated garble — Phase 2 pod captures attributed the bulk of dropouts to
+the converter choking on partial-energy input. The agent now gates the
+pipeline with Silero VAD (`vad.py`, silero-vad 6.2.1 pinned): each 128 ms hop
+is resampled 48k→16k (analysis only — RVC still gets 48k) and scored; only
+hops with speech probability ≥ threshold, plus a **hangover** tail after the
+last speech, are sent to the RVC server. Everything else becomes clean
+silence on the output, with 15 ms equal-power ramps at every gate edge.
+
+Properties worth knowing:
+
+- **Context is never sacrificed** — the sliding-window assembler keeps
+  accumulating through gated periods, so the first window after gate-open
+  carries real acoustic context (asserted in code and tests).
+- **Tail protection** — hangover default 300 ms (`--vad-hangover-ms`),
+  rounded UP to whole hops (384 ms effective). The VAD must not become the
+  word-clipper Phase 2 exonerated the browser of.
+- **Fail-open** — model load/runtime failure ⇒ one loud log + a data-channel
+  report, then the agent runs ungated. The stream survives, like the
+  RVC-failure fallback.
+- **Idle GPU is the point** — gated hops enqueue nothing on the websocket
+  and are counted as `gated` in the stats line, never as drops.
+- Gate state rides in the `agent_mode` data-channel payload
+  (`vad: {enabled, gate, threshold, hangover_ms}`) — additive; the current
+  frontend ignores it (Phase 4's console consumes it).
+
+Flags: `--no-vad` (default: VAD on), `--vad-threshold 0.5` (silero's own
+default), `--vad-hangover-ms 300`. Active config is logged at startup.
+
+### Phase 3 acceptance protocol
+
+One convert-mode capture session (`--capture-dir`, VAD on, defaults), same
+mic prerequisites as Phase 2 (macOS mic mode "Standard", built-in mic):
+
+1. Repeat the Phase 2 script — fox sentence + "mic test one two" × 3.
+2. Then ~3 s of deliberate keyboard typing and a door slam or hand clap.
+3. Analyze with the updated analyzer (it now attributes silences three ways:
+   benign / **VAD-gated (intentional)** / dropout).
+
+Acceptance: clipped tails still 0; garble-attributed dropouts collapse
+versus the Phase 2 Session A baseline; the typing and clap read as
+**VAD-gated** silences, not dropouts. (Local mock rehearsal of exactly this
+protocol: gate opened only for the two spoken sections, typing+clap span
+attributed VAD-gated, 0 clipped tails, 0 dropouts.)
+
 ## Convert agent — RunPod runbook (real RVC)
 
 > **SUPERSEDED (22 Jul):** the agent must NOT run on RunPod — the RunPod

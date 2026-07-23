@@ -14,9 +14,10 @@ that directory:
                          corresponding output tail = the word-clipping
                          detector)
   dropout_map.png        output-timeline silence regions annotated with
-                         meta.jsonl events — drops/underruns near a silence
-                         region mean starvation; silence with no events means
-                         the converter itself garbled/suppressed audio
+                         meta.jsonl events — three attributions: benign
+                         (input silent too), VAD-gated (intentional — inside
+                         a gate-closed span), and DROPOUT (drops/underruns
+                         nearby = starvation; no events = converter garble)
   report.txt             text summary of all of the above
 
 TEST PROTOCOL
@@ -227,25 +228,67 @@ def find_silence_regions(env, hop_ms=ENV_HOP_MS, thresh_ratio=UTTER_THRESH_RATIO
     return regions
 
 
-def classify_silences(silences, env_in, offset_frames, hop_ms=ENV_HOP_MS,
-                      thresh_ratio=UTTER_THRESH_RATIO, active_frac=0.30):
-    """Split output-silence regions into benign vs dropout.
+def gated_spans_from_events(events, sr=SR):
+    """VAD gate-closed spans on the INPUT timeline, from meta.jsonl vad_gate
+    events. Returns [(start_s, end_s)]; a session ending closed runs to +inf."""
+    spans = []
+    closed_at = None
+    for ev in events:
+        if ev.get("event") != "vad_gate":
+            continue
+        t = ev["in_pos"] / sr
+        if ev.get("state") == "closed" and closed_at is None:
+            closed_at = t
+        elif ev.get("state") == "open" and closed_at is not None:
+            spans.append((closed_at, t))
+            closed_at = None
+    if closed_at is not None:
+        spans.append((closed_at, float("inf")))
+    return spans
 
-    A silence is benign when the latency-aligned input was also silent there
-    (gaps between words/keystrokes reproduce as silence — that's correct
-    behavior). It is a DROPOUT when ≥ active_frac of the aligned input frames
-    were active: audio went in, nothing came out. Returns
-    [(start_s, end_s, is_dropout, input_active_fraction), ...] on the output
-    timeline.
+
+def classify_silences(silences, env_in, offset_frames, hop_ms=ENV_HOP_MS,
+                      thresh_ratio=UTTER_THRESH_RATIO, active_frac=0.30,
+                      gated_spans=(), gated_overlap=0.5):
+    """Attribute output-silence regions. Three verdicts:
+
+      "vad_gated"  ≥ gated_overlap of the span falls inside a VAD gate-closed
+                   period AND the input had any meaningful activity there
+                   (≥ gated_min_frac — sparse keystrokes/claps light up only
+                   ~10% of envelope frames, so the bar is deliberately low):
+                   intentional suppression, NOT converter garble
+      "dropout"    input active (≥ active_frac), not gated — audio went in,
+                   nothing came out (starvation if drop/underrun events sit
+                   nearby, garble otherwise)
+      "benign"     everything else — the latency-aligned input was
+                   effectively silent (gaps between words reproducing as
+                   silence, or true silence inside a gated period)
+
+    Returns [(start_s, end_s, category, input_active_fraction), ...] on the
+    output timeline. Without the vad_gated class, correct VAD behavior would
+    read as converter garble and the instrument would lie.
     """
     ref = float(np.percentile(env_in, 95)) if len(env_in) else 0.0
+    off_s = offset_frames * hop_ms / 1000.0
+    gated_min_frac = 0.05
     out = []
     for s, e in silences:
-        i0 = max(0, int(round(s * 1000.0 / hop_ms)) - offset_frames)
-        i1 = max(i0, int(round(e * 1000.0 / hop_ms)) - offset_frames)
+        i0 = max(0, round(s * 1000.0 / hop_ms) - offset_frames)
+        i1 = max(i0, round(e * 1000.0 / hop_ms) - offset_frames)
         seg = env_in[i0:min(i1, len(env_in))]
         frac = float((seg >= ref * thresh_ratio).mean()) if len(seg) and ref > 0 else 0.0
-        out.append((s, e, frac >= active_frac, frac))
+        # map the output span back to the input timeline and overlap with gates
+        in_s, in_e = s - off_s, e - off_s
+        overlap = sum(
+            max(0.0, min(in_e, g_e) - max(in_s, g_s)) for g_s, g_e in gated_spans
+        )
+        gated = overlap / max(1e-9, in_e - in_s) >= gated_overlap
+        if gated and frac >= gated_min_frac:
+            out.append((s, e, "vad_gated", frac))
+        elif frac >= active_frac:
+            out.append((s, e, "dropout", frac))
+        else:
+            out.append((s, e, "benign", frac))
     return out
 
 
@@ -368,16 +411,17 @@ def plot_dropout_map(path, env_out, hop_ms, silences, events, out_dur_s):
     fig, ax = plt.subplots(figsize=(12, 4))
     t_out = np.arange(len(env_out)) * hop_ms / 1000.0
     ax.plot(t_out, env_out, color=C_MUTE, lw=1.0, label="output RMS")
-    seen_benign = seen_drop = False
-    for s, e, is_dropout, _frac in silences:
-        if is_dropout:
-            ax.axvspan(s, e, color=C_CRIT, alpha=0.30, zorder=0,
-                       label=None if seen_drop else "DROPOUT (input was active)")
-            seen_drop = True
-        else:
-            ax.axvspan(s, e, color="#d8d7d2", alpha=0.6, zorder=0,
-                       label=None if seen_benign else "silence (input silent too)")
-            seen_benign = True
+    span_styles = {
+        "benign": dict(color="#d8d7d2", alpha=0.6, label="silence (input silent too)"),
+        "vad_gated": dict(color="#4a3aa7", alpha=0.25, label="VAD-gated (intentional)"),
+        "dropout": dict(color=C_CRIT, alpha=0.30, label="DROPOUT (input was active)"),
+    }
+    seen = set()
+    for s, e, category, _frac in silences:
+        style = span_styles[category]
+        ax.axvspan(s, e, color=style["color"], alpha=style["alpha"], zorder=0,
+                   label=None if category in seen else style["label"])
+        seen.add(category)
     marks = {
         "drop": dict(marker="x", color=C_CRIT, label="window drop (backpressure)"),
         "underrun": dict(marker="v", color=C_WARN, label="stitcher underrun"),
@@ -404,9 +448,11 @@ def plot_dropout_map(path, env_out, hop_ms, silences, events, out_dur_s):
     ax.set_xlabel("output-timeline seconds")
     ax.set_ylabel("RMS")
     ax.legend(loc="upper right", frameon=False, fontsize=8)
-    n_drop = sum(1 for _s, _e, d, _f in silences if d)
-    ax.set_title(f"Dropout map — {len(silences)} silence region(s), {n_drop} dropout(s); "
-                 "events pinned by output sample position", fontsize=11, loc="left")
+    n_drop = sum(1 for _s, _e, c, _f in silences if c == "dropout")
+    n_gated = sum(1 for _s, _e, c, _f in silences if c == "vad_gated")
+    ax.set_title(f"Dropout map — {len(silences)} silence region(s), {n_drop} dropout(s), "
+                 f"{n_gated} VAD-gated; events pinned by output sample position",
+                 fontsize=11, loc="left")
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
@@ -445,10 +491,17 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
     n_clip = sum(r["clipped"] for r in tail_results)
     add(f"clipped tails  : {n_clip}")
     add("")
-    n_benign = sum(1 for _s, _e, d, _f in silences if not d)
-    dropouts = [x for x in silences if x[2]]
-    add(f"output silences: {len(silences)} ({n_benign} benign — input silent there too)")
-    for s, e, _d, frac in dropouts:
+    counts = {"benign": 0, "vad_gated": 0, "dropout": 0}
+    for _s, _e, c, _f in silences:
+        counts[c] += 1
+    add(f"output silences: {len(silences)} ({counts['benign']} benign — input silent "
+        f"there too; {counts['vad_gated']} VAD-gated — intentional)")
+    for s, e, category, frac in silences:
+        if category == "benign":
+            continue
+        if category == "vad_gated":
+            add(f"  VAD-GATED {s:7.2f}–{e:.2f}s  input active {frac:.0%}  (intentional)")
+            continue
         near = [ev["event"] for ev in events
                 if ev["event"] in ("drop", "underrun", "stale", "window_lost")
                 and s - 0.5 <= ev["out_pos"] / SR <= e + 0.5]
@@ -488,7 +541,8 @@ def main(argv=None):
     offset_frames = int(round(offset_ms / ENV_HOP_MS))
     utterances = detect_utterances(env_in)
     tails = detect_tail_clips(env_in, env_out, offset_frames, utterances)
-    silences = classify_silences(find_silence_regions(env_out), env_in, offset_frames)
+    silences = classify_silences(find_silence_regions(env_out), env_in, offset_frames,
+                                 gated_spans=gated_spans_from_events(events))
 
     plot_aligned_waveforms(d / "aligned_waveforms.png", x_in, x_out, sr_in, offset_ms)
     plot_spectrograms(d / "spectrograms.png", x_in, x_out, sr_in, offset_ms)
