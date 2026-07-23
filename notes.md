@@ -4,6 +4,14 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 22 July 2026 (late) — Phase 2 CTO fixes (full record: devlog/SESSIONS.md)
+
+- NS/EC/AGC readout now renders the browser's APPLIED settings (`getSettings()` after publish/restart), amber ⚠ on request-vs-applied mismatch — browsers silently ignoring constraints is now visible, which is itself Phase 2 data.
+- `CTO_HANDOVER*.md` gitignored (checked: never tracked, no history scrub needed). README protocol: macOS mic mode "Standard" + built-in mic only.
+- gh CLI available at `/opt/homebrew/bin/gh` (not on PATH) — PR updated with it; awaiting CodeRabbit.
+
+---
+
 ## 22 July 2026 (night) — Phase 2 frontend: mic-processing toggles (full record: devlog/SESSIONS.md)
 
 - `/livekit-test` now has NS/EC/AGC toggles (default ON = browser default), applied via `setMicrophoneEnabled(true, AudioCaptureOptions)` at publish and `restartTrack` live — **no reconnect needed**, track SID survives (live-verified in headless Chrome against LiveKit Cloud). Active state shown next to the agent-mode indicator.

@@ -115,6 +115,14 @@ ON = browser default); toggling while connected re-acquires the mic in place
 — no reconnect needed. The active state is shown next to the agent-mode
 indicator (NS✓ EC✓ AGC✓).
 
+Mic prerequisites on the Mac (confounds otherwise invalidate the A/B):
+
+- macOS mic mode MUST be **"Standard"**, not Voice Isolation — Control
+  Center → Mic Mode while the browser is capturing. Voice Isolation is
+  OS-level DSP that clips tails upstream of everything these toggles control.
+- Use the **built-in Mac microphone** — no AirPods/headsets, whose onboard
+  DSP is a second uncontrolled processing stage.
+
 Protocol — two capture sessions, **convert mode**, agent running with
 `--capture-dir`:
 

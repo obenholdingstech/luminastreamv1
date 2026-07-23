@@ -90,6 +90,7 @@ export default function LiveKitTest() {
     agentMode,
     agentModeReason,
     captureConstraints,
+    appliedConstraints,
     connect,
     disconnect,
     enableAudio,
@@ -213,18 +214,42 @@ export default function LiveKitTest() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-[11px] tracking-widest uppercase text-[#64748B]">Voice Mode</h2>
             <span className="flex items-center gap-3 text-[10px] tracking-widest uppercase">
-              {/* Active mic-processing state — mirrors the toggles below */}
+              {/* APPLIED mic-processing state — strictly what the browser
+                  granted (getSettings()), never the requested React state.
+                  Amber ⚠ = browser silently ignored a requested constraint. */}
               <span className="flex items-center gap-1.5 font-mono normal-case tracking-normal">
-                {MIC_PROCESSING.map(({ key, short }) => (
-                  <span
-                    key={key}
-                    title={`${key}: ${captureConstraints[key] ? 'on' : 'off'}`}
-                    style={{ color: captureConstraints[key] ? '#10B981' : '#64748B' }}
-                  >
-                    {short}
-                    {captureConstraints[key] ? '✓' : '✗'}
-                  </span>
-                ))}
+                {MIC_PROCESSING.map(({ key, short }) => {
+                  const applied = appliedConstraints?.[key];
+                  const requested = captureConstraints[key];
+                  if (appliedConstraints == null || applied === undefined) {
+                    // no live mic yet, or browser doesn't report this setting
+                    return (
+                      <span
+                        key={key}
+                        title={`${key}: ${appliedConstraints == null ? 'no live mic' : 'not reported by browser'}`}
+                        className="text-[#64748B]"
+                      >
+                        {short}–
+                      </span>
+                    );
+                  }
+                  const mismatch = applied !== requested;
+                  return (
+                    <span
+                      key={key}
+                      title={
+                        mismatch
+                          ? `${key}: requested ${requested ? 'on' : 'off'} but browser applied ${applied ? 'on' : 'off'}`
+                          : `${key}: ${applied ? 'on' : 'off'} (applied)`
+                      }
+                      style={{ color: mismatch ? '#F59E0B' : applied ? '#10B981' : '#64748B' }}
+                    >
+                      {mismatch && '⚠'}
+                      {short}
+                      {applied ? '✓' : '✗'}
+                    </span>
+                  );
+                })}
               </span>
               {agentMode ? (
                 <span

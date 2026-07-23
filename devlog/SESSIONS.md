@@ -4,7 +4,49 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 22 July 2026, ~19:30 — Phase 2: mic-processing constraint toggles on the LiveKit test page
+## 22 July 2026, ~20:30 — Phase 2 CTO review fixes (applied-truth readout, handover gitignore, protocol prereqs)
+
+### Task (verbatim)
+
+> The CTO has reviewed your PR and requested the following mandatory updates on the current branch before merge:
+>
+> 1. THE "APPLIED TRUTH" UI FIX: The NS/EC/AGC readout currently renders React state (the requested constraints). Browsers frequently ignore these constraints silently. After publish and after each restartTrack, you must read `micTrack.mediaStreamTrack.getSettings()`, render the UI readout strictly from that actual state, and visually flag any mismatch between the button state and the applied state.
+> 2. SECURITY HOTFIX: Add `CTO_HANDOVER*.md` to `.gitignore` immediately. The repo is public, and that file contains raw VPS IPs and port maps.
+> 3. README PROTOCOL UPDATE: Add to the test protocol that macOS mic mode MUST be set to "Standard" (not Voice Isolation) via Control Center, and the user must use the built-in Mac microphone (no AirPods, to avoid headset DSP confounds).
+> 4. GITHUB CLI PATH: You mentioned `gh` isn't installed. It is, but it's not on your PATH. Use the absolute path `/opt/homebrew/bin/gh` for your PR commands.
+>
+> Please push these changes to the existing Phase 2 branch, update the PR using `/opt/homebrew/bin/gh`, and await CodeRabbit's review.
+
+### What was done
+
+1. **Applied-truth readout** — hook gained `appliedConstraints` state read from
+   `micTrack.mediaStreamTrack.getSettings()` after publish and after every
+   `restartTrack` attempt (in `finally` — a failed restart still leaves a track
+   whose real settings matter); cleared on disconnect/reset. The header readout
+   now renders ONLY the applied state: green ✓/gray ✗ when it matches the
+   buttons, **amber ⚠ with a requested-vs-applied tooltip on mismatch**,
+   muted `NS–` when there is no live mic or the browser doesn't report a key.
+2. **Security** — `CTO_HANDOVER*.md` added to the root `.gitignore`. Verified
+   first: the file exists locally but was never tracked (`git ls-files` empty
+   for it), so ignoring is sufficient — no history scrub needed.
+3. **README protocol prereqs** — macOS mic mode MUST be "Standard" (Voice
+   Isolation is OS-level DSP that clips tails upstream of the toggles) and
+   built-in Mac mic only (no AirPods — onboard headset DSP is a second
+   uncontrolled stage).
+4. **gh works at `/opt/homebrew/bin/gh`** (it was installed since the earlier
+   sessions' checks) — used for the PR update below.
+
+### Verification
+
+- eslint clean on both touched files; `vite build` clean; `tsc --noEmit` zero
+  errors touching them. The applied-state read path (getSettings after
+  publish/restart) was already live-proven by the Phase 2 headless-Chrome
+  harness, which asserts on exactly those values.
+
+### Files changed
+
+`src/hooks/useLiveKitVoice.js`, `src/pages/LiveKitTest.jsx`, `.gitignore`,
+`agent/README.md`, `devlog/SESSIONS.md`, `notes.md`.
 
 ### Task (verbatim)
 

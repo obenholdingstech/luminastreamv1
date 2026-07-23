@@ -38,6 +38,10 @@ export function useLiveKitVoice(url, token) {
   // Mic capture constraints (Phase 2 experiment) — survive across sessions;
   // applied at publish time and re-applied live via restartTrack
   const [captureConstraints, setCaptureConstraints] = useState(DEFAULT_CAPTURE_CONSTRAINTS);
+  // What the browser ACTUALLY applied (MediaStreamTrack.getSettings() after
+  // publish/restart) — browsers may silently ignore requested constraints, so
+  // the UI readout must render this, never the requested state. null = no live mic.
+  const [appliedConstraints, setAppliedConstraints] = useState(null);
 
   const roomRef = useRef(null);
   // Latest constraints for connect()/toggle without re-creating callbacks
@@ -52,6 +56,22 @@ export function useLiveKitVoice(url, token) {
   urlRef.current = url;
   const tokenRef = useRef(token);
   tokenRef.current = token;
+
+  // Read the settings the browser actually granted off the live mic track.
+  // getSettings() is synchronous; a key can come back undefined when the
+  // browser doesn't report it (surfaced as "unknown" in the UI, not a mismatch)
+  const readAppliedConstraints = useCallback((micTrack) => {
+    const settings = micTrack?.mediaStreamTrack?.getSettings?.();
+    if (!settings) {
+      setAppliedConstraints(null);
+      return;
+    }
+    setAppliedConstraints({
+      noiseSuppression: settings.noiseSuppression,
+      echoCancellation: settings.echoCancellation,
+      autoGainControl: settings.autoGainControl,
+    });
+  }, []);
 
   // Refs/DOM only — safe from unmount cleanup where setState must be avoided.
   // track.detach() detaches ALL elements for the track and returns them.
@@ -71,6 +91,7 @@ export function useLiveKitVoice(url, token) {
     setAudioBlocked(false);
     setAgentMode(null);
     setAgentModeReason(null);
+    setAppliedConstraints(null);
     setRoom(null);
     setConnectionQuality(ConnectionQuality.Unknown);
     setStats(EMPTY_STATS);
@@ -164,6 +185,10 @@ export function useLiveKitVoice(url, token) {
         return;
       }
 
+      // Applied truth: what did the browser actually grant?
+      readAppliedConstraints(
+        newRoom.localParticipant.getTrackPublication(Track.Source.Microphone)?.audioTrack,
+      );
       setRoom(newRoom);
     } catch (err) {
       // Only surface the failure if this attempt is still the active one — a
@@ -179,7 +204,7 @@ export function useLiveKitVoice(url, token) {
       detachAllRemoteAudio();
       await newRoom.disconnect().catch(() => {});
     }
-  }, [resetSessionState, detachAllRemoteAudio]);
+  }, [resetSessionState, detachAllRemoteAudio, readAppliedConstraints]);
 
   const disconnect = useCallback(async () => {
     const activeRoom = roomRef.current;
@@ -239,8 +264,12 @@ export function useLiveKitVoice(url, token) {
       if (roomRef.current === activeRoom) {
         setError(err?.message || 'Failed to re-acquire the microphone with new constraints.');
       }
+    } finally {
+      // Applied truth after every attempt — even a failed restart leaves a
+      // track whose real settings the readout must reflect
+      if (roomRef.current === activeRoom) readAppliedConstraints(micTrack);
     }
-  }, []);
+  }, [readAppliedConstraints]);
 
   // Browsers may block autoplay until a user gesture — LiveKit surfaces that
   // via AudioPlaybackStatusChanged; calling startAudio() from a click fixes it
@@ -346,6 +375,7 @@ export function useLiveKitVoice(url, token) {
     agentMode,
     agentModeReason,
     captureConstraints,
+    appliedConstraints,
     connect,
     disconnect,
     enableAudio,
