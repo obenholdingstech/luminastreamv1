@@ -4,6 +4,15 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 23 July 2026 — Phase 3: Silero VAD gate shipped (full record: devlog/SESSIONS.md)
+
+- Convert agent now VAD-gates the RVC pipeline (silero-vad 6.2.1, 512@16k chunks, 4/hop): speech+300ms hangover sent, everything else clean output silence with 15ms equal-power edge ramps; context accumulates through gates; fail-open like the RVC fallback; gated hops enqueue nothing (idle GPU) and aren't drops. Flags: --no-vad / --vad-threshold 0.5 / --vad-hangover-ms 300.
+- Analyzer attributes silences three ways: benign / VAD-gated (intentional) / dropout — E2E vs mock with real silero: typing+clap → VAD-GATED, speech through, 0 clipped tails, 0 dropouts, gate never opened for noise. 37/37 tests.
+- agent_mode payload gains additive vad {enabled, gate, threshold, hangover_ms} — Phase 4 console consumes it; current frontend unaffected.
+- Next: pod acceptance run per README Phase 3 protocol (compare garble dropouts vs Phase 2 Session A), then Phase 4 console.
+
+---
+
 ## 22 July 2026 (late) — Phase 2 CTO fixes (full record: devlog/SESSIONS.md)
 
 - NS/EC/AGC readout now renders the browser's APPLIED settings (`getSettings()` after publish/restart), amber ⚠ on request-vs-applied mismatch — browsers silently ignoring constraints is now visible, which is itself Phase 2 data.
@@ -115,3 +124,5 @@ Decision (provisional, 21 Jul): cloning is ASYNC — quality over instancy. 30�
 Move 2a COMPLETE (22 Jul): stateless server (RVC_STREAM_CONTEXT_SECONDS=0) + client SOLA. 6.9/10 flow, RTF 0.55, 384ms worst-case budget. Failed approaches: stateful+naive chunks (4/10), stateful+overlap (context pollution, 5/10). Remaining: flow tuning (XFADE/SOLA/CTX) in agent; timbre leakage → benchmark phase with proper .pth.
 
 6.8.0-110-generic
+
+The Phase 2 verdict (browser is innocent), the "word-clipping" issue is re-scoped to a low-priority Starlink return-path issue, and the new testing protocol (Toggles OFF + Closed Headphones)
