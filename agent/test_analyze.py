@@ -160,6 +160,22 @@ def test_classify_silences_vad_gated_is_not_dropout():
     assert "dropout" not in cats
 
 
+def test_sparse_transients_in_gated_span_read_as_vad_gated():
+    # Keyboard typing: only ~10% of envelope frames active — must still be
+    # attributed to the VAD when the span is gate-closed, not called benign.
+    env_in = synth_envelope(6, [(1.0, 3.0, 0.3)])
+    for t in np.arange(3.3, 5.7, 0.1):          # sparse clicks ≈ 8% of frames,
+        env_in[int(t * HOPS_PER_S)] = 0.25      # matching measured typing (9%)
+    env_out = synth_envelope(6, [(1.0, 3.0, 0.3)])
+    silences = classify_silences(
+        find_silence_regions(env_out), env_in, offset_frames=0,
+        gated_spans=[(3.2, 6.0)],
+    )
+    gated = [(s, e) for s, e, c, _f in silences if c == "vad_gated"]
+    assert gated and gated[0][0] >= 3.0
+    assert not [1 for _s, _e, c, _f in silences if c == "dropout"]
+
+
 def test_gated_spans_from_events():
     from analyze_capture import gated_spans_from_events
     sr = 48000

@@ -252,14 +252,17 @@ def classify_silences(silences, env_in, offset_frames, hop_ms=ENV_HOP_MS,
                       gated_spans=(), gated_overlap=0.5):
     """Attribute output-silence regions. Three verdicts:
 
-      "benign"     the latency-aligned input was silent there too (gaps
-                   between words/keystrokes reproducing as silence)
-      "vad_gated"  input WAS active but ≥ gated_overlap of the span falls
-                   inside a VAD gate-closed period — intentional suppression
-                   (keyboard, claps): correct behavior, NOT converter garble
-      "dropout"    input active, not gated — audio went in, nothing came out
-                   (starvation if drop/underrun events sit nearby, garble
-                   otherwise)
+      "vad_gated"  ≥ gated_overlap of the span falls inside a VAD gate-closed
+                   period AND the input had any meaningful activity there
+                   (≥ gated_min_frac — sparse keystrokes/claps light up only
+                   ~10% of envelope frames, so the bar is deliberately low):
+                   intentional suppression, NOT converter garble
+      "dropout"    input active (≥ active_frac), not gated — audio went in,
+                   nothing came out (starvation if drop/underrun events sit
+                   nearby, garble otherwise)
+      "benign"     everything else — the latency-aligned input was
+                   effectively silent (gaps between words reproducing as
+                   silence, or true silence inside a gated period)
 
     Returns [(start_s, end_s, category, input_active_fraction), ...] on the
     output timeline. Without the vad_gated class, correct VAD behavior would
@@ -267,23 +270,25 @@ def classify_silences(silences, env_in, offset_frames, hop_ms=ENV_HOP_MS,
     """
     ref = float(np.percentile(env_in, 95)) if len(env_in) else 0.0
     off_s = offset_frames * hop_ms / 1000.0
+    gated_min_frac = 0.05
     out = []
     for s, e in silences:
         i0 = max(0, int(round(s * 1000.0 / hop_ms)) - offset_frames)
         i1 = max(i0, int(round(e * 1000.0 / hop_ms)) - offset_frames)
         seg = env_in[i0:min(i1, len(env_in))]
         frac = float((seg >= ref * thresh_ratio).mean()) if len(seg) and ref > 0 else 0.0
-        if frac < active_frac:
-            out.append((s, e, "benign", frac))
-            continue
         # map the output span back to the input timeline and overlap with gates
         in_s, in_e = s - off_s, e - off_s
         overlap = sum(
             max(0.0, min(in_e, g_e) - max(in_s, g_s)) for g_s, g_e in gated_spans
         )
-        span = max(1e-9, in_e - in_s)
-        out.append((s, e, "vad_gated" if overlap / span >= gated_overlap else "dropout",
-                    frac))
+        gated = overlap / max(1e-9, in_e - in_s) >= gated_overlap
+        if gated and frac >= gated_min_frac:
+            out.append((s, e, "vad_gated", frac))
+        elif frac >= active_frac:
+            out.append((s, e, "dropout", frac))
+        else:
+            out.append((s, e, "benign", frac))
     return out
 
 
