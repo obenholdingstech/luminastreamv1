@@ -72,7 +72,9 @@ a venv built on another image will not import. Rebuild on the pod with `uv`
 cd /workspace/<rvc-checkout>
 uv venv --python 3.10
 uv pip install -r backend/requirements.txt
-uv pip install --no-deps git+https://github.com/RVC-Project/Retrieval-based-Voice-Conversion
+# RVC pinned to the exact commit this stack was validated against — disaster
+# recovery must be deterministic; upstream moves and can break the streaming path
+uv pip install --no-deps "git+https://github.com/RVC-Project/Retrieval-based-Voice-Conversion@7b284a634667c34103eaaeed972b48ccdb4b893e"
 uv pip install "setuptools<80"
 uv pip uninstall onnxruntime && uv pip install onnxruntime-gpu
 ```
@@ -116,7 +118,18 @@ git clone <this repo> && cd luminastreamv1
 # secrets.env at repo root: HAND-TYPE it (LIVEKIT_URL, LIVEKIT_API_KEY,
 # LIVEKIT_API_SECRET) — never paste through shared clipboards/chat
 cd agent && python3 -m venv .venv && ./.venv/bin/python -m pip install -r requirements.txt
-# firewall: allow ssh only, enable ufw + fail2ban defaults
+```
+
+Firewall — SSH in only, everything else denied (agent↔LiveKit and agent↔RVC
+are outbound, so nothing else needs to be open):
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow OpenSSH
+sudo ufw --force enable
+sudo ufw status verbose        # verify: deny (incoming), allow (outgoing), 22/tcp ALLOW
+sudo systemctl enable --now fail2ban
 ```
 
 ### GATE — before anything else

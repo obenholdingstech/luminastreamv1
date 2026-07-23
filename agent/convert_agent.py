@@ -249,12 +249,12 @@ class ConvertAgent:
         if seq < self._min_valid_seq or seq <= self._last_pushed_seq:
             self.windows_stale += 1
             if self.capture:
-                self.capture.event("stale", seq=seq)
+                self.capture.window_stale(seq)
             return
         if self.mode != "convert":
             self.windows_stale += 1
             if self.capture:
-                self.capture.event("stale", seq=seq, reason="mode")
+                self.capture.window_stale(seq, reason="mode")
             return
         if self.capture:
             self.capture.window_recv(seq)

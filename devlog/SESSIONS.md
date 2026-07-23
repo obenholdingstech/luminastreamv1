@@ -4,7 +4,76 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 22 July 2026, ~14:05 — Phase 1: capture mode, analysis tooling, smoke gate & DR runbook
+## 22 July 2026, ~17:50 — Phase 1 review fixes: CodeRabbit findings on feat/capture-analysis-runbook
+
+### Task (verbatim)
+
+> Apply the four CodeRabbit findings on feat/capture-analysis-runbook before merge:
+>
+> 1. capture.py — bound the in-memory buffer (e.g. max ~60s of audio); if the
+>    background writer task fails or the bound is hit, disable capture for the
+>    session, log ONE loud warning with the reason, and free the buffers. The
+>    agent's real-time loop must be unkillable by its own diagnostics.
+> 2. capture.py — guard WAV size: cap capture at a sane max duration (or roll
+>    to a new file); never write a header the format can't represent.
+> 3. convert_agent.py — pop pending windows when discarded as stale so
+>    turnaround/drop stats count each window exactly once. Add/extend a unit
+>    test asserting no double-count on the stale path.
+> 4. runbook.md — make the UFW commands real runnable lines, and pin the RVC
+>    install to the exact commit we validated:
+>    git+https://github.com/RVC-Project/Retrieval-based-Voice-Conversion@7b284a634667c34103eaaeed972b48ccdb4b893e
+>    (add one line explaining WHY it's pinned: deterministic disaster recovery).
+>
+> Re-run the affected tests + one quick mock capture cycle to confirm the
+> analyzer still reads cleanly. Reply to each CodeRabbit comment on the PR with
+> what was done, per our convention. Push to the same branch.
+
+### What was done
+
+1. **capture.py self-defense** — new `_disable(reason)` path: sets `_dead`
+   (every hot-path call becomes a no-op), frees ALL buffers, appends a single
+   `capture_disabled` meta trace line, logs ONE `log.error`. Triggers:
+   un-flushed audio > 60 s (`MAX_BUFFERED_BYTES`, tracked via
+   `_pending_bytes` incremented on append / decremented on drain), pending
+   meta lines > 200k, background-writer exception (previously it logged and
+   the hot path kept appending forever — a slow leak), and the duration cap.
+   Recursion guard: `_dead` is set before the trace line is appended.
+2. **WAV size guard** — `MAX_CAPTURE_SECONDS = 3600` per stream; on hit,
+   capture disables and the WAVs finalize with the audio captured so far
+   (headers always patched with real sizes ≪ the 4 GiB uint32 RIFF limit).
+   Bounds are per-instance attributes so tests can tighten them.
+3. **Stale windows counted exactly once** — new
+   `SessionCapture.window_stale(seq, reason)` pops the pending entry and
+   emits a `stale` line WITH t_sent/turnaround; convert_agent's two stale
+   branches now call it. Previously a stale window stayed in `_pending` and
+   was double-reported as `window_lost` at close.
+4. **runbook.md** — UFW is now five runnable lines (default deny incoming /
+   allow outgoing / allow OpenSSH / --force enable / status verify) +
+   `systemctl enable --now fail2ban`; RVC install pinned to commit
+   `7b284a63…` with the why (deterministic disaster recovery; upstream moves).
+
+### Verification
+
+- **23/23 tests pass** — 3 new: stale-exactly-once (no `window_lost`, no
+  `window` for stale seqs, turnaround present), buffer-bound disable (memory
+  freed, all no-ops after), writer-failure disable (unwritable dir → `_dead`,
+  no accumulation).
+- Fresh mock capture cycle (convert mode, fox + typing probe): offset 340 ms
+  (corr 0.981), 86/86 windows, turnaround p50/p95 77/155 ms, 0 clipped
+  tails, 14/14 silences benign — analyzer reads the new meta format cleanly.
+- py_compile clean.
+
+### Files changed
+
+`agent/capture.py`, `agent/convert_agent.py`, `agent/test_analyze.py`,
+`runbook.md`, `devlog/SESSIONS.md`, `notes.md`.
+
+### Blocked
+
+- Replying to the CodeRabbit comments on the PR: `gh` is still not installed
+  on this machine and API-credential use from the keychain is blocked by
+  tool policy. Reply texts drafted in `agent/captures/PR_REPLIES.md`
+  (gitignored) ready to paste.
 
 ### Task (verbatim)
 

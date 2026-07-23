@@ -4,6 +4,15 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 22 July 2026 (eve) — CodeRabbit fixes on feat/capture-analysis-runbook (full record: devlog/SESSIONS.md)
+
+- capture.py is now unkillable-by-design: 60s un-flushed-audio bound, 1h duration cap (WAV uint32 headroom), writer-failure handling — any trip disables capture for the session (ONE loud log, buffers freed, hot path no-ops), agent audio untouched.
+- Stale windows pop their pending entry (`window_stale`) — each window counted exactly once; runbook UFW commands now runnable + RVC pinned to validated commit 7b284a63 (deterministic DR).
+- 23/23 tests (3 new); fresh mock convert capture: 340 ms offset, 86/86 windows, analyzer clean. Pushed to same branch.
+- BLOCKED: posting CodeRabbit replies — no `gh` on this machine; drafts in agent/captures/PR_REPLIES.md ready to paste (install gh to automate next time).
+
+---
+
 ## 22 July 2026 (pm) — Phase 1 diagnostics: capture mode + analyzer + runbook (full record: devlog/SESSIONS.md)
 
 - `convert_agent.py --capture-dir` records per-session input/output WAVs + meta.jsonl (windows, drops, underruns, stale, mode changes, buffer depth/hop) via new `capture.py` — zero sync disk I/O in the frame loop, provably inert without the flag.

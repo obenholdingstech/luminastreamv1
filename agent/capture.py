@@ -18,6 +18,13 @@ are written with a placeholder header that is patched with the real sizes on
 aclose(), so an aborted session leaves a header claiming 0 data bytes rather
 than a corrupt file.
 
+Self-defense: capture can never hurt the audio path. If the background
+writer fails, falls more than MAX_BUFFERED_SECONDS behind, or the session
+exceeds MAX_CAPTURE_SECONDS, capture disables itself for the session — one
+loud log line, buffers freed, every hot-path call a no-op from then on. The
+duration cap also keeps the data far below the 4 GiB the WAV uint32 header
+fields can represent.
+
 Every event line carries:
   t        seconds since session start (monotonic clock)
   in_pos   input samples captured so far  → position on the input timeline
@@ -42,6 +49,13 @@ FLUSH_INTERVAL_S = 0.5
 SAMPLE_RATE = 48000
 SAMPLE_WIDTH = 2  # int16
 WAV_HEADER_BYTES = 44
+
+# Bounds — hitting any of them disables capture for the session (agent unaffected)
+MAX_BUFFERED_SECONDS = 60          # pending un-flushed audio (writer fell behind)
+MAX_BUFFERED_BYTES = MAX_BUFFERED_SECONDS * SAMPLE_RATE * SAMPLE_WIDTH * 2  # in+out
+MAX_CAPTURE_SECONDS = 3600         # per-stream session cap; 1 h ≈ 330 MiB/WAV,
+                                   # far below the uint32 RIFF/data limit (4 GiB)
+MAX_EVENTS_PENDING = 200_000       # un-flushed meta lines
 
 
 def wav_header(n_data_bytes, sample_rate=SAMPLE_RATE, channels=1, sampwidth=SAMPLE_WIDTH):
@@ -73,9 +87,14 @@ class SessionCapture:
         self.in_samples = 0      # totals across the whole session
         self.out_samples = 0
         self._pending = {}       # seq → t_sent (windows in flight to RVC)
+        self._pending_bytes = 0  # audio bytes appended but not yet flushed
+        self._dead = False       # tripped a bound / writer failed — all no-ops
         self._closing = False
         self._stop = asyncio.Event()
         self._task = None
+        # per-instance so tests can tighten them
+        self.max_buffered_bytes = MAX_BUFFERED_BYTES
+        self.max_capture_samples = MAX_CAPTURE_SECONDS * SAMPLE_RATE
         self._emit("session", **dict(header, wall_time=datetime.now(timezone.utc).isoformat()))
 
     def start(self):
@@ -86,18 +105,30 @@ class SessionCapture:
 
     def add_input(self, data):
         """data: int16 mono 48k bytes as received from the AudioStream."""
-        self._in_bufs.append(bytes(data))
-        self.in_samples += len(data) // SAMPLE_WIDTH
+        if self._dead:
+            return
+        b = bytes(data)
+        self._in_bufs.append(b)
+        self._pending_bytes += len(b)
+        self.in_samples += len(b) // SAMPLE_WIDTH
+        self._check_bounds()
 
     def add_output(self, data):
         """data: int16 mono 48k bytes as handed to capture_frame."""
-        self._out_bufs.append(bytes(data))
-        self.out_samples += len(data) // SAMPLE_WIDTH
+        if self._dead:
+            return
+        b = bytes(data)
+        self._out_bufs.append(b)
+        self._pending_bytes += len(b)
+        self.out_samples += len(b) // SAMPLE_WIDTH
+        self._check_bounds()
 
     def event(self, kind, **fields):
         self._emit(kind, **fields)
 
     def window_sent(self, seq):
+        if self._dead:
+            return
         self._pending[seq] = time.monotonic() - self._t0
 
     def window_send_failed(self, seq):
@@ -114,7 +145,25 @@ class SessionCapture:
                    t_sent=None if t_sent is None else round(t_sent, 4),
                    t_recv=round(t_recv, 4), turnaround_ms=turnaround)
 
+    def window_stale(self, seq, reason=None):
+        """A converted window came back but was discarded as stale.
+
+        Pops the pending entry so the window is counted exactly once — as
+        stale, never additionally as window_lost at close.
+        """
+        t_recv = time.monotonic() - self._t0
+        t_sent = self._pending.pop(seq, None)
+        fields = {"seq": seq, "t_recv": round(t_recv, 4)}
+        if t_sent is not None:
+            fields["t_sent"] = round(t_sent, 4)
+            fields["turnaround_ms"] = round((t_recv - t_sent) * 1000.0, 1)
+        if reason:
+            fields["reason"] = reason
+        self._emit("stale", **fields)
+
     def _emit(self, kind, **fields):
+        if self._dead:
+            return
         line = {
             "event": kind,
             "t": round(time.monotonic() - self._t0, 4),
@@ -123,6 +172,42 @@ class SessionCapture:
         }
         line.update(fields)
         self._events.append(json.dumps(line))
+        if len(self._events) > MAX_EVENTS_PENDING:
+            self._disable("meta event buffer exceeded %d pending lines" % MAX_EVENTS_PENDING)
+
+    def _check_bounds(self):
+        if self._pending_bytes > self.max_buffered_bytes:
+            self._disable(
+                "writer fell behind — >%ds of audio (%d bytes) buffered un-flushed"
+                % (MAX_BUFFERED_SECONDS, self._pending_bytes)
+            )
+        elif (self.in_samples > self.max_capture_samples
+              or self.out_samples > self.max_capture_samples):
+            self._disable(
+                "session exceeded max capture duration (%ds) — WAVs finalized "
+                "with the audio captured so far" % (self.max_capture_samples // SAMPLE_RATE)
+            )
+
+    def _disable(self, reason, exc_info=False):
+        """Kill capture for this session; the agent's audio path is untouched."""
+        if self._dead:
+            return
+        self._dead = True  # before anything else — every hot-path call is a no-op now
+        self._in_bufs.clear()
+        self._out_bufs.clear()
+        self._events.clear()
+        self._pending.clear()
+        self._pending_bytes = 0
+        # One trace line for the meta file, if the writer is still alive to flush it
+        self._events.append(json.dumps({
+            "event": "capture_disabled",
+            "t": round(time.monotonic() - self._t0, 4),
+            "in_pos": self.in_samples,
+            "out_pos": self.out_samples,
+            "reason": reason,
+        }))
+        log.error("capture DISABLED for %s: %s — agent audio unaffected",
+                  self.session_dir, reason, exc_info=exc_info)
 
     # ── background flush task: owns ALL disk I/O ─────────────────────
 
@@ -160,16 +245,16 @@ class SessionCapture:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
-            log.exception("capture writer failed — capture stopped, agent unaffected")
+        except Exception as exc:
+            self._disable("background writer failed: %r" % (exc,), exc_info=True)
 
-    @staticmethod
-    async def _drain(bufs, f):
+    async def _drain(self, bufs, f):
         if not bufs:
             return 0
         chunks, bufs[:] = list(bufs), []
         data = b"".join(chunks)
         await f.write(data)
+        self._pending_bytes = max(0, self._pending_bytes - len(data))
         return len(data)
 
     async def aclose(self):

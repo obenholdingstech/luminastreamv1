@@ -191,3 +191,65 @@ def test_session_capture_writes_valid_wavs_and_meta(tmp_path):
     assert lost["seq"] == 2
     # every line carries the alignment keys
     assert all("in_pos" in e and "out_pos" in e for e in events)
+
+
+def test_stale_window_counted_exactly_once(tmp_path):
+    """A window discarded as stale must not ALSO be reported as window_lost."""
+    async def run():
+        cap = SessionCapture(tmp_path, {"mode": "convert"}).start()
+        cap.window_sent(1)
+        await asyncio.sleep(0)
+        cap.window_stale(1)                # came back, discarded as stale
+        cap.window_sent(2)
+        cap.window_stale(2, reason="mode")  # discarded because mode flipped
+        await cap.aclose()
+        return cap.session_dir
+
+    session_dir = asyncio.run(run())
+    events = [json.loads(line) for line in
+              (session_dir / "meta.jsonl").read_text().splitlines()]
+    stales = [e for e in events if e["event"] == "stale"]
+    assert [e["seq"] for e in stales] == [1, 2]
+    assert all(e.get("turnaround_ms") is not None for e in stales)
+    assert stales[1]["reason"] == "mode"
+    # exactly once: no window_lost, no window line for those seqs
+    assert not [e for e in events if e["event"] in ("window", "window_lost")]
+
+
+def test_capture_disables_when_writer_falls_behind(tmp_path):
+    """Hitting the buffer bound frees memory and turns capture into no-ops."""
+    async def run():
+        cap = SessionCapture(tmp_path, {"mode": "convert"})  # writer never started
+        cap.max_buffered_bytes = 10_000
+        chunk = b"\x00" * 960
+        for _ in range(20):
+            cap.add_input(chunk)
+        assert cap._dead is True
+        assert cap._in_bufs == [] and cap._pending_bytes == 0
+        before = cap.in_samples
+        cap.add_input(chunk)       # all no-ops from here on
+        cap.window_sent(9)
+        cap.event("drop", seq=9)
+        assert cap.in_samples == before and cap._pending == {}
+        await cap.aclose()
+
+    asyncio.run(run())
+
+
+def test_capture_disables_on_writer_failure(tmp_path):
+    """Writer task dying (unwritable dir) disables capture instead of leaking."""
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("file where the capture dir should go")
+
+    async def run():
+        cap = SessionCapture(blocker / "sub", {"mode": "convert"}).start()
+        for _ in range(30):        # give the writer task a chance to fail
+            if cap._dead:
+                break
+            await asyncio.sleep(0.05)
+        assert cap._dead is True
+        cap.add_input(b"\x00" * 960)
+        assert cap._in_bufs == []  # no accumulation after death
+        await cap.aclose()
+
+    asyncio.run(run())
