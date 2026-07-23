@@ -138,12 +138,40 @@ def test_classify_silences_benign_vs_dropout():
     env_in = synth_envelope(6, [(1.0, 3.0, 0.3), (4.0, 5.0, 0.3)])
     env_out = synth_envelope(6, [(1.0, 3.0, 0.3)])
     silences = classify_silences(find_silence_regions(env_out), env_in, offset_frames=0)
-    dropouts = [(s, e) for s, e, d, _f in silences if d]
-    benign = [(s, e) for s, e, d, _f in silences if not d]
+    dropouts = [(s, e) for s, e, c, _f in silences if c == "dropout"]
+    benign = [(s, e) for s, e, c, _f in silences if c == "benign"]
     assert len(dropouts) == 1
     s, e = dropouts[0]
     assert s <= 4.0 and e >= 5.0  # the swallowed utterance is inside the flagged span
     assert benign  # leading/trailing true silence stays benign
+
+
+def test_classify_silences_vad_gated_is_not_dropout():
+    # Same lost 4–5s utterance, but a VAD gate-closed span covers it →
+    # intentional suppression, not converter garble.
+    env_in = synth_envelope(6, [(1.0, 3.0, 0.3), (4.0, 5.0, 0.3)])
+    env_out = synth_envelope(6, [(1.0, 3.0, 0.3)])
+    silences = classify_silences(
+        find_silence_regions(env_out), env_in, offset_frames=0,
+        gated_spans=[(3.8, 5.5)],
+    )
+    cats = [c for _s, _e, c, _f in silences]
+    assert "vad_gated" in cats
+    assert "dropout" not in cats
+
+
+def test_gated_spans_from_events():
+    from analyze_capture import gated_spans_from_events
+    sr = 48000
+    events = [
+        {"event": "session", "in_pos": 0},
+        {"event": "vad_gate", "state": "closed", "in_pos": 1 * sr},
+        {"event": "vad_gate", "state": "open", "in_pos": 2 * sr},
+        {"event": "vad_gate", "state": "closed", "in_pos": 5 * sr},  # never reopens
+    ]
+    spans = gated_spans_from_events(events)
+    assert spans[0] == (1.0, 2.0)
+    assert spans[1][0] == 5.0 and spans[1][1] == float("inf")
 
 
 def test_rms_envelope_values():
