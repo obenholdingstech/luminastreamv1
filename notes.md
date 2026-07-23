@@ -123,6 +123,6 @@ Decision (provisional, 21 Jul): cloning is ASYNC — quality over instancy. 30�
 
 Move 2a COMPLETE (22 Jul): stateless server (RVC_STREAM_CONTEXT_SECONDS=0) + client SOLA. 6.9/10 flow, RTF 0.55, 384ms worst-case budget. Failed approaches: stateful+naive chunks (4/10), stateful+overlap (context pollution, 5/10). Remaining: flow tuning (XFADE/SOLA/CTX) in agent; timbre leakage → benchmark phase with proper .pth.
 
-6.8.0-110-generic
+VPS kernel (for the runbook environment record): 6.8.0-110-generic.
 
-The Phase 2 verdict (browser is innocent), the "word-clipping" issue is re-scoped to a low-priority Starlink return-path issue, and the new testing protocol (Toggles OFF + Closed Headphones)
+Phase 2 verdict (22 Jul, pod session): the browser is innocent — the "word-clipping" issue is re-scoped to a low-priority Starlink return-path issue. New standing testing protocol: mic-processing toggles OFF + closed headphones.

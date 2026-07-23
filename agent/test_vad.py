@@ -121,11 +121,15 @@ def test_fail_open_on_runtime_error():
     assert all(gate.decide_hop(silent_hop()) for _ in range(3))
 
 
-def test_fail_open_on_load_failure():
-    gate = VadGate()
-    gate._prob_fn = None
-    gate._fail("model load failed: no torch")
-    assert gate.active is False and gate.decide_hop(silent_hop()) is True
+def test_fail_open_on_load_failure(monkeypatch):
+    def boom():
+        raise RuntimeError("no torch")
+
+    monkeypatch.setattr("vad.load_silero_prob_fn", boom)
+    gate = VadGate().load()  # the real load()→_fail() wiring
+    assert gate.active is False
+    assert "no torch" in gate.fail_reason
+    assert gate.decide_hop(silent_hop()) is True
 
 
 # ── the full gate loop: assembler → VadGate → echo-RVC → stitcher → OutputGate ──
@@ -162,7 +166,7 @@ def test_gated_spans_are_zero_and_hangover_preserves_tail():
     x = make_input([("silence", 1.0), ("speech", 1.0), ("silence", 2.0),
                     ("clicks", 1.0), ("speech", 1.0), ("silence", 1.0)])
     vad = VadGate(hangover_ms=300, prob_fn=energy_prob)
-    out, sent, gate_log = run_pipeline(x, vad)
+    out, _sent, gate_log = run_pipeline(x, vad)
 
     # clicks (impulses, low RMS per 32ms chunk) must be gated
     click_hops = range(int(4.0 * SR / HOP) + 1, int(5.0 * SR / HOP) - 1)

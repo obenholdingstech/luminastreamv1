@@ -273,8 +273,8 @@ def classify_silences(silences, env_in, offset_frames, hop_ms=ENV_HOP_MS,
     gated_min_frac = 0.05
     out = []
     for s, e in silences:
-        i0 = max(0, int(round(s * 1000.0 / hop_ms)) - offset_frames)
-        i1 = max(i0, int(round(e * 1000.0 / hop_ms)) - offset_frames)
+        i0 = max(0, round(s * 1000.0 / hop_ms) - offset_frames)
+        i1 = max(i0, round(e * 1000.0 / hop_ms) - offset_frames)
         seg = env_in[i0:min(i1, len(env_in))]
         frac = float((seg >= ref * thresh_ratio).mean()) if len(seg) and ref > 0 else 0.0
         # map the output span back to the input timeline and overlap with gates

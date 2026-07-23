@@ -114,6 +114,7 @@ class ConvertAgent:
         self.outgate = OutputGate(self.stitcher, PRIME_SAMPLES)
         self.windows_gated = 0             # hops withheld from RVC by the VAD
         self._vad_fail_published = False   # fail-open reported once on the data channel
+        self._vad_fail_task = None         # keeps the report task strongly referenced
         self._last_hop_seq = 0             # context-accounting monotonicity assert
         self.rvc = RvcClient(
             rvc_url,
@@ -373,8 +374,13 @@ class ConvertAgent:
         # gated periods, so the first window after gate-open carries real
         # acoustic context. The seq assert below enforces that accounting.
         for seq, window in self.assembler.feed(pcm):
-            assert seq == self._last_hop_seq + 1, \
-                "context accounting broken: hop seq must be monotonic across gating"
+            # Invariant, checked explicitly (a bare assert would die silently in
+            # the asyncio task and vanish under -O): the assembler numbers every
+            # hop consecutively whether or not it gets sent
+            if seq != self._last_hop_seq + 1:
+                log.error("context accounting broken: hop seq %d after %d — "
+                          "continuing; VAD gating may misalign until re-entry",
+                          seq, self._last_hop_seq)
             self._last_hop_seq = seq
 
             if self.capture:  # jitter-buffer depth, sampled every hop
@@ -387,8 +393,9 @@ class ConvertAgent:
                 send = self.vad.decide_hop(window[-HOP:])
                 if not self.vad.active and not self._vad_fail_published:
                     # fail-open just tripped — report once over the data channel
+                    # (task kept on self: the loop only holds a weak reference)
                     self._vad_fail_published = True
-                    asyncio.ensure_future(self._publish_mode())
+                    self._vad_fail_task = asyncio.ensure_future(self._publish_mode())
                 elif self.vad.gate_open != was_open:
                     state = "open" if self.vad.gate_open else "closed"
                     log.info("VAD gate %s (prob %.2f)", state, self.vad.last_prob or 0.0)
