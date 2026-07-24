@@ -4,7 +4,45 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 23 July 2026, ~07:30 — Phase 3: Silero VAD gating in the convert agent
+## 24 July 2026, ~03:50 — Phase 3.1: VAD onnxruntime path + CPU-only torch diet
+
+### Task (verbatim)
+
+> the CTO has requested a Phase 3.1 micro-PR to fix the torch bloat and
+> NNPACK log spam on the VPS convert agent.
+> Switch the Silero VAD to its onnxruntime path (load_silero_vad(onnx=True)).
+> Pin torch from the CPU-only index in requirements.txt to shed the gigabytes
+> of unnecessary CUDA libraries.
+> Verify against the installed package per our conventions, execute the
+> fixes, and open the PR.
+> before you commit or push anything, make sure you run
+> git checkout -b fix/phase3-1-onnx-diet so this is on a clean branch
+
+### Verified against the installed package (live, never memory)
+
+- onnxruntime is an OPTIONAL silero-vad dep — not present until installed;
+  pip resolves **1.19.2** on py3.9 (last line with cp39; also ships cp312
+  for the VPS).
+- `load_silero_vad(onnx=True)` → `OnnxWrapper`; **torch tensors still
+  required** (numpy input rejected: AttributeError `.dim` — verified live),
+  512-chunk rule and `reset_states()` identical to the JIT path.
+- silero_vad.utils_vad imports torch at module level ⇒ torch cannot be
+  dropped, only dieted: CPU-only wheels via
+  `--extra-index-url https://download.pytorch.org/whl/cpu` with
+  platform-marked pins (`2.8.0+cpu` on linux, plain `2.8.0` elsewhere —
+  macOS has no +cpu builds). Wheel existence for cp312 x86_64 confirmed
+  against the index.
+- ONNX ≡ JIT numerically: zero-chunk prob 0.00167 both; fox sentence 99% of
+  chunks ≥ 0.5; `VadGate().load()` → active, speech hop prob 1.0.
+- NNPACK spam comes from TorchScript conv on unsupported VPS hardware —
+  onnxruntime inference sidesteps it entirely.
+
+### Changed
+
+`agent/vad.py` (onnx=True + verified-contract docstrings),
+`agent/requirements.txt` (extra-index, onnxruntime==1.19.2, platform-marked
+torch/torchaudio CPU pins), session log, notes.md. 37/37 tests pass
+(fail-open test monkeypatches the loader — unaffected by the backend swap).
 
 ### Task (abridged; full text in the PR)
 
