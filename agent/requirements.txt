@@ -9,8 +9,16 @@ pytest==8.4.2
 # Phase 1 — capture diagnostics (capture.py / analyze_capture.py)
 aiofiles==25.1.0
 matplotlib==3.9.4
-# Phase 3 — Silero VAD gate (vad.py). CPU inference on the agent host; this
-# torch pin is the AGENT venv only — the RVC pod's cu128 pin lives in runbook.md
+# Phase 3 — Silero VAD gate (vad.py), inference via onnxruntime (Phase 3.1).
+# torch is still imported by silero-vad for tensor plumbing, so it is pinned
+# from the CPU-only index: the default index drags ~5 GB of nvidia-*-cu12
+# wheels onto the VPS, and the TorchScript inference path sprayed NNPACK
+# "unsupported hardware" warnings there. This is the AGENT venv only — the
+# RVC pod's cu128 torch pin lives in runbook.md.
+--extra-index-url https://download.pytorch.org/whl/cpu
 silero-vad==6.2.1
-torch==2.8.0
-torchaudio==2.8.0
+onnxruntime==1.19.2
+torch==2.8.0+cpu; sys_platform == "linux"
+torch==2.8.0; sys_platform != "linux"
+torchaudio==2.8.0+cpu; sys_platform == "linux"
+torchaudio==2.8.0; sys_platform != "linux"
