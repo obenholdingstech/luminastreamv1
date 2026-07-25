@@ -7,10 +7,12 @@ becomes clean silence on the output — with equal-power ramps at every gate
 edge so transitions never click.
 
 Verified against silero-vad 6.2.1 (pinned; installed in agent/.venv):
-  - load_silero_vad(onnx=False) → TorchScript model
+  - load_silero_vad(onnx=True) → OnnxWrapper (onnxruntime inference; the
+    TorchScript path is avoided since Phase 3.1 — NNPACK log spam + CUDA
+    wheel bloat on the VPS)
   - streaming contract: model(chunk, 16000) with chunks of EXACTLY 512
-    samples @16 kHz returns a speech probability; the model keeps LSTM state
-    across calls (reset_states() to clear)
+    samples @16 kHz (torch tensor — numpy rejected) returns a speech
+    probability; the model keeps LSTM state across calls (reset_states())
   - VADIterator's default threshold is 0.5 — mirrored as our default
 Our HOP is 6144 @48k = 128 ms → exactly 2048 @16k → exactly 4 model chunks
 per hop, so the gate decision lands on hop boundaries by construction.
@@ -66,11 +68,22 @@ class Resampler48to16:
 
 
 def load_silero_prob_fn():
-    """Returns (prob_fn, describe) for the real model. Raises on any failure."""
+    """Returns the real model's prob_fn. Raises on any failure.
+
+    Phase 3.1: inference runs through onnxruntime (onnx=True) — the
+    TorchScript path spammed NNPACK "unsupported hardware" warnings per conv
+    on the VPS and forced CUDA-flavored torch wheels. torch itself remains
+    imported: silero-vad imports it at module level and OnnxWrapper requires
+    torch tensors (numpy input rejected with AttributeError .dim — verified
+    live against 6.2.1), so it's pinned CPU-only in requirements instead.
+    ONNX and JIT models return identical probabilities for the same input
+    (spot-checked live: zero-chunk 0.00167 both; fox sentence 99% chunks
+    ≥ 0.5 threshold).
+    """
     import torch  # deferred: heavy import, and fail-open must catch it
     from silero_vad import load_silero_vad
 
-    model = load_silero_vad()
+    model = load_silero_vad(onnx=True)
     model.reset_states()
 
     def prob(chunk16):

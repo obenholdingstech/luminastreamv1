@@ -4,6 +4,14 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 24 July 2026 — Phase 3.1: ONNX diet (full record: devlog/SESSIONS.md)
+
+- VAD inference switched to onnxruntime (`load_silero_vad(onnx=True)`, onnxruntime==1.19.2) — kills the NNPACK warning spam on the VPS; probabilities verified identical to the JIT path (fox 99% chunks ≥0.5).
+- torch stays (silero imports it for tensor plumbing; OnnxWrapper rejects numpy) but now pinned CPU-only via the pytorch cpu index with platform markers — sheds the ~5 GB of nvidia-*-cu12 wheels the VPS pulled.
+- 37/37 tests; branch fix/phase3-1-onnx-diet → PR.
+
+---
+
 ## 23 July 2026 — Phase 3: Silero VAD gate shipped (full record: devlog/SESSIONS.md)
 
 - Convert agent now VAD-gates the RVC pipeline (silero-vad 6.2.1, 512@16k chunks, 4/hop): speech+300ms hangover sent, everything else clean output silence with 15ms equal-power edge ramps; context accumulates through gates; fail-open like the RVC fallback; gated hops enqueue nothing (idle GPU) and aren't drops. Flags: --no-vad / --vad-threshold 0.5 / --vad-hangover-ms 300.
@@ -126,3 +134,5 @@ Move 2a COMPLETE (22 Jul): stateless server (RVC_STREAM_CONTEXT_SECONDS=0) + cli
 VPS kernel (for the runbook environment record): 6.8.0-110-generic.
 
 Phase 2 verdict (22 Jul, pod session): the browser is innocent — the "word-clipping" issue is re-scoped to a low-priority Starlink return-path issue. New standing testing protocol: mic-processing toggles OFF + closed headphones.
+
+Phase 3 Accepted. VAD successfully implemented, non-speech hallucination eradicated. Phase 3.1 micro-PR initiated to strip torch bloat via ONNX.

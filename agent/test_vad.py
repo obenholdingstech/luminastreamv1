@@ -16,9 +16,11 @@ from bridge import HOP, WINDOW, SolaStitcher, WindowAssembler
 from vad import (
     DEFAULT_THRESHOLD,
     RAMP_SAMPLES,
+    VAD_CHUNK,
     Resampler48to16,
     OutputGate,
     VadGate,
+    load_silero_prob_fn,
 )
 
 SR = 48000
@@ -119,6 +121,48 @@ def test_fail_open_on_runtime_error():
     assert gate.gate_open is True
     # subsequent hops all pass without re-raising
     assert all(gate.decide_hop(silent_hop()) for _ in range(3))
+
+
+def test_real_onnx_loader_contract():
+    """Pins the onnx=True loader contract against the REAL silero package.
+
+    The rest of the suite deliberately isolates gate logic behind stub
+    prob_fns, which leaves the loader as the one untested seam — and live
+    testing showed exactly that seam breaks (OnnxWrapper rejects raw numpy).
+    This test makes a future silero-vad bump fail here in CI, not on the VPS.
+    Skips cleanly where the model stack isn't installed.
+    """
+    try:
+        import silero_vad  # noqa: F401
+    except ImportError:
+        pytest.skip("silero-vad not installed in this environment")
+    try:
+        prob_fn = load_silero_prob_fn()  # the real thing — no monkeypatch
+    except ImportError as exc:
+        pytest.skip(f"model backend unavailable: {exc}")
+
+    # Public contract: float32 NUMPY in (the numpy→tensor conversion is part
+    # of the loader — the exact seam that broke live), float in [0,1] out
+    zero = np.zeros(VAD_CHUNK, dtype=np.float32)
+    p_zero = prob_fn(zero)
+    assert isinstance(p_zero, float)
+    assert 0.0 <= p_zero <= 1.0
+
+    # Known-quiet case scores below threshold
+    assert p_zero < DEFAULT_THRESHOLD
+
+    # Synthetic voiced chunk: 150 Hz sawtooth (rich in harmonics, F0 in the
+    # speech range) must score measurably higher than silence — direction,
+    # not exact values
+    t = np.arange(VAD_CHUNK, dtype=np.float32) / 16000.0
+    voiced = (0.5 * (2.0 * ((150.0 * t) % 1.0) - 1.0)).astype(np.float32)
+    p_voiced = prob_fn(voiced)
+    assert 0.0 <= p_voiced <= 1.0
+    assert p_voiced > p_zero
+
+    # Streaming statefulness: consecutive calls must not raise
+    p_again = prob_fn(voiced)
+    assert 0.0 <= p_again <= 1.0
 
 
 def test_fail_open_on_load_failure(monkeypatch):
