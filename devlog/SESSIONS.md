@@ -4,6 +4,68 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 27 July 2026 — Stage 3-Lite, Session A: Cloudflare Pages hosting (PR #13)
+
+### Task (verbatim)
+
+> STAGE 3-LITE, Session A — Pages hosting (branch: feat/s3lite-pages)
+> Goal: the existing Vite frontend served at studio.luminastream.live from
+> Cloudflare Pages. VERIFY FIRST: current Pages deployment flow (git-connected
+> vs wrangler) against live Cloudflare docs. Requirements: build config for the
+> repo as-is (npm run build → dist/); an API base URL env var (VITE_API_BASE)
+> replacing the dead Base44 proxy — default empty, all legacy Base44 calls fail
+> soft (they already do); /livekit-test must work on the deployed site exactly
+> as on localhost. NO secrets anywhere: wrangler/Pages config in repo must
+> contain zero keys (repo is public). Deliverable: deployment doc in README
+> (Amy connects the repo + sets the custom domain in her dashboard — list her
+> exact clicks), PR, CodeRabbit, hold merge for CTO.
+
+### What was done
+
+- Verified against live Cloudflare docs (get-started, git-integration,
+  serving-pages, custom-domains, Vite framework guide): chose **git
+  integration** — direct upload needs an API token (a secret; repo public),
+  git flow is dashboard-only. Repo carries ZERO Cloudflare config files.
+- SPA fallback verified automatic: no top-level 404.html in build output →
+  Pages serves index.html for all unmatched paths. Vite emits only index.html
+  (checked), so /livekit-test deep links need no _redirects/Functions.
+- `src/lib/apiBase.js`: API_BASE from build-time VITE_API_BASE (default '',
+  trailing-slash/whitespace normalized) → SDK `serverUrl` (verified installed
+  @base44/sdk client.js:84 joins `${serverUrl}/api`; explicit '' bypasses the
+  base44.app default) + AuthContext axios baseURL. 6 node --test cases.
+- README: "Deploy — Cloudflare Pages" section with Amy's exact clicks
+  (connect repo, build config Vite/npm run build/dist, custom domain incl.
+  the 522 bare-CNAME pitfall, VITE_API_BASE rebuild-required semantics).
+- Drive-by chore: removed unused `Check` import in VoiceMetricsPanel.jsx —
+  pre-existing eslint error on main (file otherwise untouched).
+
+### Key findings / surprises
+
+- Fail-soft nuance differs by host but converges: vite preview 404s /api
+  (error → authError 'unknown' → App.jsx renders routes); Pages SPA mode
+  will 200 /api with index.html (no error → routes render; appPublicSettings
+  garbage inert — nothing outside AuthContext consumes it).
+- Wire-through proof: VITE_API_BASE=https://api.wiretest.example/ build puts
+  the value in the bundle once; unset build carries no trace.
+- Built-page E2E: vite preview + headless Chrome renders /livekit-test fully
+  (heading + URL/token inputs, no auth spinner) from static dist with the
+  proxy dead — the deployed behavior, simulated locally.
+
+### Files changed
+
+- `src/lib/apiBase.js`, `src/lib/apiBase.test.js` (new)
+- `src/api/base44Client.js`, `src/lib/AuthContext.jsx` (API_BASE wiring)
+- `README.md` (deployment doc), `src/components/admin/VoiceMetricsPanel.jsx`
+  (chore), `devlog/SESSIONS.md`, `notes.md`
+
+### Verification results
+
+eslint clean (incl. the pre-existing fix), 11/11 node --test, npm run build
+clean, wire-through + preview E2E as above. PR #13 open on feat/s3lite-pages;
+CodeRabbit review awaited. **Merge held for CTO.**
+
+---
+
 ## 27 July 2026 — Live knob-twisting E2E green; PR #12 merged
 
 ### Task (verbatim)

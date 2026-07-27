@@ -4,6 +4,14 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 27 July 2026 — S3-Lite A: Cloudflare Pages hosting, PR #13 (full record: devlog/SESSIONS.md)
+
+- Chose git-connected Pages over wrangler (verified live CF docs): dashboard-only, zero Cloudflare config/keys in the public repo. Build: npm run build → dist, preset Vite. /livekit-test works via automatic SPA fallback (no 404.html in output) — proven on built dist w/ vite preview + headless Chrome.
+- VITE_API_BASE (src/lib/apiBase.js, default '' fail-soft) feeds SDK serverUrl + AuthContext baseURL; wire-through proven in bundle. README has Amy's exact dashboard clicks incl. studio.luminastream.live custom domain.
+- PR #13 open, merge HELD for CTO. Next: CodeRabbit replies; then Amy runs the README clicks.
+
+---
+
 ## 27 July 2026 — Live E2E green, PR #12 MERGED (full record: devlog/SESSIONS.md)
 
 - Starlink DNS recovered → lk_smoke CONNECTED OK → ran staged knob-twisting E2E (real agent + LiveKit Cloud + mock RVC): valid change applied verbatim; garbage change clamped/rejected cleanly, agent never crashed.
