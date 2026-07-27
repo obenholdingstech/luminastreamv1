@@ -4,6 +4,64 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 27 July 2026 — CTO merge condition on PR #12: serialize config application
+
+### Task (verbatim)
+
+> CTO merge condition on PR #12, one focused commit on the same branch:
+>
+> Serialize config application. The _spawn keepalive fix (ca4c302) solves the
+> dropped-reference hazard but not ordering: two in-flight _apply_config tasks can
+> interleave their RVC settings frames, leaving the server on an older value than
+> the agent's applied-truth broadcast claims — and with no server-side settings echo,
+> nothing self-corrects. Add an asyncio.Lock created in __init__ (self._config_lock)
+> and wrap the entire body of _apply_config in `async with self._config_lock:` —
+> clamp, apply, capture snapshot, broadcast, all inside, so applies are strictly
+> FIFO and every broadcast reflects the true final state of its apply. Add one test:
+> two overlapping set_config applications (slow mock RVC send) must result in the
+> LAST requested value both in rvc.config and in the final broadcast. Run the full
+> suites, push, reply on the PR referencing this as the CTO-requested serialization.
+
+### What was done
+
+- `agent/convert_agent.py`: `self._config_lock = asyncio.Lock()` in `__init__`
+  (with a comment stating the interleave hazard it closes); the entire body of
+  `_apply_config` — clamp → agent/RVC apply → capture `config_change` snapshot →
+  `_publish_config` — now runs inside `async with self._config_lock:`. No other
+  behavior change; `_spawn` still keeps every apply task alive.
+- `agent/test_knobs.py`: new `test_overlapping_applies_serialize_fifo`. Real
+  `ConvertAgent` connected to the in-process mock RVC server; the first apply's
+  `send_settings` is wrapped with a 0.05 s delay (second instant) so an
+  unserialized run lands the stale frame last. Two overlapping `_apply_config`
+  tasks (`protect` 0.1 then 0.4) via `_spawn`; asserts the LAST value wins in
+  `rvc.config`, in the final broadcast (order `[0.1, 0.4]`), and in the last
+  settings frame the server received.
+
+### Key findings / verification
+
+- **Discrimination proof**: with `async with self._config_lock:` temporarily
+  replaced by `if True:`, the test fails exactly as the CTO predicted — the
+  slow first apply's frame lands last and `rvc.config` ends on the stale 0.1
+  (`assert 0.1 == 0.4`). Lock restored, test passes.
+- Full suites: **49/49 Python** (was 48 + new test), **5/5 node**.
+- One earlier verification run was void (a `cd agent` failed because cwd was
+  already in agent/, so the neutralization never ran); redone with explicit
+  paths before trusting the result.
+
+### Files changed
+
+- `agent/convert_agent.py` — `_config_lock` + wrapped `_apply_config`
+- `agent/test_knobs.py` — `test_overlapping_applies_serialize_fifo`
+- `devlog/SESSIONS.md`, `notes.md` — this record
+
+### Outcome
+
+Committed `9159ebb` on feat/phase4-tuning-console, pushed, replied on PR #12
+referencing the CTO-requested serialization with the test + discrimination
+proof as evidence (comment 5092528872). **Merge remains held for CTO.**
+
+---
+
 ## 27 July 2026 — Phase 4: live tuning console (knobs over the data channel)
 
 ### Task (abridged; full text in the PR)

@@ -4,6 +4,15 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 27 July 2026 — PR #12 CTO condition: config applies serialized (full record: devlog/SESSIONS.md)
+
+- `_apply_config` body now runs under `self._config_lock` (asyncio.Lock in __init__): applies strictly FIFO, every agent_config broadcast reflects its apply's true final state — closes the RVC settings-frame interleave hazard ca4c302 left open.
+- New test `test_overlapping_applies_serialize_fifo`: overlapping applies w/ slowed first send; LAST value must win in rvc.config, final broadcast, and last server frame. Verified to FAIL with the lock neutralized.
+- 49/49 py + 5/5 node. Commit 9159ebb pushed; replied on PR #12 as the CTO-requested serialization.
+- Merge still HELD for CTO sign-off. Next: CTO decision on #12; live knob E2E still blocked on Starlink DNS.
+
+---
+
 ## 27 July 2026 — Phase 4: live tuning console (full record: devlog/SESSIONS.md)
 
 - Tuning card on /livekit-test: RVC knobs (index_rate/protect/rms_mix_rate/f0_method) apply **mid-stream on the open socket** — verified in OpenVoiceChanger source @4cee7ef, no reconnect path needed; agent knobs (prime_hops, vad_threshold, vad_hangover_ms) instant. Clamp-never-crash registry in agent/knobs.py; agent broadcasts agent_config {config, defaults, ranges} and the UI renders ONLY that (applied-truth).
