@@ -4,6 +4,51 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 27 July 2026 — Live knob-twisting E2E green; PR #12 merged
+
+### Task (verbatim)
+
+> Run the staged E2E test. If green, merge PR #12.
+
+### What was done
+
+- Gate first: `lk_smoke.py` → CONNECTED OK (Starlink resolver recovered;
+  *.livekit.cloud resolves again).
+- Reused the user's already-running `mock_rvc_server.py` on :8000 (it parses
+  mid-stream JSON text frames — usable as-is, left untouched).
+- Ran `convert_agent.py --room luminastream-diag --mode convert --capture-dir
+  captures` (VAD active) + staged scratchpad `publish_probe4.py`: real-time
+  probe audio, `set_config {protect:0.5, vad_hangover_ms:500}` at ~4s (valid),
+  `{index_rate:1.5, f0_method:"dio", warp:3}` at ~8s (garbage).
+- Verified capture session `20260727-081501-854120` and ran
+  `analyze_capture.py` on it.
+
+### Findings / verification (all green)
+
+- Broadcasts: change 1 applied verbatim; change 2 → index_rate clamped to 1.0
+  (adjusted reported), dio + warp rejected with reasons; agent never crashed,
+  3 utterances, 0 clipped tails, turnaround p50/p95 = 84/162 ms.
+- meta.jsonl: both config_change events with full applied snapshot +
+  t/in_pos/out_pos + adjusted/rejected.
+- Analyzer: "config changes" report section correct; dropout map draws both
+  green dotted config markers with knob labels. Deferred fixes proved live:
+  buffer-depth stats excluded 53 gated hops (median 1.52 hops gate-open only);
+  4.76–9.34s silence attributed VAD-gated (intentional) at 8% input activity.
+- Serialized apply path (9159ebb) ran live; each broadcast matched its apply.
+- Agent SIGINT exit code 1 is the normal "stopped by user" path (no traceback).
+
+### Files changed
+
+- `devlog/SESSIONS.md`, `notes.md` — this record (E2E artifacts live in
+  agent/captures/, which is untracked)
+
+### Outcome
+
+E2E evidence posted on PR #12 (comment 5093180622). **PR #12 merged into main
+on the owner's go-ahead** — Phase 4 tuning console is on main.
+
+---
+
 ## 27 July 2026 — CTO merge condition on PR #12: serialize config application
 
 ### Task (verbatim)

@@ -4,6 +4,15 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 27 July 2026 — Live E2E green, PR #12 MERGED (full record: devlog/SESSIONS.md)
+
+- Starlink DNS recovered → lk_smoke CONNECTED OK → ran staged knob-twisting E2E (real agent + LiveKit Cloud + mock RVC): valid change applied verbatim; garbage change clamped/rejected cleanly, agent never crashed.
+- Capture + analyzer verified live: config_change snapshots in meta.jsonl, config markers on dropout map, gated-hop-excluded buffer stats, VAD-gated attribution at 8% activity. Evidence on PR #12.
+- PR #12 merged to main on owner's go-ahead — Phase 4 tuning console shipped.
+- Next: pod tuning session per README A/B protocol (one knob at a time, fixed script, score, revert).
+
+---
+
 ## 27 July 2026 — PR #12 CTO condition: config applies serialized (full record: devlog/SESSIONS.md)
 
 - `_apply_config` body now runs under `self._config_lock` (asyncio.Lock in __init__): applies strictly FIFO, every agent_config broadcast reflects its apply's true final state — closes the RVC settings-frame interleave hazard ca4c302 left open.
