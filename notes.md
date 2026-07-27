@@ -8,7 +8,8 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 - Chose git-connected Pages over wrangler (verified live CF docs): dashboard-only, zero Cloudflare config/keys in the public repo. Build: npm run build → dist, preset Vite. /livekit-test works via automatic SPA fallback (no 404.html in output) — proven on built dist w/ vite preview + headless Chrome.
 - VITE_API_BASE (src/lib/apiBase.js, default '' fail-soft) feeds SDK serverUrl + AuthContext baseURL; wire-through proven in bundle. README has Amy's exact dashboard clicks incl. studio.luminastream.live custom domain.
-- PR #13 open, merge HELD for CTO. Next: CodeRabbit replies; then Amy runs the README clicks.
+- CodeRabbit round done (378aa45): per-host fail-soft wording fixed (dev 404 vs Pages 200-shell); build-fixture test added proving VITE_API_BASE bakes into the bundle. 8/8 apiBase + 5/5 knobState + lint clean. Replies posted.
+- PR #13 open, merge HELD for CTO. Next: CTO decision; then Amy runs the README clicks.
 
 ---
 

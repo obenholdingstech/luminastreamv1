@@ -64,6 +64,24 @@ eslint clean (incl. the pre-existing fix), 11/11 node --test, npm run build
 clean, wire-through + preview E2E as above. PR #13 open on feat/s3lite-pages;
 CodeRabbit review awaited. **Merge held for CTO.**
 
+### CodeRabbit round (PR #13)
+
+Two findings, both applied in 378aa45:
+
+1. (Minor, inline) "fail soft exactly as on localhost" wording papered over
+   the per-host difference — dev server 404s dead /api paths, Pages SPA
+   fallback answers them with the app document (HTTP 200). apiBase.js comment
+   + README now state both shapes and why the 200-shell is inert. Threaded
+   reply 3658740252.
+2. (Trivial, review body) unit tests didn't prove a configured VITE_API_BASE
+   reaches the bundle. Added apiBase.build.test.js: real vite build into a
+   temp dir (dist/ untouched), asserts sentinel baked when set / absent when
+   unset — guards against a dynamic import.meta.env refactor shipping ''.
+   Reply comment 5093523302.
+
+After: 8/8 apiBase tests (6 unit + 2 build), 5/5 knobState, eslint clean.
+**Merge still held for CTO.**
+
 ---
 
 ## 27 July 2026 — Live knob-twisting E2E green; PR #12 merged
