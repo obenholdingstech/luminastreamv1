@@ -4,6 +4,33 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 27 July 2026 — Live E2E green, PR #12 MERGED (full record: devlog/SESSIONS.md)
+
+- Starlink DNS recovered → lk_smoke CONNECTED OK → ran staged knob-twisting E2E (real agent + LiveKit Cloud + mock RVC): valid change applied verbatim; garbage change clamped/rejected cleanly, agent never crashed.
+- Capture + analyzer verified live: config_change snapshots in meta.jsonl, config markers on dropout map, gated-hop-excluded buffer stats, VAD-gated attribution at 8% activity. Evidence on PR #12.
+- PR #12 merged to main on owner's go-ahead — Phase 4 tuning console shipped.
+- Next: pod tuning session per README A/B protocol (one knob at a time, fixed script, score, revert).
+
+---
+
+## 27 July 2026 — PR #12 CTO condition: config applies serialized (full record: devlog/SESSIONS.md)
+
+- `_apply_config` body now runs under `self._config_lock` (asyncio.Lock in __init__): applies strictly FIFO, every agent_config broadcast reflects its apply's true final state — closes the RVC settings-frame interleave hazard ca4c302 left open.
+- New test `test_overlapping_applies_serialize_fifo`: overlapping applies w/ slowed first send; LAST value must win in rvc.config, final broadcast, and last server frame. Verified to FAIL with the lock neutralized.
+- 49/49 py + 5/5 node. Commit 9159ebb pushed; replied on PR #12 as the CTO-requested serialization.
+- Merge still HELD for CTO sign-off. Next: CTO decision on #12; live knob E2E still blocked on Starlink DNS.
+
+---
+
+## 27 July 2026 — Phase 4: live tuning console (full record: devlog/SESSIONS.md)
+
+- Tuning card on /livekit-test: RVC knobs (index_rate/protect/rms_mix_rate/f0_method) apply **mid-stream on the open socket** — verified in OpenVoiceChanger source @4cee7ef, no reconnect path needed; agent knobs (prime_hops, vad_threshold, vad_hangover_ms) instant. Clamp-never-crash registry in agent/knobs.py; agent broadcasts agent_config {config, defaults, ranges} and the UI renders ONLY that (applied-truth).
+- Capture logs config_change with full applied snapshot; analyzer draws config markers + two fixes: buffer-depth stats now gate-open-only; VAD-gated bar recalibrated to measured duty-cycles (typing 8%, clap 5.3% → bar 2.5%).
+- 48/48 py + 5/5 node tests. LIVE E2E BLOCKED: Starlink DNS (100.64.0.2) blackholes *.livekit.cloud (1.1.1.1 resolves fine) — rerun knob-twisting E2E when DNS recovers.
+- PR open, merge HELD for CTO review. Next: pod tuning session per README A/B protocol.
+
+---
+
 ## 24 July 2026 — Phase 3.1: ONNX diet (full record: devlog/SESSIONS.md)
 
 - VAD inference switched to onnxruntime (`load_silero_vad(onnx=True)`, onnxruntime==1.19.2) — kills the NNPACK warning spam on the VPS; probabilities verified identical to the JIT path (fox 99% chunks ≥0.5).

@@ -116,6 +116,21 @@ class RvcClient:
     def in_flight(self):
         return len(self._sent_at)
 
+    async def send_settings(self, partial):
+        """Mid-stream settings update: one JSON text frame on the open socket.
+
+        Server-verified (OpenVoiceChanger backend @ 4cee7ef): text frames are
+        accepted at any point after the initial config and merged into the
+        connection state; every subsequent audio frame uses the new values.
+        Also merges into self.config so a reconnect re-sends the full,
+        current configuration.
+        """
+        self.config.update(partial)
+        if not self.connected or self._ws is None:
+            return False  # stored only — connect() will send the merged config
+        await self._ws.send(json.dumps(partial))
+        return True
+
     async def send_window(self, seq, pcm):
         if not self.connected or self._ws is None:
             raise ConnectionError("RVC client is not connected")

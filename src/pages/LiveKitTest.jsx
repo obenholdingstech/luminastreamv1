@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ConnectionQuality, ConnectionState } from 'livekit-client';
+import { KNOB_STATE_COLORS, knobDisplay, knobState } from '@/lib/knobState';
 import {
   Activity,
   AlertTriangle,
@@ -27,6 +28,19 @@ import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 // issued by a server-side endpoint; this page never sees the API secret.
 
 const URL_STORAGE_KEY = 'livekit-test-url';
+
+// Phase 4 tuning console — display metadata only. Ranges/choices/defaults
+// arrive in the agent's agent_config broadcast (agent truth); these
+// fallbacks only size the sliders before the first broadcast.
+const TUNING_KNOBS = [
+  { key: 'index_rate', label: 'Index Rate', step: 0.05, lo: 0, hi: 1 },
+  { key: 'protect', label: 'Protect', step: 0.01, lo: 0, hi: 0.5 },
+  { key: 'rms_mix_rate', label: 'RMS Mix', step: 0.05, lo: 0, hi: 1 },
+  { key: 'f0_method', label: 'F0 Method', choices: ['rmvpe', 'harvest', 'crepe', 'pm'] },
+  { key: 'prime_hops', label: 'Prime Depth (hops)', step: 0.1, lo: 0.5, hi: 4 },
+  { key: 'vad_threshold', label: 'VAD Threshold', step: 0.05, lo: 0, hi: 1 },
+  { key: 'vad_hangover_ms', label: 'VAD Hangover (ms)', step: 50, lo: 0, hi: 2000 },
+];
 
 // Phase 2 experiment — browser mic processing toggles. Keys match
 // livekit-client's AudioCaptureOptions; all ON is the browser default.
@@ -91,12 +105,18 @@ export default function LiveKitTest() {
     agentModeReason,
     captureConstraints,
     appliedConstraints,
+    agentConfig,
     connect,
     disconnect,
     enableAudio,
     requestAgentMode,
+    requestAgentConfig,
     setCaptureConstraint,
   } = useLiveKitVoice(url.trim(), token.trim());
+
+  // Local slider positions = REQUESTED values; confirmed badges render only
+  // from agentConfig.config (the applied-truth pattern from Phase 2)
+  const [knobEdits, setKnobEdits] = useState({});
 
   const status = STATUS[connectionState] || STATUS[ConnectionState.Disconnected];
   const quality = QUALITY[connectionQuality] || QUALITY[ConnectionQuality.Unknown];
@@ -329,6 +349,118 @@ export default function LiveKitTest() {
               </span>
             </div>
           </div>
+        </div>
+
+        {/* Tuning console (Phase 4) — dev instrument, not product UI.
+            Sliders/selects show the REQUESTED value; the badge next to each
+            renders ONLY the agent-confirmed applied value from agent_config
+            (green match / amber mismatch / muted unknown). */}
+        <div className="bg-[#0F0F1A] border border-[#1A1A2E] rounded-lg p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-[11px] tracking-widest uppercase text-[#64748B]">
+              Tuning
+              <span className="ml-2 normal-case tracking-normal text-[#4A5568]">
+                agent-confirmed values only
+              </span>
+            </h2>
+            <button
+              onClick={() => {
+                if (agentConfig?.defaults) {
+                  setKnobEdits({ ...agentConfig.defaults });
+                  requestAgentConfig(agentConfig.defaults);
+                }
+              }}
+              disabled={isDisconnected || !agentConfig?.defaults}
+              className="border border-[#1A1A2E] text-[#94A3B8] hover:border-[#6366F1]/50 disabled:opacity-40 text-[10px] tracking-wide rounded-md px-3 py-1.5 transition-colors"
+            >
+              Revert to defaults
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+            {TUNING_KNOBS.map((knob) => {
+              const applied = agentConfig?.config?.[knob.key];
+              const range = agentConfig?.ranges?.[knob.key];
+              const requested = knobEdits[knob.key] ?? applied;
+              const state = knobState(requested, applied);
+              const color = KNOB_STATE_COLORS[state];
+              const choices = range?.choices ?? knob.choices;
+              return (
+                <div key={knob.key} className="flex items-center gap-2">
+                  <span
+                    id={`tuning-label-${knob.key}`}
+                    className="w-36 shrink-0 text-[10px] tracking-wide text-[#94A3B8]"
+                  >
+                    {knob.label}
+                  </span>
+                  {choices ? (
+                    <select
+                      aria-labelledby={`tuning-label-${knob.key}`}
+                      value={requested ?? choices[0]}
+                      disabled={isDisconnected}
+                      onChange={(e) => {
+                        setKnobEdits((prev) => ({ ...prev, [knob.key]: e.target.value }));
+                        requestAgentConfig({ [knob.key]: e.target.value });
+                      }}
+                      className="flex-1 bg-[#13131F] border border-[#1A1A2E] rounded-md px-2 py-1 text-[11px] font-mono text-white disabled:opacity-40"
+                    >
+                      {choices.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="range"
+                      aria-labelledby={`tuning-label-${knob.key}`}
+                      min={range?.lo ?? knob.lo}
+                      max={range?.hi ?? knob.hi}
+                      step={knob.step}
+                      value={requested ?? knob.lo}
+                      disabled={isDisconnected}
+                      onChange={(e) =>
+                        setKnobEdits((prev) => ({ ...prev, [knob.key]: Number(e.target.value) }))
+                      }
+                      onPointerUp={(e) =>
+                        requestAgentConfig({ [knob.key]: Number(e.currentTarget.value) })
+                      }
+                      onKeyUp={(e) => {
+                        // keyboard operation must publish too — pointer-up never fires
+                        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+                             'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+                          requestAgentConfig({ [knob.key]: Number(e.currentTarget.value) });
+                        }
+                      }}
+                      className="flex-1 accent-[#6366F1] disabled:opacity-40"
+                    />
+                  )}
+                  <span className="w-12 text-right text-[10px] font-mono text-[#64748B]">
+                    {choices ? '' : (requested ?? '—')}
+                  </span>
+                  <span
+                    title={
+                      state === 'unknown'
+                        ? `${knob.key}: awaiting agent confirmation`
+                        : `${knob.key}: agent applied ${knobDisplay(applied)}`
+                    }
+                    className="w-14 text-right text-[10px] font-mono"
+                    style={{ color }}
+                  >
+                    {state === 'mismatch' && '⚠'}
+                    {knobDisplay(applied)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {agentConfig?.rejected && (
+            <p className="mt-3 text-[9px] text-[#F59E0B]">
+              rejected by agent: {Object.entries(agentConfig.rejected)
+                .map(([k, v]) => `${k} (${v})`).join(' · ')}
+            </p>
+          )}
+          <p className="mt-3 text-[9px] text-[#4A5568]">
+            RVC knobs apply mid-stream on the open socket; agent knobs apply instantly.
+            A/B method: change ONE knob, speak the fixed script, score, revert.
+          </p>
         </div>
 
         {/* Live stats */}

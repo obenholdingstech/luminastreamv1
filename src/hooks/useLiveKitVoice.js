@@ -42,6 +42,10 @@ export function useLiveKitVoice(url, token) {
   // publish/restart) — browsers may silently ignore requested constraints, so
   // the UI readout must render this, never the requested state. null = no live mic.
   const [appliedConstraints, setAppliedConstraints] = useState(null);
+  // Phase 4 tuning: the agent's agent_config broadcast — the ONLY source the
+  // Tuning card renders applied values from. {config, defaults, ranges,
+  // adjusted?, rejected?} or null before the first broadcast.
+  const [agentConfig, setAgentConfig] = useState(null);
 
   const roomRef = useRef(null);
   // Latest constraints for connect()/toggle without re-creating callbacks
@@ -92,6 +96,7 @@ export function useLiveKitVoice(url, token) {
     setAgentMode(null);
     setAgentModeReason(null);
     setAppliedConstraints(null);
+    setAgentConfig(null);
     setRoom(null);
     setConnectionQuality(ConnectionQuality.Unknown);
     setStats(EMPTY_STATS);
@@ -149,6 +154,14 @@ export function useLiveKitVoice(url, token) {
         if (msg?.type === 'agent_mode' && typeof msg.mode === 'string') {
           setAgentMode(msg.mode);
           setAgentModeReason(msg.reason ?? null);
+        } else if (msg?.type === 'agent_config' && msg.config) {
+          setAgentConfig({
+            config: msg.config,
+            defaults: msg.defaults ?? null,
+            ranges: msg.ranges ?? null,
+            adjusted: msg.adjusted ?? null,
+            rejected: msg.rejected ?? null,
+          });
         }
       } catch (_e) {
         // non-JSON data from some other publisher — not ours
@@ -271,6 +284,22 @@ export function useLiveKitVoice(url, token) {
     }
   }, [readAppliedConstraints]);
 
+  // Request tuning-knob changes. Fire-and-forget like requestAgentMode: the
+  // Tuning card only updates its confirmed badges when the agent broadcasts
+  // agent_config back (the agent is the source of truth)
+  const requestAgentConfig = useCallback(async (params) => {
+    const activeRoom = roomRef.current;
+    if (!activeRoom || !params) return;
+    try {
+      await activeRoom.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify({ type: 'set_config', params })),
+        { reliable: true },
+      );
+    } catch (_e) {
+      // transient publish failure — the user can adjust again
+    }
+  }, []);
+
   // Browsers may block autoplay until a user gesture — LiveKit surfaces that
   // via AudioPlaybackStatusChanged; calling startAudio() from a click fixes it
   const enableAudio = useCallback(async () => {
@@ -376,10 +405,12 @@ export function useLiveKitVoice(url, token) {
     agentModeReason,
     captureConstraints,
     appliedConstraints,
+    agentConfig,
     connect,
     disconnect,
     enableAudio,
     requestAgentMode,
+    requestAgentConfig,
     setCaptureConstraint,
   };
 }
