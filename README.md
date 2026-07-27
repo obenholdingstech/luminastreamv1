@@ -94,9 +94,12 @@ registering the custom domain on the project first fails with a 522.
 The old Base44 backend proxy is dead. The frontend reads one build-time
 variable, `VITE_API_BASE` (see `src/lib/apiBase.js`):
 
-- **Unset (the default)** — legacy Base44 calls go to same-origin `/api/...`
-  paths and fail soft, exactly as they do on localhost. The site, including
-  `/livekit-test`, works fully without it.
+- **Unset (the default)** — the site, including `/livekit-test`, works fully
+  without it. Legacy Base44 calls go to same-origin `/api/...` paths and fail
+  soft, though the shape differs by host: the local dev server returns a
+  plain 404, while the deployed site's SPA fallback answers `/api/...` with
+  the app document (`index.html`, HTTP 200). Neither has a backend behind it;
+  the frontend tolerates both.
 - **When a real API backend exists**: project → **Settings** →
   **Environment variables** → **Add variable** → name `VITE_API_BASE`,
   value e.g. `https://api.luminastream.live` (no trailing slash needed —
