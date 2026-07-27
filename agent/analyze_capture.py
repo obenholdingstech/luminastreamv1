@@ -63,6 +63,15 @@ TAIL_MS = 250.0            # utterance tail examined by the clip detector
 TAIL_RATIO = 0.25          # output tail below this fraction of input ⇒ clipped
 BODY_RATIO = 0.30          # body must have made it through, else it's a dropout
 SILENCE_MIN_MS = 120.0     # minimum output silence span worth mapping
+# VAD-gated attribution: minimum input-active fraction for a gate-closed span
+# to count as "the VAD suppressed something" rather than true silence.
+# Calibrated against measured duty-cycles in the local Phase 3 acceptance
+# rehearsal capture (20260723-070732): keyboard typing 8.0% of envelope
+# frames, clap 5.3% over its burst window, true silence 0.0%. The bar sits
+# at ~half the weakest real transient so chair-bump-class events clear it
+# while envelope noise cannot. Re-check against the pod's phase3_acceptance2
+# capture when that session directory is available locally.
+GATED_MIN_ACTIVE_FRAC = 0.025
 
 # dataviz palette (light surface) — input blue, output orange, fixed assignment
 C_IN = "#2a78d6"
@@ -270,7 +279,7 @@ def classify_silences(silences, env_in, offset_frames, hop_ms=ENV_HOP_MS,
     """
     ref = float(np.percentile(env_in, 95)) if len(env_in) else 0.0
     off_s = offset_frames * hop_ms / 1000.0
-    gated_min_frac = 0.05
+    gated_min_frac = GATED_MIN_ACTIVE_FRAC
     out = []
     for s, e in silences:
         i0 = max(0, round(s * 1000.0 / hop_ms) - offset_frames)
@@ -381,13 +390,20 @@ def plot_spectrograms(path, x_in, x_out, sr, offset_ms):
 
 
 def plot_rms_envelope(path, env_in, env_out, hop_ms, offset_frames,
-                      utterances, tail_results):
+                      utterances, tail_results, events=()):
     t_in = np.arange(len(env_in)) * hop_ms / 1000.0
     t_out = (np.arange(len(env_out)) - offset_frames) * hop_ms / 1000.0
     fig, ax = plt.subplots(figsize=(12, 4))
     for s, e in utterances:
         ax.axvspan(s * hop_ms / 1000.0, e * hop_ms / 1000.0,
                    color="#eceae5", zorder=0)
+    for ev in events:
+        if ev.get("event") == "config_change":  # input-timeline marker
+            t = ev["in_pos"] / SR
+            ax.axvline(t, color="#1baf7a", lw=1.0, ls=":")
+            label = ",".join(sorted((ev.get("requested") or {}).keys())) or "config"
+            ax.annotate(label, xy=(t, 0), color="#1baf7a", fontsize=7,
+                        ha="left", rotation=90, va="bottom")
     ax.plot(t_in, env_in, color=C_IN, lw=1.4, label="input RMS")
     ax.plot(t_out, env_out, color=C_OUT, lw=1.4, label="output RMS (aligned)")
     for r in tail_results:
@@ -438,6 +454,13 @@ def plot_dropout_map(path, env_out, hop_ms, silences, events, out_dur_s):
                 ax.axvline(t, color=C_IN, lw=1.0, ls="--")
                 ax.annotate(ev.get("mode", "?"), xy=(t, ymax), color=C_IN,
                             fontsize=8, ha="left", rotation=90, va="top")
+            elif kind == "config_change":
+                # attribute audio segments to tuning configs (Phase 4)
+                t = ev["out_pos"] / SR
+                label = ",".join(sorted((ev.get("requested") or {}).keys())) or "config"
+                ax.axvline(t, color="#1baf7a", lw=1.0, ls=":")
+                ax.annotate(label, xy=(t, ymax * 1.02), color="#1baf7a",
+                            fontsize=7, ha="left", rotation=90, va="top")
             continue
         m = marks[kind]
         ax.scatter(ev["out_pos"] / SR, ymax * 1.05, s=30, zorder=3,
@@ -466,13 +489,24 @@ def percentile(vals, q):
 
 
 def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
-                 utterances, tail_results, silences, events, hop_ms):
+                 utterances, tail_results, silences, events, hop_ms,
+                 gated_spans=()):
     ev_count = {}
     for ev in events:
         ev_count[ev["event"]] = ev_count.get(ev["event"], 0) + 1
     turnarounds = [ev["turnaround_ms"] for ev in events
                    if ev["event"] == "window" and ev.get("turnaround_ms") is not None]
-    depths = [ev["depth"] for ev in events if ev["event"] == "buffer_depth"]
+
+    def gate_open_at(t_in):
+        return not any(s <= t_in < e for s, e in gated_spans)
+
+    # Buffer depth is only meaningful while the gate is open — during gated
+    # periods the buffer is drained BY DESIGN, and averaging those zeros in
+    # made the jitter buffer look starved when it wasn't
+    depths = [ev["depth"] for ev in events if ev["event"] == "buffer_depth"
+              and gate_open_at(ev["in_pos"] / SR)]
+    depths_gated = sum(1 for ev in events if ev["event"] == "buffer_depth"
+                       and not gate_open_at(ev["in_pos"] / SR))
 
     lines = []
     add = lines.append
@@ -516,7 +550,21 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
     if depths:
         add(f"buffer depth   : median {percentile(depths, 50):.0f} samples "
             f"({percentile(depths, 50) / header.get('hop', 6144):.2f} hops), "
-            f"min {min(depths)}, max {max(depths)}")
+            f"min {min(depths)}, max {max(depths)} "
+            f"— gate-open hops only ({depths_gated} gated hops excluded)")
+    changes = [ev for ev in events if ev["event"] == "config_change"]
+    if changes:
+        add("")
+        add(f"config changes : {len(changes)}")
+        for ev in changes:
+            keys = sorted((ev.get("requested") or {}).keys())
+            flags = ""
+            if ev.get("adjusted"):
+                flags += f"  clamped: {sorted(ev['adjusted'])}"
+            if ev.get("rejected"):
+                flags += f"  rejected: {sorted(ev['rejected'])}"
+            add(f"  t={ev['t']:7.2f}s  {keys}{flags}")
+            add(f"           applied config: {json.dumps(ev.get('config'))}")
     return "\n".join(lines) + "\n"
 
 
@@ -547,12 +595,13 @@ def main(argv=None):
     plot_aligned_waveforms(d / "aligned_waveforms.png", x_in, x_out, sr_in, offset_ms)
     plot_spectrograms(d / "spectrograms.png", x_in, x_out, sr_in, offset_ms)
     plot_rms_envelope(d / "rms_envelope.png", env_in, env_out, ENV_HOP_MS,
-                      offset_frames, utterances, tails)
+                      offset_frames, utterances, tails, events=events)
     plot_dropout_map(d / "dropout_map.png", env_out, ENV_HOP_MS, silences,
                      events, len(x_out) / sr_out)
 
     report = build_report(d, header, x_in, x_out, offset_ms, peak_corr,
-                          utterances, tails, silences, events, ENV_HOP_MS)
+                          utterances, tails, silences, events, ENV_HOP_MS,
+                          gated_spans=gated_spans_from_events(events))
     (d / "report.txt").write_text(report)
     print(report)
     print(f"plots written to {d}/")
