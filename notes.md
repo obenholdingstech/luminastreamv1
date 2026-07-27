@@ -6,7 +6,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ## 27 July 2026 — Phase 4: live tuning console (full record: devlog/SESSIONS.md)
 
-- Tuning card on /livekit-test: RVC knobs (index_rate/protect/rms_mix/f0_method) apply **mid-stream on the open socket** — verified in OpenVoiceChanger source @4cee7ef, no reconnect path needed; agent knobs (prime_hops, vad_threshold, vad_hangover_ms) instant. Clamp-never-crash registry in agent/knobs.py; agent broadcasts agent_config {config, defaults, ranges} and the UI renders ONLY that (applied-truth).
+- Tuning card on /livekit-test: RVC knobs (index_rate/protect/rms_mix_rate/f0_method) apply **mid-stream on the open socket** — verified in OpenVoiceChanger source @4cee7ef, no reconnect path needed; agent knobs (prime_hops, vad_threshold, vad_hangover_ms) instant. Clamp-never-crash registry in agent/knobs.py; agent broadcasts agent_config {config, defaults, ranges} and the UI renders ONLY that (applied-truth).
 - Capture logs config_change with full applied snapshot; analyzer draws config markers + two fixes: buffer-depth stats now gate-open-only; VAD-gated bar recalibrated to measured duty-cycles (typing 8%, clap 5.3% → bar 2.5%).
 - 48/48 py + 5/5 node tests. LIVE E2E BLOCKED: Starlink DNS (100.64.0.2) blackholes *.livekit.cloud (1.1.1.1 resolves fine) — rerun knob-twisting E2E when DNS recovers.
 - PR open, merge HELD for CTO review. Next: pod tuning session per README A/B protocol.

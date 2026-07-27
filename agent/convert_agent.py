@@ -115,8 +115,9 @@ class ConvertAgent:
         self.outgate = OutputGate(self.stitcher, PRIME_SAMPLES)
         self.windows_gated = 0             # hops withheld from RVC by the VAD
         self._vad_fail_published = False   # fail-open reported once on the data channel
-        self._vad_fail_task = None         # keeps the report task strongly referenced
-        self._config_task = None           # in-flight set_config application
+        # Fire-and-forget keepalive: the loop only holds weak refs to tasks, so
+        # every ensure_future goes through _spawn and lives here until done
+        self._bg_tasks = set()
         self._last_hop_seq = 0             # context-accounting monotonicity assert
         self.rvc = RvcClient(
             rvc_url,
@@ -135,6 +136,13 @@ class ConvertAgent:
         self.windows_dropped = 0   # backpressure drops (in-flight >= MAX_IN_FLIGHT)
         self.windows_stale = 0     # returns discarded after a mode reset
         self._register_handlers()
+
+    def _spawn(self, coro):
+        """ensure_future with a strong reference held until the task finishes."""
+        task = asyncio.ensure_future(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     # ── Room events ──────────────────────────────────────────────────
 
@@ -157,8 +165,8 @@ class ConvertAgent:
         def _on_participant(p):
             log.info("participant connected: %s", p.identity)
             # Late joiners need to know the current mode and config immediately
-            asyncio.ensure_future(self._publish_mode())
-            asyncio.ensure_future(self._publish_config())
+            self._spawn(self._publish_mode())
+            self._spawn(self._publish_config())
 
         @room.on("participant_disconnected")
         def _on_participant_gone(p):
@@ -208,9 +216,9 @@ class ConvertAgent:
             return
         if msg.get("type") == "set_config":
             log.info("set_config from %s: %s", who, msg.get("params"))
-            self._config_task = asyncio.ensure_future(
-                self._apply_config(msg.get("params"), who)
-            )
+            # _spawn keeps every in-flight application alive — rapid successive
+            # set_config messages must not drop a running task's only reference
+            self._spawn(self._apply_config(msg.get("params"), who))
             return
         if msg.get("type") != "set_mode":
             return
@@ -220,7 +228,7 @@ class ConvertAgent:
             return
         log.info("set_mode(%s) from %s", mode, who)
         self.requested_mode = mode
-        asyncio.ensure_future(self._apply_mode(mode))
+        self._spawn(self._apply_mode(mode))
 
     async def _apply_mode(self, mode, reason=None):
         if mode == "convert" and not self.rvc.connected:
@@ -313,11 +321,13 @@ class ConvertAgent:
                     self.vad.set_threshold(value)
                 else:
                     rejected[name] = "vad disabled (--no-vad)"
+                    adjusted.pop(name, None)  # rejected wins — never report both
             elif name == "vad_hangover_ms":
                 if self.vad is not None:
                     self.vad.set_hangover_ms(value)
                 else:
                     rejected[name] = "vad disabled (--no-vad)"
+                    adjusted.pop(name, None)
         if rvc_updates:
             try:
                 # Mid-stream JSON settings frame on the open socket (verified
@@ -384,7 +394,7 @@ class ConvertAgent:
             return
         log.warning("RVC dropped (%s)", exc)
         if self.mode == "convert":
-            asyncio.ensure_future(self._apply_mode_sync_fallback())
+            self._spawn(self._apply_mode_sync_fallback())
         self._ensure_rvc_retry()
 
     async def _apply_mode_sync_fallback(self):
@@ -484,9 +494,8 @@ class ConvertAgent:
                 send = self.vad.decide_hop(window[-HOP:])
                 if not self.vad.active and not self._vad_fail_published:
                     # fail-open just tripped — report once over the data channel
-                    # (task kept on self: the loop only holds a weak reference)
                     self._vad_fail_published = True
-                    self._vad_fail_task = asyncio.ensure_future(self._publish_mode())
+                    self._spawn(self._publish_mode())
                 elif self.vad.gate_open != was_open:
                     state = "open" if self.vad.gate_open else "closed"
                     log.info("VAD gate %s (prob %.2f)", state, self.vad.last_prob or 0.0)

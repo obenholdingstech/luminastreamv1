@@ -386,11 +386,15 @@ export default function LiveKitTest() {
               const choices = range?.choices ?? knob.choices;
               return (
                 <div key={knob.key} className="flex items-center gap-2">
-                  <span className="w-36 shrink-0 text-[10px] tracking-wide text-[#94A3B8]">
+                  <span
+                    id={`tuning-label-${knob.key}`}
+                    className="w-36 shrink-0 text-[10px] tracking-wide text-[#94A3B8]"
+                  >
                     {knob.label}
                   </span>
                   {choices ? (
                     <select
+                      aria-labelledby={`tuning-label-${knob.key}`}
                       value={requested ?? choices[0]}
                       disabled={isDisconnected}
                       onChange={(e) => {
@@ -406,6 +410,7 @@ export default function LiveKitTest() {
                   ) : (
                     <input
                       type="range"
+                      aria-labelledby={`tuning-label-${knob.key}`}
                       min={range?.lo ?? knob.lo}
                       max={range?.hi ?? knob.hi}
                       step={knob.step}
@@ -414,9 +419,15 @@ export default function LiveKitTest() {
                       onChange={(e) =>
                         setKnobEdits((prev) => ({ ...prev, [knob.key]: Number(e.target.value) }))
                       }
-                      onPointerUp={() => {
-                        const value = knobEdits[knob.key];
-                        if (value !== undefined) requestAgentConfig({ [knob.key]: value });
+                      onPointerUp={(e) =>
+                        requestAgentConfig({ [knob.key]: Number(e.currentTarget.value) })
+                      }
+                      onKeyUp={(e) => {
+                        // keyboard operation must publish too — pointer-up never fires
+                        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+                             'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+                          requestAgentConfig({ [knob.key]: Number(e.currentTarget.value) });
+                        }
                       }}
                       className="flex-1 accent-[#6366F1] disabled:opacity-40"
                     />
