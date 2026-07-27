@@ -4,7 +4,85 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 24 July 2026, ~03:50 — Phase 3.1: VAD onnxruntime path + CPU-only torch diet
+## 27 July 2026 — Phase 4: live tuning console (knobs over the data channel)
+
+### Task (abridged; full text in the PR)
+
+> Dev console on the LiveKit test page whose knobs apply mid-session through
+> the agent, with agent-confirmed truth for every value. Verify first whether
+> the RVC server supports mid-stream config updates (else apply-via-
+> reconnect). Knobs: RVC index_rate/protect/rms_mix_rate/f0_method; agent
+> prime depth / VAD threshold / VAD hangover. Capture config_change snapshots;
+> analyzer config markers + two deferred fixes (gate-open-only buffer stats,
+> recalibrated VAD-gated activity bar). Fail-safe clamping. Tests. README
+> A/B protocol. PR, CodeRabbit, HOLD MERGE for CTO review.
+
+### Verified before coding
+
+- **Mid-stream config: SUPPORTED.** OpenVoiceChanger backend @ `4cee7ef`
+  (`backend/routers/websocket.py`): the main loop accepts JSON text frames at
+  any time (`_handle_json_message` → `_apply_settings` mutating conn_state);
+  every binary frame re-reads the settings in `_process_frame_sync`. So RVC
+  knobs are one text frame on the open socket — the apply-via-reconnect
+  fallback was NOT needed and was not built.
+- **f0 methods actually supported** (`rvc_processor._normalize_f0_method`):
+  rmvpe / harvest / crepe / pm. dio is aliased to pm, fcpe conditional on
+  torchfcpe — both deliberately not offered in the console.
+- Data channel: agent_mode format re-checked; extension is additive
+  (new `agent_config` message type), same JSON-in-Uint8Array discipline.
+
+### What was built
+
+- `agent/knobs.py` — single-source knob registry (kind/range/default/target)
+  + `clamp_params()` fail-safety chokepoint: out-of-range → clamped +
+  reported, garbage/unknown/invalid-enum → rejected with reason, never
+  raises. Registry serialized into every broadcast so the UI renders ranges
+  and defaults from agent truth.
+- `RvcClient.send_settings(partial)` — one JSON text frame mid-stream; also
+  merges into `self.config` so a reconnect carries the current tuning.
+- `VadGate.set_threshold/set_hangover_ms` (hop-rounding rule preserved);
+  prime depth via `outgate.prime_samples` (applies at next re-prime).
+- convert_agent: `set_config` handling → `_apply_config` (clamp → apply →
+  capture `config_change` with FULL applied snapshot → broadcast
+  `agent_config {config, defaults, ranges, adjusted?, rejected?}`);
+  broadcast also on join and at startup; session header carries the config.
+- Analyzer: config-change markers on dropout map (output timeline) and RMS
+  envelope (input timeline) + per-change report section with full snapshots.
+  Deferred fix 1: buffer-depth stats now computed over gate-OPEN hops only
+  (drained-by-design gated hops were making the jitter buffer look starved).
+  Deferred fix 2: VAD-gated activity bar recalibrated against MEASURED
+  duty-cycles from the local acceptance capture (typing 8.0%, clap 5.3%,
+  silence 0.0%) → `GATED_MIN_ACTIVE_FRAC = 0.025` (≈ half the weakest real
+  transient), documented for re-check against the pod's phase3_acceptance2.
+- Frontend: `src/lib/knobState.js` (pure applied-truth derivation) +
+  Tuning card on LiveKitTest.jsx — sliders/selects hold REQUESTED values,
+  confirmed badges render ONLY the agent_config broadcast (green match /
+  amber ⚠ mismatch / muted unknown), rejected-knob banner, revert-to-
+  defaults; hook gains `agentConfig` + `requestAgentConfig`.
+
+### Verification
+
+- **48/48 Python tests** (10 new: clamp matrix incl. NaN/bool/unknown/case-
+  insensitive enum; config_change snapshot integrity; mid-stream settings
+  frame + reconnect carry-over + disconnected-store against an in-process
+  WS server speaking the verified protocol; ConvertAgent._apply_config
+  end-to-end without a room). **5/5 node --test** on knobState (UI renders
+  applied-not-requested pinned as logic tests — repo has no browser runner).
+- eslint + vite build clean; mock server confirmed compatible with
+  mid-stream text frames (it already logs and continues).
+- **Live E2E vs mock: BLOCKED by network** — the Starlink resolver
+  (100.64.0.2) currently returns no answer for `*.livekit.cloud` while
+  1.1.1.1 resolves it fine (`lk_smoke.py` FAIL, DNS-level). The knob-
+  twisting E2E script is ready in the scratchpad; rerun when DNS recovers.
+  GitHub was unaffected, so the PR proceeds; merge held for CTO anyway.
+
+### Files changed
+
+New: `agent/knobs.py`, `agent/test_knobs.py`, `src/lib/knobState.js`,
+`src/lib/knobState.test.js`. Modified: `agent/convert_agent.py`,
+`agent/rvc_client.py`, `agent/vad.py`, `agent/analyze_capture.py`,
+`agent/README.md`, `src/hooks/useLiveKitVoice.js`,
+`src/pages/LiveKitTest.jsx`, `devlog/SESSIONS.md`, `notes.md`.
 
 ### Task (verbatim)
 

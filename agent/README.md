@@ -193,6 +193,50 @@ versus the Phase 2 Session A baseline; the typing and clap read as
 protocol: gate opened only for the two spoken sections, typing+clap span
 attributed VAD-gated, 0 clipped tails, 0 dropouts.)
 
+## Phase 4 — Live tuning console
+
+The convert path is garble-free (Phase 3) but speech quality needs tuning.
+The `/livekit-test` page now has a **Tuning** card whose knobs apply
+mid-session through the agent:
+
+| knob | range | default | applies |
+|---|---|---|---|
+| index_rate | 0–1 | 0.75 | RVC, mid-stream |
+| protect | 0–0.5 | 0.33 | RVC, mid-stream |
+| rms_mix_rate | 0–1 | 0.25 | RVC, mid-stream |
+| f0_method | rmvpe/harvest/crepe/pm | rmvpe | RVC, mid-stream |
+| prime_hops | 0.5–4 | 1.5 | agent, instant (next re-prime) |
+| vad_threshold | 0–1 | 0.5 | agent, instant |
+| vad_hangover_ms | 0–2000 | 300 | agent, instant |
+
+Server-verified (OpenVoiceChanger backend @ `4cee7ef`,
+`backend/routers/websocket.py`): JSON text frames are accepted at any time on
+the open audio socket and merged into connection state — **RVC knobs apply
+mid-stream, no reconnect**. f0 methods offered are the ones the server
+actually runs (`rvc_processor._normalize_f0_method`); dio (aliased to pm)
+and fcpe (conditional) are deliberately not offered.
+
+Protocol: browser sends `{"type":"set_config","params":{...}}` over the data
+channel; the agent clamps out-of-range values, rejects garbage (never
+crashes), applies, writes a `config_change` event with the FULL applied
+snapshot into meta.jsonl (when capturing), and broadcasts
+`{"type":"agent_config","config":...,"defaults":...,"ranges":...}`. The UI
+renders confirmed badges ONLY from that broadcast — green match / amber
+mismatch / muted unknown — plus a "Revert to defaults" button. The analyzer
+draws config-change markers on the timelines so audio segments are
+attributable to configs.
+
+### Phase 4 tuning protocol (A/B method)
+
+1. Convert mode, capture on, mic prerequisites as in Phase 2/3.
+2. Change **ONE** knob from defaults.
+3. Speak the fixed script (fox sentence + "mic test one two" × 3).
+4. Score it (ear + analyzer report for that config segment).
+5. **Revert to defaults** before the next knob.
+
+Change one variable at a time — the capture's `config_change` events pin
+every segment to its exact config, so post-hoc attribution is automatic.
+
 ## Convert agent — RunPod runbook (real RVC)
 
 > **SUPERSEDED (22 Jul):** the agent must NOT run on RunPod — the RunPod
