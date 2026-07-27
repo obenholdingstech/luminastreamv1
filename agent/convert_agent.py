@@ -47,6 +47,7 @@ import numpy as np
 from dotenv import load_dotenv
 from livekit import api, rtc
 
+import knobs
 from bridge import CTX, HOP, SOLA, XFADE, SolaStitcher, WindowAssembler
 from capture import SessionCapture
 from rvc_client import RvcClient
@@ -115,6 +116,7 @@ class ConvertAgent:
         self.windows_gated = 0             # hops withheld from RVC by the VAD
         self._vad_fail_published = False   # fail-open reported once on the data channel
         self._vad_fail_task = None         # keeps the report task strongly referenced
+        self._config_task = None           # in-flight set_config application
         self._last_hop_seq = 0             # context-accounting monotonicity assert
         self.rvc = RvcClient(
             rvc_url,
@@ -154,8 +156,9 @@ class ConvertAgent:
         @room.on("participant_connected")
         def _on_participant(p):
             log.info("participant connected: %s", p.identity)
-            # Late joiners need to know the current mode immediately
+            # Late joiners need to know the current mode and config immediately
             asyncio.ensure_future(self._publish_mode())
+            asyncio.ensure_future(self._publish_config())
 
         @room.on("participant_disconnected")
         def _on_participant_gone(p):
@@ -201,7 +204,15 @@ class ConvertAgent:
             msg = json.loads(packet.data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return  # not ours
-        if not isinstance(msg, dict) or msg.get("type") != "set_mode":
+        if not isinstance(msg, dict):
+            return
+        if msg.get("type") == "set_config":
+            log.info("set_config from %s: %s", who, msg.get("params"))
+            self._config_task = asyncio.ensure_future(
+                self._apply_config(msg.get("params"), who)
+            )
+            return
+        if msg.get("type") != "set_mode":
             return
         mode = msg.get("mode")
         if mode not in MODES:
@@ -269,6 +280,85 @@ class ConvertAgent:
             )
         except Exception as exc:
             log.error("failed to publish agent_mode: %s", exc)
+
+    # ── Tuning knobs (Phase 4) ───────────────────────────────────────
+
+    def config_snapshot(self):
+        """The full APPLIED tuning config — the only truth the UI renders."""
+        snap = {
+            "index_rate": self.rvc.config.get("index_rate"),
+            "protect": self.rvc.config.get("protect"),
+            "rms_mix_rate": self.rvc.config.get("rms_mix_rate"),
+            "f0_method": self.rvc.config.get("f0_method"),
+            "prime_hops": round(self.outgate.prime_samples / HOP, 3),
+        }
+        if self.vad is not None:
+            snap["vad_threshold"] = self.vad.threshold
+            snap["vad_hangover_ms"] = self.vad.hangover_ms
+        return snap
+
+    async def _apply_config(self, params, who):
+        """Clamp → apply (agent knobs in-process, RVC knobs mid-stream) →
+        capture snapshot → broadcast applied truth. Never raises upward."""
+        applied, adjusted, rejected = knobs.clamp_params(params)
+        rvc_updates = {}
+        for name, value in applied.items():
+            target = knobs.KNOBS[name]["target"]
+            if target == "rvc":
+                rvc_updates[name] = value
+            elif name == "prime_hops":
+                self.outgate.prime_samples = knobs.prime_hops_to_samples(value)
+            elif name == "vad_threshold":
+                if self.vad is not None:
+                    self.vad.set_threshold(value)
+                else:
+                    rejected[name] = "vad disabled (--no-vad)"
+            elif name == "vad_hangover_ms":
+                if self.vad is not None:
+                    self.vad.set_hangover_ms(value)
+                else:
+                    rejected[name] = "vad disabled (--no-vad)"
+        if rvc_updates:
+            try:
+                # Mid-stream JSON settings frame on the open socket (verified
+                # against OpenVoiceChanger backend @ 4cee7ef); if disconnected
+                # the merge into rvc.config makes the next connect carry it
+                live = await self.rvc.send_settings(rvc_updates)
+                if not live:
+                    log.info("RVC knobs stored; will apply on next RVC connect")
+            except Exception as exc:
+                log.warning("mid-stream settings frame failed: %s", exc)
+        if adjusted:
+            log.info("clamped out-of-range knobs from %s: %s", who, adjusted)
+        if rejected:
+            log.warning("rejected knob values from %s: %s", who, rejected)
+        if self.capture:
+            self.capture.event("config_change", requested=params,
+                               config=self.config_snapshot(),
+                               adjusted=adjusted or None, rejected=rejected or None)
+        await self._publish_config(adjusted=adjusted, rejected=rejected)
+
+    async def _publish_config(self, adjusted=None, rejected=None):
+        """Broadcast the applied config + registry metadata (defaults/ranges)
+        so the UI renders entirely from agent truth."""
+        if self.room.connection_state != rtc.ConnectionState.CONN_CONNECTED:
+            return
+        payload = {
+            "type": "agent_config",
+            "config": self.config_snapshot(),
+            "defaults": knobs.defaults(),
+            "ranges": knobs.ranges(),
+        }
+        if adjusted:
+            payload["adjusted"] = adjusted
+        if rejected:
+            payload["rejected"] = rejected
+        try:
+            await self.room.local_participant.publish_data(
+                json.dumps(payload), reliable=True
+            )
+        except Exception as exc:
+            log.error("failed to publish agent_config: %s", exc)
 
     # ── RVC plumbing ─────────────────────────────────────────────────
 
@@ -339,6 +429,7 @@ class ConvertAgent:
                     "hangover_ms": self.vad.hangover_ms,
                     "hangover_hops": self.vad.hangover_hops,
                 },
+                "config": self.config_snapshot(),
             }).start()
             log.info("capture ON → %s", self.capture.session_dir)
         try:
@@ -489,6 +580,7 @@ class ConvertAgent:
         publication = await self.room.local_participant.publish_track(local_track, options)
         log.info("published track (sid=%s) — mode=%s", publication.sid, self.mode)
         await self._publish_mode()
+        await self._publish_config()
 
         for participant in self.room.remote_participants.values():
             for pub in participant.track_publications.values():
