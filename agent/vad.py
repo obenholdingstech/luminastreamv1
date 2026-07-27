@@ -124,6 +124,15 @@ class VadGate:
         if prob_fn is not None:
             self.active = True
 
+    def set_threshold(self, threshold):
+        self.threshold = float(threshold)
+
+    def set_hangover_ms(self, hangover_ms):
+        """Live retune; the hop-rounding rule matches __init__ exactly."""
+        self.hangover_ms = float(hangover_ms)
+        self.hangover_hops = max(1, math.ceil(self.hangover_ms * SR_IN / 1000.0 / self.hop))
+        self._hang_remaining = min(self._hang_remaining, self.hangover_hops)
+
     def load(self):
         """Load the real silero model. Call before the room join (like RVC warmup)."""
         try:
