@@ -1,4 +1,4 @@
-import { AudioWaveform, Cpu, Clock, Zap, Activity, AlertTriangle, Check } from 'lucide-react';
+import { AudioWaveform, Cpu, Clock, Zap, Activity, AlertTriangle } from 'lucide-react';
 
 function MetricCard({ label, value, unit, icon: Icon, color }) {
   return (
