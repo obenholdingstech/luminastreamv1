@@ -118,6 +118,11 @@ class ConvertAgent:
         # Fire-and-forget keepalive: the loop only holds weak refs to tasks, so
         # every ensure_future goes through _spawn and lives here until done
         self._bg_tasks = set()
+        # Applies are strictly FIFO: without this, two in-flight _apply_config
+        # tasks could interleave their RVC settings frames and leave the server
+        # on an older value than the applied-truth broadcast claims — and with
+        # no server-side settings echo, nothing would self-correct.
+        self._config_lock = asyncio.Lock()
         self._last_hop_seq = 0             # context-accounting monotonicity assert
         self.rvc = RvcClient(
             rvc_url,
@@ -307,46 +312,49 @@ class ConvertAgent:
 
     async def _apply_config(self, params, who):
         """Clamp → apply (agent knobs in-process, RVC knobs mid-stream) →
-        capture snapshot → broadcast applied truth. Never raises upward."""
-        applied, adjusted, rejected = knobs.clamp_params(params)
-        rvc_updates = {}
-        for name, value in applied.items():
-            target = knobs.KNOBS[name]["target"]
-            if target == "rvc":
-                rvc_updates[name] = value
-            elif name == "prime_hops":
-                self.outgate.prime_samples = knobs.prime_hops_to_samples(value)
-            elif name == "vad_threshold":
-                if self.vad is not None:
-                    self.vad.set_threshold(value)
-                else:
-                    rejected[name] = "vad disabled (--no-vad)"
-                    adjusted.pop(name, None)  # rejected wins — never report both
-            elif name == "vad_hangover_ms":
-                if self.vad is not None:
-                    self.vad.set_hangover_ms(value)
-                else:
-                    rejected[name] = "vad disabled (--no-vad)"
-                    adjusted.pop(name, None)
-        if rvc_updates:
-            try:
-                # Mid-stream JSON settings frame on the open socket (verified
-                # against OpenVoiceChanger backend @ 4cee7ef); if disconnected
-                # the merge into rvc.config makes the next connect carry it
-                live = await self.rvc.send_settings(rvc_updates)
-                if not live:
-                    log.info("RVC knobs stored; will apply on next RVC connect")
-            except Exception as exc:
-                log.warning("mid-stream settings frame failed: %s", exc)
-        if adjusted:
-            log.info("clamped out-of-range knobs from %s: %s", who, adjusted)
-        if rejected:
-            log.warning("rejected knob values from %s: %s", who, rejected)
-        if self.capture:
-            self.capture.event("config_change", requested=params,
-                               config=self.config_snapshot(),
-                               adjusted=adjusted or None, rejected=rejected or None)
-        await self._publish_config(adjusted=adjusted, rejected=rejected)
+        capture snapshot → broadcast applied truth. Never raises upward.
+        The whole body holds _config_lock so overlapping applies stay FIFO
+        and every broadcast reflects the true final state of its apply."""
+        async with self._config_lock:
+            applied, adjusted, rejected = knobs.clamp_params(params)
+            rvc_updates = {}
+            for name, value in applied.items():
+                target = knobs.KNOBS[name]["target"]
+                if target == "rvc":
+                    rvc_updates[name] = value
+                elif name == "prime_hops":
+                    self.outgate.prime_samples = knobs.prime_hops_to_samples(value)
+                elif name == "vad_threshold":
+                    if self.vad is not None:
+                        self.vad.set_threshold(value)
+                    else:
+                        rejected[name] = "vad disabled (--no-vad)"
+                        adjusted.pop(name, None)  # rejected wins — never report both
+                elif name == "vad_hangover_ms":
+                    if self.vad is not None:
+                        self.vad.set_hangover_ms(value)
+                    else:
+                        rejected[name] = "vad disabled (--no-vad)"
+                        adjusted.pop(name, None)
+            if rvc_updates:
+                try:
+                    # Mid-stream JSON settings frame on the open socket (verified
+                    # against OpenVoiceChanger backend @ 4cee7ef); if disconnected
+                    # the merge into rvc.config makes the next connect carry it
+                    live = await self.rvc.send_settings(rvc_updates)
+                    if not live:
+                        log.info("RVC knobs stored; will apply on next RVC connect")
+                except Exception as exc:
+                    log.warning("mid-stream settings frame failed: %s", exc)
+            if adjusted:
+                log.info("clamped out-of-range knobs from %s: %s", who, adjusted)
+            if rejected:
+                log.warning("rejected knob values from %s: %s", who, rejected)
+            if self.capture:
+                self.capture.event("config_change", requested=params,
+                                   config=self.config_snapshot(),
+                                   adjusted=adjusted or None, rejected=rejected or None)
+            await self._publish_config(adjusted=adjusted, rejected=rejected)
 
     async def _publish_config(self, adjusted=None, rejected=None):
         """Broadcast the applied config + registry metadata (defaults/ranges)

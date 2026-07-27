@@ -170,6 +170,48 @@ def test_agent_apply_config_end_to_end():
     asyncio.run(run())
 
 
+def test_overlapping_applies_serialize_fifo():
+    """CTO merge condition on PR #12: two overlapping _apply_config tasks must
+    be strictly FIFO. With the first apply's RVC settings frame made slow, the
+    server, rvc.config, and the final broadcast must all end on the LAST
+    requested value — without _config_lock the frames interleave and the
+    server finishes on the older one while the broadcast claims the newer."""
+    from convert_agent import ConvertAgent
+
+    async def scenario(recorder, url):
+        agent = ConvertAgent("room", "echo-test", url, "convert", vad=None)
+        await agent.rvc.connect()
+
+        real_send = agent.rvc.send_settings
+        delays = iter([0.05, 0.0])  # first apply slow, second instant
+
+        async def slow_send(partial):
+            await asyncio.sleep(next(delays, 0.0))
+            return await real_send(partial)
+
+        agent.rvc.send_settings = slow_send
+
+        broadcasts = []
+
+        async def record_publish(adjusted=None, rejected=None):
+            broadcasts.append(agent.config_snapshot())
+
+        agent._publish_config = record_publish
+
+        first = agent._spawn(agent._apply_config({"protect": 0.1}, "test-a"))
+        second = agent._spawn(agent._apply_config({"protect": 0.4}, "test-b"))
+        await asyncio.gather(first, second)
+        await asyncio.sleep(0.05)  # let the frames land at the recorder
+        await agent.rvc.close()
+
+        assert agent.rvc.config["protect"] == 0.4
+        assert [b["protect"] for b in broadcasts] == [0.1, 0.4]
+
+    recorder = run_with_server(scenario)
+    # last settings frame the server saw carries the LAST requested value
+    assert recorder.texts[-1] == {"protect": 0.4}
+
+
 def test_send_settings_while_disconnected_stores_only():
     async def scenario(recorder, url):
         client = RvcClient(url, config={"chunk_size": 64})
