@@ -84,6 +84,16 @@ New: `agent/knobs.py`, `agent/test_knobs.py`, `src/lib/knobState.js`,
 `agent/README.md`, `src/hooks/useLiveKitVoice.js`,
 `src/pages/LiveKitTest.jsx`, `devlog/SESSIONS.md`, `notes.md`.
 
+### CodeRabbit round (PR #12)
+
+4 findings (2 Major), all applied in ca4c302 with threaded evidence
+replies: `_spawn()` keepalive set for ALL fire-and-forget tasks (also
+fixes the `_config_task` overwrite under rapid set_config — this finally
+does the sweep deferred from PR #10); rejected-wins between
+adjusted/rejected for vad knobs under --no-vad; sliders keyboard-operable
+(Arrow/Home/End/Page publish) + aria-labelledby; notes.md wire-key typo.
+48/48 py + 5/5 node after. Merge HELD for CTO review.
+
 ### Task (verbatim)
 
 > the CTO has requested a Phase 3.1 micro-PR to fix the torch bloat and
