@@ -53,3 +53,8 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/api
           command: deploy
+          # Pin wrangler explicitly. The action's fallback (3.90.0) predates
+          # wrangler.jsonc support (3.91+) and fails the deploy; pinning also
+          # makes version resolution deterministic. Matches the wrangler
+          # devDependency in workers/api/package.json (^4.36.0).
+          wranglerVersion: "4.36.0"
