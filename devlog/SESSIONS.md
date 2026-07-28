@@ -129,12 +129,49 @@ CodeRabbit (`<review_comment_addressed>`); re-review **pass**, no new findings:
 
 Post-fix: Worker **35/35**, lint clean. Merge still **HELD**.
 
+### Addendum — automated deployment (CEO directive)
+
+Directive: GitHub Actions deploy on merge; staging env; scripted secret
+injection; README = token-mint + GitHub secrets (DNS stays a human act).
+
+Verified live first: `cloudflare/wrangler-action` is **@v3** (inputs apiToken,
+accountId, command, environment, workingDirectory); wrangler named-env
+inheritance — **ratelimits + observability + vars + bindings are
+NON-inheritable**, so staging must redefine them; minimal deploy token =
+**Workers Scripts: Edit + Account Settings: Read**, account-scoped, with **no**
+Zone/DNS/Routes/KV/R2.
+
+- `wrangler.jsonc`: added `env.staging` (name `luminastream-api-staging`, its
+  own `observability` + `ratelimits` with namespace_ids 2001/2002 → counters
+  isolated from prod). Top-level stays production. `package.json` `deploy`/`tail`
+  now default to `--env staging` (agent/manual → staging); **no** local
+  production-deploy script (production is CI-only).
+- `.github/workflows/deploy-worker.yml`: on push to `main` touching `workers/**`,
+  runs the Worker tests then `cloudflare/wrangler-action@v3` `command: deploy`
+  (top-level = production) with `apiToken`/`accountId` from GitHub secrets.
+  `permissions: contents: read`, a `concurrency` guard, and
+  `environment: production` (optional approval gate). Production deploys ONLY here.
+- `scripts/put-worker-secrets.sh [staging|production]`: pipes each value from the
+  gitignored `secrets.env` straight into `wrangler secret put` over stdin — pure
+  `grep|cut|tr` pipe, value never in a shell var, never echoed; bash-3.2-safe
+  empty-array guard. Sets all five Worker secrets.
+- README: replaced the manual deploy steps with the automated flow — narrow
+  token mint (exact two scopes, expiry, no DNS) → paste `CLOUDFLARE_API_TOKEN` /
+  `CLOUDFLARE_ACCOUNT_ID` into GitHub → run the secret script. Custom-domain DNS
+  documented as a deliberate human act (the token has no DNS scope).
+
+Verified: `bash -n` + an extraction test (keeps `=` in values, skips missing);
+workflow YAML parses (ruby); `wrangler deploy --dry-run` for BOTH top-level and
+`--env staging` bundle with their own rate limiters; Worker **35/35**, lint clean.
+
 ### Next
 
-- **HOLD MERGE** — awaiting CTO decision on PR #14 (CodeRabbit round closed,
-  all green).
-- After merge + deploy: Amy runs the README secret/deploy steps and sets
-  `VITE_API_BASE` on the Pages project to the Worker URL.
+- **HOLD MERGE** — awaiting CTO decision on PR #14. On merge, the new workflow
+  auto-deploys the **production** Worker (once the `CLOUDFLARE_*` GitHub Actions
+  secrets exist).
+- Amy: mint the narrow token → GitHub secrets; run
+  `scripts/put-worker-secrets.sh` for staging + production; set `VITE_API_BASE`
+  on the Pages project.
 
 ---
 
