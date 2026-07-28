@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 28 July 2026 — FRONTEND DEPLOY AUTOMATED: Pages recovered, deploy is now a property of the merge (PR pending, HOLD FOR CTO)
+
+- **The frontend exists again.** Created Pages project `luminastream-studio` (prod branch `main`) and ran the first deploy from `fix/pages-deploy-automation`. Live now at **https://luminastream-studio.pages.dev** — `/` and `/livekit-test` both serve the app HTML shell (`#root`), not JSON. Bundle has `VITE_API_BASE=https://luminastream-api.obenholdingsltd.workers.dev` baked in.
+- **Deploy is automated.** `.github/workflows/deploy-pages.yml` mirrors deploy-worker.yml: push to `main` touching build inputs → npm ci → guard that FAILS if `vars.VITE_API_BASE` empty → build → `wrangler-action pages deploy dist` pinned to wrangler 4.36.0. GITHUB_TOKEN stays read-only (no `gitHubToken` passed — it's optional, only writes a Deployment record).
+- **New instrument:** `scripts/check-live.sh` — 3 layers (Worker /api/health, Pages /, Pages /livekit-test), one PASS/FAIL line each, nonzero exit on any fail. Positive run: all PASS. Negative run (`PAGES_URL=studio.luminastream.live`, still the Worker): FAIL exit 1, shows the `{"ok":false,"error":"not_found"}` JSON — catches the exact incident.
+- **README:** deleted the manual dashboard-clicks section; documented the automated flow + the two deliberate human walls (token Pages:Edit edit — done; domain move off Worker onto Pages — pending, DNS human by doctrine). Fixed two stale "set VITE_API_BASE in the Pages dashboard" refs (it's a GitHub Actions variable now).
+- **Surprise:** `CLOUDFLARE_API_TOKEN` is NOT in secrets.env; wrangler runs off an OAuth session with `pages (write)` on the correct account. Proceeded on that; authoritative check of the *CI secret's* Pages:Edit is the first green workflow run on merge.
+- **Next:** open PR → CodeRabbit → evidence replies → **CTO presses merge**. Domain move is Amy's manual step post-merge.
+
 ## 28 July 2026 — GRADUATION: STT→TTS is now the DEFAULT engine (PR #15 ready for review)
 
 - **CEO verdict (verbal, 28 July 2026), recorded verbatim:** *"clean 7/10, beats RVC on purity, emotions inconsistent vs live prosody."* CTO approved the PR for merge on the strength of it.
