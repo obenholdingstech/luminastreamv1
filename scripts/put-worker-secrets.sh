@@ -3,7 +3,7 @@
 # put-worker-secrets.sh — inject the API Worker's runtime secrets into
 # Cloudflare from ./secrets.env using the pipe pattern, so no secret value is
 # ever printed to the terminal or a CI log. Each value flows
-# grep → cut → wrangler stdin and is never stored in a shell variable.
+# grep → cut → wrangler stdin and is never echoed.
 #
 #   Usage: scripts/put-worker-secrets.sh [staging|production]
 #          default: staging.
@@ -36,18 +36,34 @@ SECRET_NAMES=(ADMIN_PASSWORD ADMIN_SESSION_SECRET LIVEKIT_API_KEY LIVEKIT_API_SE
 ENV_FLAG=()
 [ "$ENVIRONMENT" = "staging" ] && ENV_FLAG=(--env staging)
 
+read_value() {
+  # One secret's value, WITHOUT echoing it: first matching line, everything
+  # after the first '=', CR/LF stripped. Empty output ⇒ missing or blank.
+  grep -m1 -E "^${1}=" "$SECRETS_FILE" | cut -d= -f2- | tr -d '\r\n' || true
+}
+
+# Preflight: EVERY required secret must be present AND non-empty before we touch
+# Cloudflare. A partial update can brick the Worker; worse, during a rotation a
+# typo'd or absent key would be silently skipped, leaving the OLD secret in
+# place (e.g. an ADMIN_SESSION_SECRET "kill switch" that never fires). So this
+# is all-or-nothing: validate first, then set.
+missing=()
+for name in "${SECRET_NAMES[@]}"; do
+  [ -n "$(read_value "$name")" ] || missing+=("$name")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "error: required secret(s) missing or empty in secrets.env: ${missing[*]}" >&2
+  echo "       set all ${#SECRET_NAMES[@]} first — nothing was changed." >&2
+  exit 1
+fi
+
 cd "$REPO_ROOT/workers/api"
 
 echo "Setting ${#SECRET_NAMES[@]} secrets on the '$ENVIRONMENT' Worker (values piped, never printed)…"
 for name in "${SECRET_NAMES[@]}"; do
-  if ! grep -qE "^${name}=" "$SECRETS_FILE"; then
-    echo "  - $name: not in secrets.env — skipped" >&2
-    continue
-  fi
-  # Pure pipe: the value never lands in a shell variable or a log line.
-  # grep -m1 stops at the first match (no SIGPIPE); cut -f2- keeps '=' in values.
-  grep -m1 -E "^${name}=" "$SECRETS_FILE" | cut -d= -f2- | tr -d '\r\n' \
-    | npx wrangler secret put "$name" ${ENV_FLAG[@]+"${ENV_FLAG[@]}"} >/dev/null
+  # Pure pipe: the value goes straight from secrets.env into wrangler over
+  # stdin, never landing in a shell variable or a log line.
+  read_value "$name" | npx wrangler secret put "$name" ${ENV_FLAG[@]+"${ENV_FLAG[@]}"} >/dev/null
   echo "  ✓ $name"
 done
 

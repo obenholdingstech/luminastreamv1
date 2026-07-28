@@ -31,6 +31,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The test step runs repo code; it needs no git auth, so don't leave
+          # the (read-only) GITHUB_TOKEN in .git/config for it to read.
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@v4
