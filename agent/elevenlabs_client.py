@@ -220,6 +220,7 @@ class SttClient:
         self._stream_resampler = None
         self._pending = None             # newest hop, held back to carry the commit
         self._stream_ok = False
+        self._uncommitted = False        # audio sent but never committed (see abandon_utterance)
 
     @property
     def url(self):
@@ -235,6 +236,7 @@ class SttClient:
         self._ws = await self.session.ws_connect(
             self.url, headers={"xi-api-key": self.api_key})
         self._resampler = Resampler48to16()
+        self._uncommitted = False        # a fresh socket has an empty segment buffer
         log.info("STT session open (%s, handshake %.0f ms)",
                  self.model, (time.perf_counter() - t0) * 1000)
 
@@ -269,9 +271,28 @@ class SttClient:
     # mismatched. Pushes for the NEXT utterance may safely interleave with an
     # awaited final — the server treats a commit as the segment boundary.
 
+    def abandon_utterance(self):
+        """Drop a streamed span that never became an utterance (a VAD blip).
+
+        The held hop is discarded, but audio already sent is sitting
+        UNCOMMITTED in the server's segment buffer, where it would be prepended
+        to whatever the next commit returns — a cough silently glued onto the
+        front of the next sentence's transcript. `_uncommitted` records that, so
+        the next begin_utterance() starts a clean session.
+        """
+        self._pending = None
+        self._stream_ok = False
+
     async def begin_utterance(self):
         """Start streaming a new utterance. Failures degrade to the burst path."""
         try:
+            if self._uncommitted:
+                # Cheap here on purpose: this runs at gate-OPEN, so the
+                # handshake hides behind the utterance the speaker is only just
+                # starting, rather than landing in tail_latency at gate-close.
+                log.info("discarding uncommitted audio from a dropped span — "
+                         "reconnecting STT so it cannot leak into this utterance")
+                await self.connect()
             await self._ensure()
         except Exception as exc:
             self._stream_ok = False
@@ -290,6 +311,7 @@ class SttClient:
             buf = pcm48_to_pcm16k_bytes(pcm48, self._stream_resampler)
             if self._pending is not None:
                 await self._send_chunk(self._pending, False)
+                self._uncommitted = True
             self._pending = buf
         except Exception as exc:
             self._stream_ok = False
@@ -304,6 +326,7 @@ class SttClient:
             return False
         try:
             await self._send_chunk(self._pending, True)
+            self._uncommitted = False
             self.commits += 1
             return True
         except Exception as exc:

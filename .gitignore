@@ -44,3 +44,6 @@ CTO_HANDOVER*.md
 # Compiled Python (a stray literal $HOME dir once got committed this way)
 *.pyc
 __pycache__/
+
+# Generated run reports from --report (evidence lives on the PR, not in git)
+agent/*report*.json

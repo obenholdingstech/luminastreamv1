@@ -36,9 +36,13 @@ class MockStt:
         self.commits = 0         # exactly one per streamed utterance
         self.begins = 0
         self.fallbacks = 0
+        self.abandons = 0
 
     def _next_text(self):
         return self.texts.pop(0) if self.texts else "hello there"
+
+    def abandon_utterance(self):
+        self.abandons += 1
 
     async def begin_utterance(self):
         self.begins += 1
@@ -630,3 +634,96 @@ def test_the_default_engine_is_tts():
         capture_output=True, text=True, timeout=120).stdout
     assert "tts (DEFAULT" in out          # the promoted default
     assert convert_agent.ENGINES == ("rvc", "tts")   # rvc still selectable
+
+
+# ── findings round (CodeRabbit + CTO annotations) ────────────────────
+
+
+def test_a_dropped_blip_does_not_leak_state_into_the_next_utterance():
+    """The blip returns None at gate-close. Without an explicit reset the next
+    utterance skips begin_utterance() and inherits the blip's streaming state
+    and its half-streamed, uncommitted server-side segment."""
+    stt = MockStt()
+
+    async def run():
+        engine, _, _ = build(stt=stt)
+        engine.start()
+        # one hop of speech = 128ms, under the 200ms min_speech_ms floor
+        await engine.feed_hop(np.full(HOP, 0.2, dtype=np.float32), True, True)
+        await engine.feed_hop(np.zeros(HOP, dtype=np.float32), False, False)
+        assert engine._utt_streaming is False      # reset on the no-utterance path
+        assert stt.abandons == 1                   # and the segment was abandoned
+        await utter(engine, n_speech=4)            # a real one follows
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert stt.begins == 2          # the real utterance DID start its own stream
+    assert stt.commits == 1
+    assert len(engine.records) == 1
+
+
+def test_mode_reentry_drops_queued_utterances():
+    """Ghost audio guard: anything queued belongs to the previous take."""
+    async def run():
+        engine, _, _ = build()
+        engine.start()
+        engine._work.put_nowait(object())     # a stale job, never processed
+        engine.reset()
+        assert engine._work.qsize() == 0
+        assert engine.generation == 1
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert len(engine.records) == 1           # the post-reset utterance is fine
+
+
+def test_synthesis_in_flight_at_mode_reentry_never_reaches_the_room():
+    """The worst case: audio already streaming when the mode flips. It must be
+    discarded rather than pushed into the freshly-cleared jitter buffer."""
+    class SlowTts(MockTts):
+        def __init__(self, engine_ref, **kw):
+            super().__init__(**kw)
+            self.engine_ref = engine_ref
+
+        async def stream(self, text):
+            self.calls.append(text)
+            # the mode is re-entered between the first and second chunk
+            yield np.full(1200, 0.3, dtype=np.float32), 7.5
+            self.engine_ref[0].reset()
+            yield np.full(1200, 0.3, dtype=np.float32), 7.5
+
+    async def run():
+        ref = []
+        engine, _, _ = build(tts=SlowTts(ref))
+        ref.append(engine)
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert engine.skipped == 1
+    assert engine.records == []               # nothing recorded from the old take
+    assert engine.queue.available == 0        # and no ghost audio buffered
+
+
+def test_queue_wait_is_measured_not_inferred_from_depth():
+    """qsize() is always >= 1 for the utterance just enqueued, so depth cannot
+    express 'this one waited'. The wait itself is recorded per utterance."""
+    async def run():
+        engine, _, _ = build()
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine.records[0]
+
+    rec = asyncio.run(run())
+    assert "queue_wait_ms" in rec
+    assert rec["queue_wait_ms"] >= 0

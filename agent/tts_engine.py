@@ -37,10 +37,13 @@ from wer import best_match
 
 log = logging.getLogger("tts-engine")
 
-# Depth 1 ALREADY means one utterance is waiting behind the one being
-# processed. A threshold of 2 hid a live session where four consecutive
-# utterances each carried ~1030 ms of queue wait and nothing warned.
-QUEUE_WARN_DEPTH = 1
+# Queue DEPTH cannot express this: put_nowait does not yield, so qsize() is
+# always >= 1 for the utterance just enqueued (threshold 1 warns on every
+# utterance), while a threshold of 2 stayed silent through a live session in
+# which four consecutive utterances each waited ~1030 ms. Measure the wait
+# itself instead — it is the quantity that actually matters, and it is what
+# shows up in tail_latency.
+QUEUE_WAIT_WARN_MS = 250
 # Must stay UNDER the connection pool's keepalive_timeout, or the ping always
 # arrives after the connection was already reaped and warms nothing. Measured:
 # a 15 s idle gap cost the next synthesis ~700 ms of reconnect.
@@ -76,6 +79,7 @@ class TtsEngine:
         self._utt_streaming = False    # a stream is open for the current utterance
         self._utt_refusal = None       # governor refusal that ended it early
         self._utt_stt_reserved = 0.0   # STT seconds already metered for it
+        self.generation = 0            # bumped on mode re-entry; see reset()
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -108,6 +112,37 @@ class TtsEngine:
             except (asyncio.CancelledError, Exception):
                 pass
             self._worker_task = None
+
+    def reset(self):
+        """Mode re-entry: everything queued or in flight belongs to the old take.
+
+        Without this, an utterance already queued (or a synthesis already
+        streaming) completes after the reset and pushes its audio into the
+        freshly-cleared jitter buffer — ghost speech from before the toggle,
+        arriving in a live room. Mirrors the RVC path's _min_valid_seq, which
+        discards stale converted windows by sequence number.
+        """
+        self.generation += 1
+        drained = 0
+        while not self._work.empty():
+            try:
+                self._work.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:      # pragma: no cover - defensive
+                break
+        self.endpointer.reset()
+        # The engine owns its output buffer, so it clears it here rather than
+        # trusting the caller to. Any partially-pushed synthesis from the old
+        # take is exactly the ghost audio this method exists to prevent.
+        self.queue.reset()
+        self.outgate.reset()
+        self._utt_streaming = False
+        self._utt_refusal = None
+        self._utt_stt_reserved = 0.0
+        self.stt.abandon_utterance()
+        if drained:
+            log.info("mode re-entry: dropped %d queued utterance(s) from the "
+                     "previous take", drained)
 
     def event(self, kind, **fields):
         if self._on_event is not None:
@@ -154,6 +189,15 @@ class TtsEngine:
 
         utt = self.endpointer.feed_hop(hop_pcm, gate_open, is_speech)
         if utt is None:
+            if not gate_open and self._utt_streaming:
+                # The gate closed but produced no utterance — the endpointer
+                # dropped it as a blip. Without this, _utt_streaming stays True
+                # and the NEXT utterance skips begin_utterance(), inheriting
+                # this one's refusal state and its half-streamed segment.
+                self._utt_streaming = False
+                self._utt_refusal = None
+                self._utt_stt_reserved = 0.0
+                self.stt.abandon_utterance()
             return
 
         # Commit from the frame path, the instant the gate closes — waiting for
@@ -168,12 +212,11 @@ class TtsEngine:
                 self.stt.fallbacks += 1
         self._utt_streaming = False
 
+        utt.t_enqueued = time.monotonic()
+        utt.generation = self.generation
         self._work.put_nowait(utt)
         depth = self._work.qsize()
         self.max_queue_depth = max(self.max_queue_depth, depth)
-        if depth >= QUEUE_WARN_DEPTH:
-            log.warning("utterance queue depth %d — the speaker is ahead of the "
-                        "pipeline (latency budget exceeded, not an error)", depth)
         self.event("utterance_end", **utt.summary(), queue_depth=depth,
                    streamed=utt.committed)
 
@@ -203,6 +246,10 @@ class TtsEngine:
     async def _worker(self):
         while True:
             utt = await self._work.get()
+            if getattr(utt, "generation", 0) != self.generation:
+                log.info("dropping utterance %d from a previous take "
+                         "(mode was re-entered)", utt.index)
+                continue
             try:
                 await self._process(utt)
             except asyncio.CancelledError:
@@ -230,8 +277,14 @@ class TtsEngine:
         self.notice(payload)
 
     async def _process(self, utt):
+        queue_wait_ms = (time.monotonic() - getattr(utt, "t_enqueued", time.monotonic())) * 1000.0
+        if queue_wait_ms > QUEUE_WAIT_WARN_MS:
+            log.warning("utterance %d waited %.0f ms behind the pipeline — the "
+                        "speaker is ahead of it (latency budget exceeded, not an "
+                        "error)", utt.index, queue_wait_ms)
         rec = {
             "index": utt.index,
+            "queue_wait_ms": round(queue_wait_ms, 1),
             "utterance_s": round(utt.duration_s, 3),
             "speech_s": round(utt.speech_duration_s, 3),
             "hangover_s": round(utt.hangover_s, 3),
@@ -332,6 +385,13 @@ class TtsEngine:
                     first_at = time.monotonic()
                     rec["tts_ttfb_ms"] = round(ttfb_ms, 1)
                     rec["tail_latency_ms"] = round(utt.tail_latency_ms(first_at), 1)
+                if utt.generation != self.generation:
+                    # The mode was re-entered mid-synthesis: this audio is from
+                    # the previous take and must not reach the room.
+                    log.info("discarding in-flight synthesis for utterance %d "
+                             "(mode re-entered mid-stream)", utt.index)
+                    self._drop(utt, "stale_generation", "mode re-entered mid-synthesis")
+                    return
                 self.queue.push(pcm)
                 samples += len(pcm)
         except TtsError as exc:

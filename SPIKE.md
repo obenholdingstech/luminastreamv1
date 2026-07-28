@@ -1,7 +1,16 @@
 # SPIKE — STT→TTS voice engine (`--engine tts`)
 
-**Status: EXPERIMENTAL. Branch `feat/spike-stt-tts`, opened as a DRAFT PR.
-Merging is not the goal — the goal is an answered question.**
+> **HISTORICAL RECORD.** This document is the spike as it was investigated and
+> is kept unedited in substance. It was written while `--engine rvc` was the
+> default and the question was open. **That question was answered and the
+> engine has since been optimized and promoted: `--engine tts` is the DEFAULT
+> as of 28 Jul 2026** (tail p50 932 ms, not the 1.9–2.7 s measured here — see
+> the [optimization ledger](#optimization-sprint--experiment-ledger) below).
+> For current operational guidance — performance, VPS deploy, drill protocol —
+> use [`agent/README.md`](agent/README.md), not this file.
+
+**Status when written: EXPERIMENTAL, opened as a DRAFT PR. Merging was not the
+goal — the goal was an answered question.**
 
 The question: instead of converting Amy's voice frame-by-frame (RVC), what if
 we *transcribe* what she says and *re-speak* it in her cloned ElevenLabs voice?
@@ -11,7 +20,7 @@ price.
 
 The short answer is in [Results](#results): the audio quality is excellent and
 the transcript fidelity is near-perfect, but **tail latency lands around
-1.5–2.4 s** — an order of magnitude above the RVC path's ~200 ms, and firmly
+1.9–2.7 s p50 (2.5–3.1 s p95) depending on model** — an order of magnitude above the RVC path's ~200 ms, and firmly
 outside a live-conversation budget. This is not a tuning problem; it is
 structural, and [where the time goes](#where-the-time-actually-goes) explains
 why.

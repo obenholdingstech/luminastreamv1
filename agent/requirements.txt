@@ -13,7 +13,21 @@ matplotlib==3.9.4
 # through aiohttp. It arrives transitively via livekit-api today, but this
 # engine imports it directly — pinning it explicitly so a fresh VPS venv cannot
 # lose it to an unrelated dependency change.
-aiohttp==3.13.5
+#
+# SECURITY: ten advisories (GHSA-xcgm-r5h9-7989 and others, medium/low) cover
+# 3.13.5; ALL of them are first patched in 3.14.0/3.14.1, which require Python
+# >= 3.10. This agent's venv is Python 3.9, where 3.13.5 is the newest release
+# that exists — the patch is not installable there, so the marker takes it on
+# every interpreter that can and pins the newest available on the one that
+# cannot. livekit-api declares only `aiohttp>=3.9.0`, so it constrains nothing.
+# Residual exposure on a 3.9 host is low for this workload: the advisories are
+# predominantly server-side (this agent runs no aiohttp server), and the two
+# client-side ones need a TLS hostname override we never set, or attacker-
+# controlled multipart header values we never send. Retiring it properly means
+# moving the agent to Python 3.10+ — worth doing, but not blind, since the VPS
+# interpreter version is not something this branch can verify.
+aiohttp>=3.14.1; python_version >= "3.10"
+aiohttp==3.13.5; python_version < "3.10"
 # Phase 3 — Silero VAD gate (vad.py), inference via onnxruntime (Phase 3.1).
 # torch is still imported by silero-vad for tensor plumbing, so it is pinned
 # from the CPU-only index: the default index drags ~5 GB of nvidia-*-cu12

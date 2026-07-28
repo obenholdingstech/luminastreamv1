@@ -165,6 +165,7 @@ class ConvertAgent:
             self.outgate = OutputGate(self.stitcher, PRIME_SAMPLES)
         self.windows_gated = 0             # hops withheld from RVC by the VAD
         self._vad_fail_published = False   # fail-open reported once on the data channel
+        self._tts_vad_fallback_fired = False  # tts fail-open handled once, not per frame
         # Fire-and-forget keepalive: the loop only holds weak refs to tasks, so
         # every ensure_future goes through _spawn and lives here until done
         self._bg_tasks = set()
@@ -310,9 +311,10 @@ class ConvertAgent:
             self.stitcher.reset()
             self.outgate.reset()
             if self.tts is not None:
-                # Drop a half-buffered utterance too — on re-entry it would be
-                # a fragment with no beginning, and STT would bill for it.
-                self.tts.endpointer.reset()
+                # Full engine reset, not just the input buffer: queued and
+                # in-flight syntheses from the previous take would otherwise
+                # push ghost audio into the freshly-cleared jitter buffer.
+                self.tts.reset()
             self._min_valid_seq = self.assembler.seq + 1
         else:
             # Anything still in flight is now stale
@@ -669,6 +671,15 @@ class ConvertAgent:
         pcm = np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0
 
         if self.vad is None or not self.vad.active:
+            if self._tts_vad_fallback_fired:
+                # Already handled; the mode flip is in flight. Without this the
+                # branch re-runs for EVERY 10 ms frame until the flip lands —
+                # 100 log lines and 100 spawned tasks per second.
+                if self.capture:
+                    self.capture.add_output(bytes(frame.data))
+                await self.source.capture_frame(frame)
+                return
+            self._tts_vad_fallback_fired = True
             # The VAD is not optional here — it IS the endpointer. Without it
             # the gate never closes, no utterance is ever emitted, and the
             # buffer just grows to the forced-cut bound burning STT budget on
@@ -697,6 +708,12 @@ class ConvertAgent:
                 if self.capture:
                     self.capture.event("vad_gate", state=state, seq=seq,
                                        prob=round(self.vad.last_prob or 0.0, 3))
+            if not gate_open:
+                # Same meaning as the RVC path: a hop the gate withheld. The
+                # tts stats line has always printed this counter; without this
+                # increment it printed a permanent 0, which is worse than not
+                # printing it at all.
+                self.windows_gated += 1
             await self.tts.feed_hop(hop, gate_open, is_speech)
 
         # Output side: 1 frame in → 1 frame out, same pacing contract as the

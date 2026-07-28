@@ -237,14 +237,17 @@ attributable to configs.
 Change one variable at a time — the capture's `config_change` events pin
 every segment to its exact config, so post-hoc attribution is automatic.
 
-## SPIKE — STT→TTS second engine (`--engine tts`, EXPERIMENTAL)
+## STT→TTS engine (`--engine tts`, the DEFAULT since 28 Jul 2026)
 
-A second engine behind the same agent, transport and VAD: instead of converting
-frames, it transcribes each utterance (ElevenLabs Scribe v2 Realtime) and
-re-speaks it in the cloned voice (ElevenLabs TTS). **`--engine rvc` is the
-default and is untouched — in tts mode the RVC client is never constructed.**
+Instead of converting frames, it transcribes each utterance (ElevenLabs
+Scribe v2 Realtime) and re-speaks it in the cloned voice (ElevenLabs TTS).
+**This is the default engine.** `--engine rvc` remains the parked baseline and
+fallback — unchanged, fully supported, nothing removed; in tts mode the RVC
+client is never constructed. Startup runs a positive preflight before joining a
+room (see the deploy section below).
 
 ```bash
+# --engine tts is the default; shown explicitly here for clarity
 ./.venv/bin/python convert_agent.py --engine tts --mode convert \
     --tts-model eleven_flash_v2_5 \
     --capture-dir captures --drill-script drill_script.txt \
