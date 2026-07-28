@@ -133,7 +133,11 @@ class ConvertAgent:
         self.room_name = room_name
         self.identity = identity
         self.rvc_url = rvc_url
-        self.engine = engine               # "rvc" (default) | "tts" (spike)
+        # "tts" is the CLI default since 28 Jul 2026 (see --engine). This
+        # constructor keeps "rvc" as ITS default deliberately: engine="tts"
+        # requires a live tts_engine to take the queue/outgate from, so a
+        # no-argument construction must land on the engine that needs nothing.
+        self.engine = engine
         self.capture_dir = capture_dir  # None ⇒ capture fully disabled
         self.capture = None             # SessionCapture while a session runs
         self.room = rtc.Room()
