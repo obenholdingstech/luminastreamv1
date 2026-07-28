@@ -1,0 +1,98 @@
+name: Deploy Pages (production)
+
+# The frontend's production deploy is a property of the merge — exactly like
+# deploy-worker.yml. A push to main that touches the build inputs rebuilds the
+# static site and uploads it to the `luminastream-studio` Pages project. There
+# is no manual "deploy the frontend" step to forget: the ONLY human bootstrap
+# was the very first upload (done once from a branch); every deploy after that
+# happens here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "public/**"
+      - "index.html"
+      - "package*.json"
+      - "vite.config.js"
+      - "tailwind.config.js"
+      - "postcss.config.js"
+      - ".github/workflows/deploy-pages.yml"
+
+# The Cloudflare API token does the deploy, so keep the job's GITHUB_TOKEN
+# read-only (least privilege). We deliberately do NOT pass `gitHubToken` to
+# wrangler-action — that input only exists to write a GitHub Deployment record
+# on our behalf, which would need `deployments: write`. The Pages upload itself
+# needs none of it. Same posture as deploy-worker.yml.
+permissions:
+  contents: read
+
+# Never let two production deploys race; let an in-flight one finish.
+concurrency:
+  group: deploy-pages-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    # Optional gate: the same "production" GitHub Environment the Worker deploy
+    # uses. Adding required reviewers there gates this deploy behind a human
+    # approval too, and is where CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+    # resolve from if they are environment-scoped.
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Build + deploy run repo code; they need no git auth, so don't leave
+          # the (read-only) GITHUB_TOKEN in .git/config for them to read.
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fail the job LOUDLY if the API base is missing, before we build. An
+      # empty VITE_API_BASE bakes a frontend that silently talks to same-origin
+      # /api with no backend behind it — the exact regression the repo already
+      # guards at the unit level (src/lib/apiBase.build.test.js). The workflow
+      # gets the same manners. VITE_API_BASE is a repository *variable* (public
+      # config: the Worker URL), not a secret, so echoing it here is fine.
+      - name: Guard — VITE_API_BASE must be set
+        env:
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: |
+          if [ -z "${VITE_API_BASE}" ]; then
+            echo "::error::VITE_API_BASE is empty or unset."
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables"
+            echo "(it is public config, so a repository *variable*, not a secret)."
+            echo "Refusing to build a frontend with no API base baked in."
+            exit 1
+          fi
+          echo "VITE_API_BASE is set: ${VITE_API_BASE}"
+
+      - name: Build
+        env:
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: npm run build
+
+      - name: Deploy Pages (push is main-only, so this is production)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # wrangler-action fills in --branch and the commit from the git
+          # context. This workflow only ever runs on a push to main, so the
+          # branch it fills in is `main` — the project's production branch —
+          # which makes every run a production deployment.
+          command: pages deploy dist --project-name=luminastream-studio
+          # Pin wrangler explicitly. The #16 lesson: the action's own fallback
+          # version once broke the Worker deploy. Pinning makes resolution
+          # deterministic and matches the wrangler the Worker deploys with
+          # (workers/api/package.json, ^4.36.0).
+          wranglerVersion: "4.36.0"
