@@ -1,33 +1,37 @@
 {
   // Cloudflare Worker: the LuminaStream API (admin gate + LiveKit token mint).
-  // JSONC is Cloudflare's recommended config format for new Workers.
-  // Deploy + secret commands live in the repo README ("API Worker" section).
+  // JSONC is Cloudflare's recommended config format. Deploy + secret commands
+  // live in the repo README ("API Worker" section).
+  //
+  // Two environments:
+  //   - TOP-LEVEL   = production ("luminastream-api"), deployed ONLY by the
+  //     merge workflow (.github/workflows/deploy-worker.yml) on push to main.
+  //   - env.staging = "luminastream-api-staging", the default target for
+  //     manual/agent deploys (`npm run deploy` → wrangler deploy --env staging).
+  //
+  // ratelimits + observability are NON-inheritable by named environments, so
+  // staging repeats them with its own namespace_ids (isolated counters).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "luminastream-api",
   "main": "src/index.js",
   "compatibility_date": "2026-07-28",
-  "observability": {
-    "enabled": true
-  },
-  // Native Workers rate limiting (GA 2025-09). Per-colo counters — approximate
-  // globally, which is fine as defense-in-depth on top of the constant-time
-  // password check. period must be 10 or 60 seconds.
-  //   VERIFY_LIMITER — hard: the verify endpoint is a password oracle.
-  //   TOKEN_LIMITER  — moderate: gated mint, keyed per admin session + IP.
+  "observability": { "enabled": true },
   "ratelimits": [
-    {
-      "name": "VERIFY_LIMITER",
-      "namespace_id": "1001",
-      "simple": { "limit": 5, "period": 60 }
-    },
-    {
-      "name": "TOKEN_LIMITER",
-      "namespace_id": "1002",
-      "simple": { "limit": 30, "period": 60 }
+    { "name": "VERIFY_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    { "name": "TOKEN_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+  ],
+  "env": {
+    "staging": {
+      "name": "luminastream-api-staging",
+      "observability": { "enabled": true },
+      "ratelimits": [
+        { "name": "VERIFY_LIMITER", "namespace_id": "2001", "simple": { "limit": 5, "period": 60 } },
+        { "name": "TOKEN_LIMITER", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } }
+      ]
     }
-  ]
+  }
   // Secrets (ADMIN_PASSWORD, ADMIN_SESSION_SECRET, LIVEKIT_API_KEY,
-  // LIVEKIT_API_SECRET, LIVEKIT_URL) are NEVER declared here — they are set
-  // with `wrangler secret put` (production) and `.dev.vars` (local, gitignored).
-  // See .dev.vars.example.
+  // LIVEKIT_API_SECRET, LIVEKIT_URL) are NEVER declared here — set per
+  // environment with `wrangler secret put <NAME> [--env staging]`
+  // (see scripts/put-worker-secrets.sh) or `.dev.vars` locally.
 }

@@ -1,0 +1,51 @@
+name: Deploy Worker (production)
+
+# Production deploys happen ONLY here: a push to main that touches the Worker.
+# Manual / agent deploys go to staging (`npm run deploy`). See workers/api and
+# the repo README, "API Worker (Cloudflare)".
+on:
+  push:
+    branches: [main]
+    paths:
+      - "workers/**"
+      - ".github/workflows/deploy-worker.yml"
+
+# The Cloudflare API token does the deploy, so keep the job's GITHUB_TOKEN
+# read-only (least privilege).
+permissions:
+  contents: read
+
+# Never let two production deploys race; let an in-flight one finish.
+concurrency:
+  group: deploy-worker-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    # Optional gate: create a GitHub Environment named "production" with
+    # required reviewers (and/or environment-scoped secrets) to require a human
+    # approval before this job runs.
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Gate the deploy on the Worker's own tests (zero deps, no install).
+      - name: Worker tests
+        working-directory: workers/api
+        run: node --test
+
+      - name: Deploy Worker (top-level env = production)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/api
+          command: deploy

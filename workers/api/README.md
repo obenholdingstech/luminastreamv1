@@ -36,6 +36,14 @@ npm test                         # node --test (no network, no secrets)
 
 ## Deploy
 
-Deployment and the exact `wrangler secret put` commands live in the repo root
-**README → "API Worker (Cloudflare)"**. Never put secret values in any file
-that gets committed.
+- **Production** — automated: a push to `main` touching `workers/**` runs
+  `.github/workflows/deploy-worker.yml` (Worker tests → `wrangler deploy` via
+  `cloudflare/wrangler-action`). Not deployed by hand.
+- **Staging** — `npm run deploy` (→ `wrangler deploy --env staging`), the
+  default target for manual / agent deploys.
+- **Secrets** — set per environment with `scripts/put-worker-secrets.sh
+  [staging|production]`, which pipes values from the gitignored `secrets.env`
+  into `wrangler secret put` (never echoed). Never commit secret values.
+
+Full one-time setup (narrow token scopes, GitHub Actions secrets, custom-domain
+DNS) is in the repo root **README → "API Worker (Cloudflare)"**.
