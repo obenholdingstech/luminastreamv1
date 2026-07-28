@@ -610,3 +610,23 @@ def test_a_lost_streamed_transcript_is_recovered_from_the_buffer():
     assert engine.records[0]["transcript"] == "recovered sentence"
     assert len(stt.calls) == 1                       # exactly one re-send
     assert engine.records[1]["stt_path"] == "streamed"   # and it recovers after
+
+
+def test_the_default_engine_is_tts():
+    """The pivot, asserted in code so it cannot drift back silently.
+
+    Promoted 28 Jul 2026 on measured evidence (tail_latency p50 1938 -> 932 ms
+    with transcripts and quality unchanged). RVC is NOT removed — `--engine rvc`
+    remains the parked baseline and fallback, which the second assertion pins.
+    """
+    import pathlib as _p
+    import subprocess
+    import sys
+
+    import convert_agent
+
+    out = subprocess.run(
+        [sys.executable, str(_p.Path(convert_agent.__file__)), "--help"],
+        capture_output=True, text=True, timeout=120).stdout
+    assert "tts (DEFAULT" in out          # the promoted default
+    assert convert_agent.ENGINES == ("rvc", "tts")   # rvc still selectable

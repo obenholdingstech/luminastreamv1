@@ -29,16 +29,20 @@ become clean silence on the output with equal-power edge ramps. Fail-open:
 if the model can't load or errors, the agent runs ungated (same philosophy
 as the RVC-failure fallback). --no-vad disables it entirely.
 
-SPIKE (--engine tts): a second engine behind the same transport, agent and VAD.
-The RVC engine is the default and is untouched by it — in tts mode the RVC
-client is never even constructed. There, the Phase 3 VAD gate stops being a
-noise gate and becomes an utterance endpointer: speech is buffered while the
-gate is open, and at gate-close the utterance is transcribed (ElevenLabs
-Scribe v2 Realtime) and re-spoken in the cloned voice (ElevenLabs TTS), then
-streamed back through this same output path. Every billable call is metered by
-spend_governor.py. See SPIKE.md.
+ENGINES (--engine, DEFAULT tts since 28 Jul 2026):
+  tts  STT→TTS through the cloned voice — the promoted default. The Phase 3 VAD
+       gate stops being a noise gate and becomes an utterance endpointer:
+       speech streams to ElevenLabs Scribe v2 Realtime while the gate is open,
+       and at gate-close a commit yields the transcript, which is re-spoken in
+       the cloned voice and streamed back through this same output path. The
+       RVC client is never constructed in this mode. Every billable call is
+       metered by spend_governor.py, and startup runs a positive preflight
+       (STT READY / TTS READY / PREFLIGHT OK) before joining a room.
+  rvc  the parked baseline and fallback — unchanged, fully supported, nothing
+       removed. Everything above this line describes it.
+See SPIKE.md for the measurements behind the pivot.
 
-Run:  python convert_agent.py [--engine rvc|tts] [--mode passthrough|convert]
+Run:  python convert_agent.py [--engine tts|rvc] [--mode passthrough|convert]
       [--capture-dir PATH] [--no-vad] [--vad-threshold 0.5]
       [--vad-hangover-ms 300]
       RVC_WS_URL=ws://127.0.0.1:8000/ws/audio (default; see README.md)
@@ -804,9 +808,10 @@ async def main():
     parser.add_argument("--vad-hangover-ms", type=float, default=DEFAULT_HANGOVER_MS,
                         help=f"keep the gate open this long after the last speech "
                              f"(default {DEFAULT_HANGOVER_MS} ms; rounded UP to whole hops)")
-    parser.add_argument("--engine", choices=ENGINES, default="rvc",
-                        help="rvc (default, unchanged) or tts (SPIKE: STT→TTS; "
-                             "the RVC client is not constructed at all)")
+    parser.add_argument("--engine", choices=ENGINES, default="tts",
+                        help="tts (DEFAULT since 28 Jul 2026: STT→TTS through the "
+                             "cloned voice) or rvc (the parked baseline; still "
+                             "fully supported, nothing was removed)")
     parser.add_argument("--tts-model", default=DEFAULT_TTS_MODEL,
                         help=f"--engine tts: ElevenLabs model_id (default "
                              f"{DEFAULT_TTS_MODEL}; also eleven_multilingual_v2, "

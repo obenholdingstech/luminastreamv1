@@ -264,12 +264,80 @@ env-tunable via `SPIKE_TTS_STABILITY` / `SPIKE_TTS_SIMILARITY_BOOST` /
 
 `--engine tts` refuses `--no-vad`: the gate *is* the utterance endpointer.
 
-After the optimization sprint: **tail latency p50 ~932–954 ms, p95 ~949–1009 ms**
-(down from 1938/2511) via streaming STT, connection keepalive and a tts-specific
-VAD hangover. An aggressive `--tts-hangover-ms 100` config reaches p50 787 ms
-but risks splitting sentences at natural pauses — both are offered rather than
-chosen. **Full architecture, API-verification tables, the experiment ledger and
-Amy's drill protocol live in [`SPIKE.md`](../SPIKE.md).**
+### Measured performance (recommended config)
+
+`eleven_flash_v2_5`, `--tts-hangover-ms 200`, agent on a Starlink-connected Mac:
+
+| | scripted drill | live conversation (86 utterances) |
+|---|---|---|
+| tail_latency p50 | 932–954 ms | 1001 ms |
+| p90 | — | 1111 ms |
+| p95 | 949–1009 ms | 1920 ms |
+| STT (commit→final) | ~315 ms | p50 318, max 406 ms |
+| TTS TTFB | ~350 ms | p50 344 ms |
+
+Cost: **~990 characters billed per minute of speech** (plus STT seconds), so
+this account's 658,988-char monthly quota is roughly 11 hours of speech.
+
+Two things to know about those numbers before planning against them:
+
+- **~400 ms of the p50 is network round-trip** to a US vendor over Starlink
+  (measured: 200 ms TCP connect, 433 ms TLS). Running the agent on the VPS
+  should land p50 near 550–650 ms with no code change — the single biggest
+  remaining lever.
+- **The p95 gap in live conversation is structural, not a defect.** Synthesized
+  audio takes about as long to play as the speech took to say, so continuous
+  talking accumulates a backlog that drains at pauses. Any video-sync budget
+  must be elastic, not fixed.
+
+### VPS deploy (Amy, by hand)
+
+```bash
+# 1. Pull and install
+cd ~/luminastreamv1 && git pull
+cd agent && ./.venv/bin/pip install -r requirements.txt
+
+# 2. Add the TWO new secrets to the repo-root secrets.env (hand-typed;
+#    never committed — secrets.env is gitignored)
+#      ELEVENLABS_API_KEY=...
+#      ELEVENLABS_VOICE_ID=...
+
+# 3. Preflight — proves key, voice, network, quota and audio format BEFORE
+#    anyone speaks. Exits 2 with a plain-English reason if anything is wrong.
+./.venv/bin/python convert_agent.py --engine tts --run-seconds 1
+#   expect:  STT READY (scribe_v2_realtime)
+#            TTS READY (TTFB ... ms) — model=eleven_flash_v2_5 voice=...
+#            PREFLIGHT OK — engine=tts ...
+
+# 4. Launch (recommended config)
+./.venv/bin/python convert_agent.py --engine tts --mode convert \
+    --tts-model eleven_flash_v2_5 --tts-hangover-ms 200 \
+    --capture-dir captures --report report.json
+```
+
+`lk_smoke.py` must print `CONNECTED OK` first on any new host, as always.
+Spend is capped per run at 5000 chars / 300 s; raise deliberately with
+`SPIKE_MAX_TTS_CHARS` / `SPIKE_MAX_STT_SECONDS`.
+
+### Evaluating the aggressive 100 ms variant (free-talk protocol)
+
+`--tts-hangover-ms 100` is ~150 ms faster (p50 787 ms) and **the scripted drill
+cannot tell you whether it is safe** — the drill's lines are separated by 1.6 s
+of silence, while natural speech pauses mid-sentence for 100–300 ms. Only
+free conversation exposes the risk.
+
+1. Headphones (the output feeds the mic otherwise and the agent transcribes
+   itself in a loop). macOS mic mode **Standard**, built-in mic.
+2. Run at `--tts-hangover-ms 200`. **Talk normally for 2–3 minutes** — full
+   sentences with natural mid-sentence pauses, not drill lines.
+3. Restart at `--tts-hangover-ms 100`. Same kind of talking.
+4. The question is **not** "is it faster" (it is). It is: **do your sentences
+   come back in one piece?** If a mid-sentence pause splits one sentence into
+   two separately-spoken fragments with a prosody break, 100 ms is too
+   aggressive and 200 ms is the answer.
+
+**Full architecture, live API-verification tables, the optimization experiment
+ledger and the per-model drill protocol live in [`SPIKE.md`](../SPIKE.md).**
 
 ## Convert agent — RunPod runbook (real RVC)
 
