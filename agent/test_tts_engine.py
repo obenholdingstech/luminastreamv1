@@ -573,3 +573,40 @@ def test_an_abandoned_utterance_produces_no_audio_at_all():
     assert tts.calls == []
     assert engine.governor.tts_chars_used == 0
     assert engine.queue.available == 0
+
+
+def test_a_lost_streamed_transcript_is_recovered_from_the_buffer():
+    """Observed live TWICE: the session's FIRST utterance commits onto a socket
+    that idled out while nobody was speaking, and the transcript never arrives.
+    The endpointer still holds the audio, so it must be re-sent rather than
+    lost — it is the one sentence a person always notices."""
+    class LosesTheFinal(MockStt):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.final_calls = 0
+
+        async def await_final(self):
+            self.final_calls += 1
+            if self.final_calls == 1:
+                raise SttError("socket closed before a final transcript")
+            return self._next_text()
+
+    stt = LosesTheFinal(texts=["recovered sentence", "second sentence"])
+
+    async def run():
+        engine, _, _ = build(stt=stt)
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 2)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert engine.skipped == 0                       # nothing lost
+    assert len(engine.records) == 2
+    assert engine.records[0]["stt_path"] == "streamed_then_burst_retry"
+    assert engine.records[0]["transcript"] == "recovered sentence"
+    assert len(stt.calls) == 1                       # exactly one re-send
+    assert engine.records[1]["stt_path"] == "streamed"   # and it recovers after

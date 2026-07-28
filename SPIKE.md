@@ -439,6 +439,47 @@ naturally at both** — the second test is the one that decides it.
 > identical at 300, 200 and 100 ms of hangover. The report now says so. The
 > real clipping evidence in tts mode is the transcript.
 
+### Validated in live conversation — and one honest miss
+
+A 3-minute unscripted session through the browser, **86 utterances**, default
+config:
+
+| | drill (scripted) | live conversation |
+|---|---|---|
+| p50 | 932 ms | **1001 ms** |
+| p90 | — | **1111 ms** |
+| p95 | 949 ms | **1920 ms** ✗ |
+
+**p50 holds up in real speech. p95 does not, and the reason is structural
+rather than a defect.** Component timings were healthy throughout — STT p50 318 /
+p95 372 / **max 406 ms**, TTS TTFB p50 344 ms. Only 7 of 86 utterances exceeded
+1200 ms, and they split into two causes:
+
+- **2 were network jitter** (TTFB spikes to 1174 / 1208 ms) — Starlink, the
+  same thing row 8 addresses.
+- **4 were consecutive** (#42–45), each carrying almost exactly **1030 ms of
+  unexplained delay** while their own STT and TTS times were completely normal
+  — then #46 returned to 1050 ms.
+
+That cluster is the pipeline being *marginally* real-time. Synthesized audio
+takes about as long to play as the original speech took to say, so each
+utterance adds its own ~950 ms of overhead on top of a queue that only drains
+during a pause. Talk continuously and the delay accumulates; pause for a breath
+and it recovers immediately — which is exactly what #46 shows.
+
+**This is not fixable by pipelining.** `tail_latency` measures time to the first
+synthesized sample *enqueued*, and utterance N+1's audio genuinely cannot be
+enqueued before N's has been — it would play out of order. The listener really
+is waiting; the queue is honest.
+
+**It matters directly for the north star.** Audio is the pacing leg for the
+video avatar, so this says the sync budget must be elastic, not fixed: it has to
+absorb a backlog that grows during continuous speech and drains at pauses.
+Planning video buffering against the p50 alone would break on any monologue.
+(The queue-depth warning threshold has been lowered from 2 to 1 — depth 1
+already means an utterance is waiting, and a threshold of 2 let this session
+pass without a single warning.)
+
 ### Spend and safety, unchanged
 
 The governor moved to **per-hop metering** because streaming bills as it goes:

@@ -37,7 +37,10 @@ from wer import best_match
 
 log = logging.getLogger("tts-engine")
 
-QUEUE_WARN_DEPTH = 2
+# Depth 1 ALREADY means one utterance is waiting behind the one being
+# processed. A threshold of 2 hid a live session where four consecutive
+# utterances each carried ~1030 ms of queue wait and nothing warned.
+QUEUE_WARN_DEPTH = 1
 # Must stay UNDER the connection pool's keepalive_timeout, or the ping always
 # arrives after the connection was already reaped and warms nothing. Measured:
 # a 15 s idle gap cost the next synthesis ~700 ms of reconnect.
@@ -250,9 +253,25 @@ class TtsEngine:
         # over-counting the streamed part on purpose, the safe direction.
         try:
             if getattr(utt, "committed", False):
-                transcript = await self.stt.await_final()
-                stt_ms = (time.monotonic() - utt.t_commit) * 1000.0
-                rec["stt_path"] = "streamed"
+                try:
+                    transcript = await self.stt.await_final()
+                    stt_ms = (time.monotonic() - utt.t_commit) * 1000.0
+                    rec["stt_path"] = "streamed"
+                except SttError as exc:
+                    # The socket died between the commit and the transcript —
+                    # observed live on the FIRST utterance of a session, whose
+                    # commit lands on a connection that idled out while nobody
+                    # was speaking. The audio the server had is gone with it,
+                    # but the endpointer still holds the whole utterance, so
+                    # re-send it on a fresh socket rather than lose the
+                    # speaker's first sentence (which is exactly the one a
+                    # person notices).
+                    log.warning("streamed transcript lost (%s) — re-sending the "
+                                "buffered utterance on a fresh socket", exc)
+                    self.stt.fallbacks += 1
+                    self.governor.reserve_stt(utt.duration_s)
+                    transcript, stt_ms = await self.stt.transcribe(utt.pcm)
+                    rec["stt_path"] = "streamed_then_burst_retry"
             else:
                 try:
                     self.governor.reserve_stt(utt.duration_s)
@@ -262,6 +281,11 @@ class TtsEngine:
                     return
                 transcript, stt_ms = await self.stt.transcribe(utt.pcm)
                 rec["stt_path"] = "burst_fallback"
+        except GovernorRefusal as exc:
+            # Only reachable from the retry above: the budget ran out between
+            # the streamed commit and the re-send.
+            self._drop(utt, "governor_stt", str(exc), {"governor": exc.as_dict()})
+            return
         except SttError as exc:
             self._drop(utt, "stt_error", str(exc))
             return
