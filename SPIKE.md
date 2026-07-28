@@ -356,6 +356,100 @@ this one.
 
 ---
 
+## Optimization sprint — experiment ledger
+
+Target: tail_latency p50 ≤ 1000 ms (stretch 800), p95 ≤ 1500 ms, same 5-line
+drill, same instrumentation. Quality floor: nothing that audibly degrades
+output survives.
+
+**Result: p50 1938 → 954 ms, p95 2511 → 1009 ms. Target met, quality
+unchanged** (identical transcripts, identical corpus WER, 5/5 utterances, no
+splitting). The stretch target is also reachable — see the hangover rows.
+
+Every row is hypothesis → measured → kept/rejected.
+
+| # | Lever | Hypothesis | Measured | Verdict |
+|---|---|---|---|---|
+| 1 | `optimize_streaming_latency=0..4` | vendor knob trades quality for TTFB | 345/354/361/361/374 ms across 0→4 — **inside run-to-run scatter** | **REJECTED** — no signal. Happily, no quality trade to make |
+| 2 | `apply_text_normalization` on/off/auto | skipping number expansion cuts TTFB | 335/355/365 ms — noise | **REJECTED** |
+| 3 | **Streaming STT while the gate is open** | upload during speech; only a commit remains at gate-close | isolated probe: commit→final **311 ms vs 860 ms** burst. In-agent STT component **1121 → 315 ms** | **KEPT** — the single biggest win |
+| 3a | commit with held-back last hop vs silence tail | either can carry the commit | 311 ms vs 332 ms; silence also injects audio the speaker never made | **KEPT** hold-last |
+| 4 | **Connection keepalive** | first-utterance TTFB ~1040 ms is a cold voice | a 1-char warmup absorbed it and the *next* utterance paid it again 15 s later — it was the pool reaping the idle connection (default `keepalive_timeout` 15 s > my 20 s ping). Ping now 10 s, pool 120 s | **KEPT** — first-utterance TTFB **1043 → 355 ms**, p95 **1782 → 1080 ms** |
+| 5 | TTS 1-char warmup before room join | cold voice penalty | did not fix #4 alone, but removes the penalty from the warmup itself and costs 1 char | **KEPT** (cheap, harmless; #4 is what mattered) |
+| 6 | **Hangover 300 → 200 ms** | 128 ms of pure tail saving | p50 **1052 → 954**, p95 1080 → 1009. Transcripts identical, 5/5 utterances, WER unchanged | **KEPT as default** |
+| 7 | Hangover 200 → 100 ms | another 128 ms | p50 **787**, p95 880 — stretch target met. Drill transcripts still identical | **OFFERED, not defaulted** — see the tradeoff below |
+| 8 | VPS topology (agent off the Mac) | removes Starlink egress from every vendor round trip | measured from this Mac: TCP connect **200 ms**, TLS **433 ms**, trivial-GET TTFB **710 ms**. ~200 ms per round trip, and the tail contains two | **FLAGGED for Amy** — biggest remaining lever, needs a key on the VPS |
+| 9 | STT vendor swap (Deepgram) | runner-up if streaming Scribe underdelivered | not needed — streaming Scribe hit 315 ms, inside its own 150 ms + one RTT | **NOT PURSUED** |
+
+### Where the remaining ~954 ms goes
+
+| component | ms | floor? |
+|---|---|---|
+| VAD hangover (2 hops @ 200 ms setting = 256 ms effective) | 256 | tunable; 128 ms available (row 7) |
+| STT commit → final | ~315 | **~200 ms of this is Starlink RTT** (row 8) |
+| TTS TTFB | ~350 | **~200 ms of this is Starlink RTT** (row 8) |
+| enqueue → audible (priming, not in tail_latency) | ~192 | tunable via `prime_hops` |
+
+**~400 ms of the 954 ms is network round-trip to a US vendor over Starlink.**
+Two round trips, ~200 ms each, measured directly. That is why row 8 is the
+biggest thing left: moving the engine to the VPS should land p50 near
+**550–650 ms** without touching a line of pipeline code or risking any quality.
+
+### The one tradeoff for the CEO's ears
+
+Both configs meet the p95 target and produced **identical transcripts** on the
+drill. The difference is a risk the drill cannot measure:
+
+| config | p50 | p95 | launch |
+|---|---|---|---|
+| **Safe (default)** | 954 / **932** ms | 1009 / **949** ms | `--tts-hangover-ms 200` |
+| **Aggressive** | 787 ms | 880 ms | `--tts-hangover-ms 100` |
+
+(Two independent runs of the default config are shown — 954/1009 and 932/949 —
+so the run-to-run spread is visible rather than hidden behind one lucky number.)
+
+### One launch command
+
+```bash
+cd agent && ./.venv/bin/python convert_agent.py \
+    --engine tts --mode convert --tts-hangover-ms 200 \
+    --tts-model eleven_flash_v2_5 \
+    --capture-dir captures --drill-script drill_script.txt \
+    --report report.json
+```
+
+Swap `--tts-hangover-ms 100` for the aggressive config. Everything else —
+streaming STT, connection keepalive, warmup — is on by default and needs no
+flags.
+
+At 100 ms the gate closes after a single 128 ms hop of non-speech. The drill
+script cannot expose the risk, because its lines are separated by 1.6 s of
+silence — but **natural speech pauses mid-sentence for 100–300 ms**, and a gate
+that closes there splits one sentence into two utterances, each synthesized
+separately with its own prosody. That is a quality regression the automated
+drill will never show and an ear will catch immediately.
+
+So: 200 ms is the default because it is the safe one, and 100 ms is offered
+rather than chosen. **Read the drill at both settings and also just talk
+naturally at both** — the second test is the one that decides it.
+
+> Note: `analyze_capture.py`'s "clipped tails" count is **not** evidence here.
+> It assumes output is a time-shifted copy of input; in tts mode it is a
+> re-synthesis (measured envelope correlation ~0.05), and the count came out
+> identical at 300, 200 and 100 ms of hangover. The report now says so. The
+> real clipping evidence in tts mode is the transcript.
+
+### Spend and safety, unchanged
+
+The governor moved to **per-hop metering** because streaming bills as it goes:
+each hop is reserved *before* it leaves, so the hard ceiling is still exact. A
+refusal mid-utterance abandons that utterance entirely — no commit, no
+transcript, no synthesis, no audio — rather than truncating it. RVC paths
+untouched and green; fail-open preserved (a broken stream falls back to the
+proven burst upload, costing latency but never an utterance).
+
+---
+
 ## Amy's drill protocol
 
 Same fixed script (`agent/drill_script.txt`), **one reading per model**, three

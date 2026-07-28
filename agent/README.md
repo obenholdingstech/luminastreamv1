@@ -264,9 +264,12 @@ env-tunable via `SPIKE_TTS_STABILITY` / `SPIKE_TTS_SIMILARITY_BOOST` /
 
 `--engine tts` refuses `--no-vad`: the gate *is* the utterance endpointer.
 
-Measured result: tail latency p50 1.9–2.7 s depending on model, versus the RVC
-path's ~200 ms. **Full architecture, API-verification tables, latency
-breakdown and Amy's drill protocol live in [`SPIKE.md`](../SPIKE.md).**
+After the optimization sprint: **tail latency p50 ~932–954 ms, p95 ~949–1009 ms**
+(down from 1938/2511) via streaming STT, connection keepalive and a tts-specific
+VAD hangover. An aggressive `--tts-hangover-ms 100` config reaches p50 787 ms
+but risks splitting sentences at natural pauses — both are offered rather than
+chosen. **Full architecture, API-verification tables, the experiment ledger and
+Amy's drill protocol live in [`SPIKE.md`](../SPIKE.md).**
 
 ## Convert agent — RunPod runbook (real RVC)
 

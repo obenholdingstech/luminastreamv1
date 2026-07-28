@@ -4,6 +4,141 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — Optimization sprint: STT→TTS tail latency 1938ms → 932ms
+
+### Task (verbatim)
+
+> OPTIMIZATION SPRINT — STT→TTS engine latency (branch: feat/spike-stt-tts,
+> same worktree). Full autonomy: you own the route; we own the destination.
+>
+> PRODUCT NORTH STAR (optimize with this in mind): LuminaStream lets a user
+> clone their voice (or licensed voices of their choice) and speak through it
+> in real time, synced with an AI video avatar (Decart Lucy, later). Audio will
+> be the pacing leg — video can be buffered to match audio, never the reverse —
+> so every ms you cut here is a ms of end-to-end experience. The CEO has heard
+> the current quality and declared it the reference: the mission is keeping
+> THAT quality while cutting time roughly in half.
+>
+> TARGET: tail_latency p50 ≤ 1000ms (stretch: 800), p95 ≤ 1500ms, measured by
+> the existing per-utterance instrumentation on the same 5-line drill.
+> QUALITY FLOOR: no change that audibly degrades output survives — when a
+> tradeoff exists, present both configs for the CEO's ears rather than choosing.
+>
+> KNOWN LEVERS — hypotheses, not orders. Test, measure, keep or kill; find
+> better ones: [streaming STT while gate open — contract HEREBY AMENDED to
+> permit it; early/incremental synthesis; VAD hangover as tts-specific tunable;
+> re-test TTS transports; VPS topology; STT vendor swap; session/connection
+> reuse, warm websockets, request pipelining, model/voice_settings]
+>
+> HARD WALLS (unchanged): spend governor stays green before every billable
+> experiment; RVC paths untouched and their tests green; fail-open preserved;
+> no secrets in commits; capture/analyzer keep working in tts mode.
+>
+> DISCIPLINE: SPIKE.md grows an experiment ledger — every lever gets a row:
+> hypothesis → measured before/after (p50/p95) → kept/rejected + why. End state:
+> a config the CEO can drill with one launch command, and an honest table of
+> what the remaining floor is and why. Small commits on the draft PR; session
+> log per convention; committable boundary if limits hit.
+
+### What was done
+
+Nine levers tested, each measured before/after on the same 5-line drill. Full
+ledger with numbers is in SPIKE.md; summary:
+
+- **Streaming STT** (kept, biggest win). Audio now streams while the gate is
+  open; at gate-close only the final hop and a commit remain. Isolated probe:
+  commit→final 311ms vs 860ms burst. In-agent STT component 1121 → 315ms.
+- **Connection keepalive** (kept). See findings — this was the p95 fix.
+- **VAD hangover as `--tts-hangover-ms`** (kept at 200ms default).
+- **TTS vendor latency knobs** (rejected — pure noise).
+- **VPS topology** (flagged for Amy, not actioned — needs a key on the VPS).
+
+### Findings / surprises
+
+- **`optimize_streaming_latency` does nothing measurable.** 0→4 spanned
+  345–374ms, inside run-to-run scatter; `apply_text_normalization` likewise.
+  The documented "lower latency at quality cost" tradeoff did not materialise
+  at all — which is good news, since there was no quality to trade away.
+- **The first-utterance penalty was NOT a cold voice.** ~1040ms TTFB vs ~340ms
+  steady. A 1-char warmup at startup absorbed the penalty — and then the first
+  real utterance paid it again 15 seconds later. The cause was aiohttp's
+  connection pool: default `keepalive_timeout` is 15s, my keepalive ping was
+  every 20s, so the ping *always* arrived after the connection had already been
+  reaped. Warming once is useless if nothing keeps it warm. Ping interval now
+  sits under the pool timeout (10s vs 120s): first-utterance TTFB 1043 → 355ms,
+  p95 1782 → 1080ms. This also means every conversational silence longer than
+  the pool timeout was silently costing a reconnect.
+- **~400ms of the remaining 954ms is Starlink.** Measured directly from this
+  Mac: TCP connect 200ms, TLS 433ms, trivial-GET TTFB 710ms. One round trip is
+  ~200ms and the tail contains two (STT commit, TTS request). Moving the engine
+  to the VPS should land p50 near 550–650ms with no code change and no quality
+  risk — the single biggest remaining lever, and it is a deployment decision.
+- **`analyze_capture.py`'s clipped-tail count is meaningless in tts mode.** It
+  flagged 3 clipped tails at 200ms hangover and 2 at 100ms — but also 3 at the
+  unchanged 300ms baseline, and envelope cross-correlation peaked at 0.047.
+  The detector assumes output is a time-shifted copy of input; a re-synthesis
+  in a different voice at a different duration is not. Nearly cited it as
+  evidence that shortening the hangover caused clipping, which would have been
+  wrong. The real clipping evidence in tts mode is the transcript, which was
+  byte-identical at 300/200/100ms. Analyzer now disowns both metrics in tts mode.
+- **The hangover tradeoff is real but the drill cannot see it.** 100ms hits the
+  stretch target (p50 787ms) with identical drill transcripts — but the drill's
+  lines are separated by 1.6s of silence, while natural speech pauses
+  mid-sentence for 100–300ms. A 128ms hangover will split real sentences into
+  separately-synthesized fragments. Presented both configs rather than choosing.
+- **Governor semantics had to change shape for streaming.** Audio is now billed
+  as it goes out, so a single reservation at gate-close would meter after the
+  fact. Moved to per-hop reservation *before* each send — the ceiling stays
+  exact, and a mid-utterance refusal abandons the whole utterance (no commit,
+  no transcript, no synthesis, no audio) rather than truncating it.
+
+### Files changed
+
+Modified: `agent/elevenlabs_client.py` (streaming begin/push/commit/await_final,
+hold-last-hop commit, `ping`, `warmup`), `agent/tts_engine.py` (async feed_hop,
+per-hop metering, keepalive task, streamed/fallback paths),
+`agent/convert_agent.py` (`--tts-hangover-ms`, pooled connector, warmup call),
+`agent/wer.py` (off-script threshold 0.5 → 0.8, calibrated),
+`agent/analyze_capture.py` (disown alignment + tail-clip in tts mode),
+`agent/test_tts_engine.py` (contract amended + streaming/governor tests),
+`agent/README.md`, `SPIKE.md` (experiment ledger).
+
+### Verification results
+
+- **122 tests pass** (67 pre-existing unchanged). Mock vendors only.
+- Test contract amended deliberately: `test_nothing_is_sent_while_the_gate_is_open`
+  → `test_audio_streams_while_open_but_nothing_is_COMMITTED_until_close`, plus
+  `test_exactly_one_commit_per_utterance` and a streaming-failure fallback test.
+- Live drill, real LiveKit + real ElevenLabs, `eleven_flash_v2_5`:
+
+  | config | tail p50 | p95 | TTFB p50 | STT p50 | WER |
+  |---|---|---|---|---|---|
+  | baseline (before sprint) | 1938 ms | 2511 ms | 372 | 1121 | 0.1458 |
+  | streaming STT only | 1074 ms | 1720 ms | 376 | 315 | 0.1458 |
+  | + keepalive | 1063 ms | 1080 ms | 323 | 349 | 0.1458 |
+  | **+ hangover 200 (default)** | **954 / 932 ms** | **1009 / 949 ms** | 352 | 324 | 0.1458 |
+  | + hangover 100 (aggressive) | 787 ms | 880 ms | 331 | 321 | 0.1458 |
+
+  5/5 utterances every run, no splitting, transcripts identical throughout,
+  corpus WER unchanged at 0.1458 (the one spoken-digits line).
+- Governor green before every billable experiment; spend across the whole
+  sprint stayed inside per-run caps with `refusals=0`.
+
+### Outcome
+
+**Target met: p50 932–954ms (was 1938), p95 949–1009ms (was 2511) — roughly
+halved, with the CEO's declared reference quality untouched.** Stretch target
+(800ms) is reachable at `--tts-hangover-ms 100` and is offered rather than
+chosen, because the risk it carries is one only an ear can judge.
+
+Next, in order of value: (1) VPS topology — ~400ms of pure network sits in the
+tail and a deployment move should take most of it; needs an ElevenLabs key in
+the VPS `secrets.env`, **for Amy to place, not for me to copy**. (2) Amy's ear
+on safe-vs-aggressive hangover, ideally free-talking rather than reading.
+
+---
+---
+
 ## 28 July 2026 — SPIKE: STT→TTS second engine (`--engine tts`), DRAFT PR
 
 ### Task (verbatim)
