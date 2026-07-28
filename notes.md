@@ -4,19 +4,21 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
-## 28 July 2026 — S3-Lite B: API Worker (admin gate + LiveKit mint), PR pending (full record: devlog/SESSIONS.md)
+## 28 July 2026 — S3-Lite B: API Worker (admin gate + LiveKit mint), PR #14 held for CTO (full record: devlog/SESSIONS.md)
 
 - `workers/api/` Cloudflare Worker, **zero deps**: GET /api/health; POST /api/admin/verify
   (rate-limit 5/60s → constant-time SHA-256 digest compare → 12h HMAC session token);
-  POST /api/livekit/token (X-Admin-Token gate → 30/60s → hand-rolled HS256 LiveKit token,
-  6h clamp). CORS: studio + *.luminastream-studio.pages.dev + localhost:5173.
+  POST /api/livekit/token (30/60s IP limit → X-Admin-Token gate → hand-rolled HS256 LiveKit
+  token, 6h clamp). CORS: studio + *.luminastream-studio.pages.dev + localhost:5173.
 - Minted by hand via Web Crypto (SDK pulls Node-only siblings); claims verified vs
   livekit-server-sdk + its TokenVerifier + the **real LiveKit Cloud** (Twirp ListRooms → 200).
 - Frontend: `src/lib/serverMint.js` + LiveKitTest "Mint via server" (gated on VITE_API_BASE);
   manual paste stays the dev fallback. README has Amy's exact wrangler secret/deploy steps.
-- Verified: 34/34 worker + 21/21 frontend tests, lint clean, typecheck at main baseline (+0),
+- CodeRabbit round closed (75a1f47): 1 Major (rate-limit ordering on token endpoint — now
+  limit-first, +regression test) + 1 docs, both confirmed resolved, re-review pass.
+- Verified: 35/35 worker + 21/21 frontend tests, lint clean, typecheck at main baseline (+0),
   build green, `wrangler deploy --dry-run` bundles + registers both rate limiters.
-- Next: PR via gh → CodeRabbit → **HOLD MERGE for CTO**. Then Amy deploys + sets VITE_API_BASE.
+- Next: **HOLD MERGE for CTO** decision on PR #14. Then Amy deploys + sets VITE_API_BASE.
 
 ---
 

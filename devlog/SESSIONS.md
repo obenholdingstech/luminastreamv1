@@ -113,9 +113,26 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
   rate-limit bindings registered (VERIFY 5/60s, TOKEN 30/60s).
 - Live LiveKit Cloud token acceptance: **HTTP 200** (see findings).
 
+### CodeRabbit round (PR #14)
+
+Two findings, both fixed in `75a1f47` and explicitly confirmed resolved by
+CodeRabbit (`<review_comment_addressed>`); re-review **pass**, no new findings:
+
+- 🟠 **Major (security)**: `/api/livekit/token` ran `verifySession` BEFORE the
+  rate-limit, so anonymous garbage-token spam hit the HMAC-verify path
+  unthrottled. Moved the IP-keyed limiter ahead of verification (limit-first,
+  like `/api/admin/verify`); dropped the `sub:ip` key (subject unknown
+  pre-verify, always `admin`). New regression test asserts **429-before-401**.
+  CR: "closes the anonymous HMAC-verification flood path."
+- 🟡 **Minor (docs)**: Worker local-dev used `npm run dev` (repo reserves that
+  for frontend-only Base44 work) → `npx wrangler dev` in both READMEs.
+
+Post-fix: Worker **35/35**, lint clean. Merge still **HELD**.
+
 ### Next
 
-- PR via `gh` → CodeRabbit → evidence replies → **HOLD MERGE** for CTO review.
+- **HOLD MERGE** — awaiting CTO decision on PR #14 (CodeRabbit round closed,
+  all green).
 - After merge + deploy: Amy runs the README secret/deploy steps and sets
   `VITE_API_BASE` on the Pages project to the Worker URL.
 
