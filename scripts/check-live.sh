@@ -36,40 +36,46 @@ fails=0
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
-# One HTTP GET: follow redirects, hard timeout, quiet. We deliberately do NOT
-# pass -f (fail-on-HTTP-error): the served *body* is the test (an app shell vs.
-# API JSON), so we always want to see it — a misbound domain that answers "/"
-# with the Worker's 404 JSON should surface that JSON in the FAIL line, not a
-# blank. Prints whatever body came back.
-fetch() { curl -sS -L --max-time 25 "$1" 2>/dev/null; }
+# One HTTP GET: follow redirects, hard timeout, quiet. Appends the final HTTP
+# status as a trailing line (via -w) so each check can require 200 AND still
+# show the body for diagnostics. We do NOT use -f: a misbound domain that
+# answers "/" with the Worker's 404 JSON must surface that JSON (and its 404)
+# in the FAIL line, not a blank. Emits "<body>\n<status>" (status "000" if the
+# request never connected).
+fetch() { curl -sS -L --max-time 25 -w '\n%{http_code}' "$1" 2>/dev/null; }
+
+# Split a fetch result into globals STATUS (last line) and BODY (the rest). The
+# appended status is always the final line, so we split on the LAST newline —
+# the body may itself contain newlines (HTML) and is preserved intact.
+split_resp() { STATUS="${1##*$'\n'}"; BODY="${1%$'\n'*}"; }
 
 echo "check-live: probing deployed reality"
 echo "  worker: ${WORKER_URL}"
 echo "  pages:  ${PAGES_URL}"
 echo
 
-# (a) Worker /api/health -> ok JSON.
-health="$(fetch "${WORKER_URL}/api/health")" || true
-if printf '%s' "$health" | grep -q '"ok":[[:space:]]*true'; then
-  pass "(a) Worker /api/health  ${health}"
+# (a) Worker /api/health -> HTTP 200 + ok JSON.
+split_resp "$(fetch "${WORKER_URL}/api/health")"
+if [ "$STATUS" = "200" ] && printf '%s' "$BODY" | grep -q '"ok":[[:space:]]*true'; then
+  pass "(a) Worker /api/health  HTTP ${STATUS} ${BODY}"
 else
-  fail "(a) Worker /api/health  expected {\"ok\":true,...}; got: ${health:-<no response>}"
+  fail "(a) Worker /api/health  expected HTTP 200 + {\"ok\":true,...}; got HTTP ${STATUS}: ${BODY:-<no response>}"
 fi
 
-# (b) Pages root -> app HTML shell (#root), and NOT the Worker's JSON.
-root="$(fetch "${PAGES_URL}/")" || true
-if printf '%s' "$root" | grep -q 'id="root"' && ! printf '%s' "$root" | grep -q '"ok":'; then
-  pass "(b) Pages /            app HTML shell (#root mount, not JSON)"
+# (b) Pages root -> HTTP 200, app HTML shell (#root), and NOT the Worker's JSON.
+split_resp "$(fetch "${PAGES_URL}/")"
+if [ "$STATUS" = "200" ] && printf '%s' "$BODY" | grep -q 'id="root"' && ! printf '%s' "$BODY" | grep -q '"ok":'; then
+  pass "(b) Pages /            HTTP ${STATUS} app HTML shell (#root mount, not JSON)"
 else
-  fail "(b) Pages /            expected app HTML with #root and no JSON; got: $(printf '%s' "${root:-<no response>}" | tr '\n' ' ' | head -c 160)"
+  fail "(b) Pages /            expected HTTP 200 + app HTML with #root and no JSON; got HTTP ${STATUS}: $(printf '%s' "${BODY:-<no response>}" | tr '\n' ' ' | head -c 160)"
 fi
 
-# (c) Pages /livekit-test -> SPA fallback to the same app HTML, NOT JSON.
-livekit="$(fetch "${PAGES_URL}/livekit-test")" || true
-if printf '%s' "$livekit" | grep -q 'id="root"' && ! printf '%s' "$livekit" | grep -q '"ok":'; then
-  pass "(c) Pages /livekit-test app HTML shell via SPA fallback (#root, not JSON)"
+# (c) Pages /livekit-test -> HTTP 200, SPA fallback to the same app HTML, NOT JSON.
+split_resp "$(fetch "${PAGES_URL}/livekit-test")"
+if [ "$STATUS" = "200" ] && printf '%s' "$BODY" | grep -q 'id="root"' && ! printf '%s' "$BODY" | grep -q '"ok":'; then
+  pass "(c) Pages /livekit-test HTTP ${STATUS} app HTML shell via SPA fallback (#root, not JSON)"
 else
-  fail "(c) Pages /livekit-test expected app HTML with #root and no JSON; got: $(printf '%s' "${livekit:-<no response>}" | tr '\n' ' ' | head -c 160)"
+  fail "(c) Pages /livekit-test expected HTTP 200 + app HTML with #root and no JSON; got HTTP ${STATUS}: $(printf '%s' "${BODY:-<no response>}" | tr '\n' ' ' | head -c 160)"
 fi
 
 echo

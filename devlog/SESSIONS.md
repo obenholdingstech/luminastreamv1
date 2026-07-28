@@ -78,7 +78,7 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 - **`CLOUDFLARE_API_TOKEN` is NOT in `secrets.env`** (keys there are only LiveKit /
   admin / ElevenLabs). The literal "probe using CLOUDFLARE_API_TOKEN from secrets.env"
   couldn't run as written. wrangler is instead authenticated via an **OAuth session**
-  (obenholdingsltd@yahoo.com) that already carries `pages (write)`. I proceeded with
+  on the correct account (`78799d26…`) that already carries `pages (write)`. I proceeded with
   that (it's the correct account, and creating the project + deploying is stronger
   proof than a list) rather than gating on the technicality. The authoritative check
   of the *CI secret's* Pages:Edit scope is the first green run of deploy-pages.yml on
