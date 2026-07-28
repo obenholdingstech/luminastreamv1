@@ -205,7 +205,7 @@ time). `/livekit-test` will then show the **Mint via server** path. Leaving
 ```bash
 cd workers/api
 cp .dev.vars.example .dev.vars   # fill in real values — .dev.vars is gitignored
-npm run dev                      # wrangler dev → http://localhost:8787
+npx wrangler dev                 # → http://localhost:8787
 npm test                         # node --test (offline, no secrets)
 ```
 

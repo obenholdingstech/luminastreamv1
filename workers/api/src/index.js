@@ -77,14 +77,17 @@ async function handleToken(request, env, origin) {
     return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
   }
 
-  // Gate first: no valid admin session, no token. A public repo plus an open
-  // mint endpoint equals strangers in our rooms burning our GPU.
-  const session = await verifySession(env.ADMIN_SESSION_SECRET, request.headers.get('X-Admin-Token'));
-  if (!session.valid) return json({ ok: false, error: 'unauthorized' }, { status: 401, origin });
-
-  if (await isRateLimited(env.TOKEN_LIMITER, `${session.payload.sub}:${clientIp(request)}`)) {
+  // Throttle by IP BEFORE the crypto path. Otherwise anonymous garbage-token
+  // spam forces an HMAC verify on every request without ever reaching the
+  // limiter — the same reason /api/admin/verify rate-limits first.
+  if (await isRateLimited(env.TOKEN_LIMITER, clientIp(request))) {
     return json({ ok: false, error: 'rate_limited' }, { status: 429, origin });
   }
+
+  // Gate: no valid admin session, no token. A public repo plus an open mint
+  // endpoint equals strangers in our rooms burning our GPU.
+  const session = await verifySession(env.ADMIN_SESSION_SECRET, request.headers.get('X-Admin-Token'));
+  if (!session.valid) return json({ ok: false, error: 'unauthorized' }, { status: 401, origin });
 
   const body = await readJson(request);
   const room = typeof body?.room === 'string' ? body.room.trim() : '';

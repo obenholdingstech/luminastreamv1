@@ -30,7 +30,7 @@ take, replacing the DEV-ONLY `scripts/generate-livekit-token.js`.
 cd workers/api
 npm install
 cp .dev.vars.example .dev.vars   # then fill in real values (gitignored)
-npm run dev                      # wrangler dev — http://localhost:8787
+npx wrangler dev                 # → http://localhost:8787
 npm test                         # node --test (no network, no secrets)
 ```
 

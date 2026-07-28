@@ -191,6 +191,16 @@ test('rate limit: token endpoint trips → 429 for a valid session', async () =>
   assert.equal(res.status, 429);
 });
 
+test('rate limit: token endpoint throttles anonymous spam BEFORE verifying (429, not 401)', async () => {
+  // garbage token + deny limiter → the limiter must trip before the HMAC
+  // verify, so the crypto path is never reachable by unauthenticated flooders
+  const res = await call(
+    req('/api/livekit/token', { method: 'POST', token: 'garbage.token', body: { room: 'r', identity: 'u' } }),
+    { ...BASE_ENV, TOKEN_LIMITER: denyLimiter },
+  );
+  assert.equal(res.status, 429);
+});
+
 test('misconfigured server (no secrets) → 500', async () => {
   assert.equal((await call(req('/api/admin/verify', { method: 'POST', body: { password: 'x' } }), {})).status, 500);
 });
