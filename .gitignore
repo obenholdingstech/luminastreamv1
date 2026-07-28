@@ -35,3 +35,8 @@ secrets.env
 
 # Ops handover notes — contain raw VPS IPs/port maps; never commit
 CTO_HANDOVER*.md
+
+# Cloudflare Worker (workers/api): local secrets + wrangler cache.
+# .dev.vars.example is a different filename and stays tracked.
+.dev.vars
+.wrangler/

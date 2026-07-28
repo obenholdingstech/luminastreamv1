@@ -115,7 +115,99 @@ mode: every unmatched path (e.g. a hard refresh on
 Router takes over — identical to the Vite dev server. No `_redirects` file
 or Pages Function is needed. The page itself stays serverless: generate a
 token locally with `node scripts/generate-livekit-token.js` and paste it in,
-same as on localhost. No secret is ever part of the deployment.
+same as on localhost. No secret is ever part of the deployment. Once the API
+Worker below is deployed and `VITE_API_BASE` is set, `/livekit-test` also
+gains a **Mint via server** button (password → server-minted token), the
+production path — see the next section.
+
+## API Worker (Cloudflare)
+
+`workers/api/` is our first owned backend: a single Cloudflare Worker with an
+**admin gate** and **server-side LiveKit token minting**, so real users get a
+LiveKit token without the API secret ever touching the browser. It replaces
+the DEV-ONLY `scripts/generate-livekit-token.js`.
+
+| Method | Path                 | Auth              | Purpose                                            |
+| ------ | -------------------- | ----------------- | -------------------------------------------------- |
+| GET    | `/api/health`        | none              | `{ ok, version }`                                  |
+| POST   | `/api/admin/verify`  | none (hard limit) | `{ password }` → `{ ok, token, expiresAt }` (~12h) |
+| POST   | `/api/livekit/token` | `X-Admin-Token`   | `{ room, identity }` → LiveKit token (≤6h)         |
+
+The token is minted by hand with Web Crypto (HS256), so the Worker has **zero
+dependencies**; its claims are verified against `livekit-server-sdk` in the
+tests and were validated against the live LiveKit Cloud project. Rate limiting
+uses the native Workers binding (per-colo): **5/60s** on verify, **30/60s** on
+mint. CORS is limited to `studio.luminastream.live`, our
+`*.luminastream-studio.pages.dev` previews, and `localhost:5173`.
+
+### Deploy (exact steps for Amy)
+
+Everything runs from `workers/api/`. Secrets are set with `wrangler secret put`
+and are **never** written to any file that gets committed (the repo is public).
+
+```bash
+cd workers/api
+npm install                 # installs wrangler locally
+npx wrangler login          # opens a browser to authorize your Cloudflare account
+```
+
+Set the five secrets — each command prompts for the value and hides it (nothing
+is echoed to the terminal or stored in the repo):
+
+```bash
+npx wrangler secret put ADMIN_PASSWORD          # choose the admin gate password
+npx wrangler secret put ADMIN_SESSION_SECRET    # paste `openssl rand -hex 32` output
+npx wrangler secret put LIVEKIT_API_KEY         # from the LiveKit Cloud project (secrets.env)
+npx wrangler secret put LIVEKIT_API_SECRET      # from the LiveKit Cloud project (secrets.env)
+npx wrangler secret put LIVEKIT_URL             # e.g. wss://<project>.livekit.cloud
+```
+
+Generate the session secret in a scratch shell first, then paste it when
+`wrangler` prompts:
+
+```bash
+openssl rand -hex 32
+```
+
+Then deploy:
+
+```bash
+npx wrangler deploy         # or: npm run deploy
+```
+
+Wrangler prints the live URL, e.g.
+`https://luminastream-api.<your-account>.workers.dev`. Verify it:
+
+```bash
+curl https://luminastream-api.<your-account>.workers.dev/api/health
+# → {"ok":true,"version":"0.1.0"}
+```
+
+To rotate a secret later, just run the same `wrangler secret put <NAME>` again
+and redeploy. Live logs: `npx wrangler tail` (or `npm run tail`).
+
+### Point the frontend at the Worker
+
+In the Cloudflare **Pages** project (`luminastream-studio`) → **Settings** →
+**Environment variables**, set `VITE_API_BASE` to the Worker URL above (no
+trailing slash), then redeploy the Pages project (Vite bakes it in at build
+time). `/livekit-test` will then show the **Mint via server** path. Leaving
+`VITE_API_BASE` unset keeps the manual-paste dev fallback and changes nothing.
+
+> Optional custom domain: to serve the Worker at `api.luminastream.live`, add a
+> route in the Worker's **Settings → Domains & Routes** (or a `routes` entry in
+> `wrangler.jsonc`) and set `VITE_API_BASE=https://api.luminastream.live`. CORS
+> keys off the browser's Origin (the studio site), not the API host, so either
+> URL works.
+
+### Local development
+
+```bash
+cd workers/api
+cp .dev.vars.example .dev.vars   # fill in real values — .dev.vars is gitignored
+npm run dev                      # wrangler dev → http://localhost:8787
+npm test                         # node --test (offline, no secrets)
+```
 
 ## Use The Hosted Backend
 

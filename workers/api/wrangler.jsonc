@@ -1,0 +1,33 @@
+{
+  // Cloudflare Worker: the LuminaStream API (admin gate + LiveKit token mint).
+  // JSONC is Cloudflare's recommended config format for new Workers.
+  // Deploy + secret commands live in the repo README ("API Worker" section).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "luminastream-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-28",
+  "observability": {
+    "enabled": true
+  },
+  // Native Workers rate limiting (GA 2025-09). Per-colo counters — approximate
+  // globally, which is fine as defense-in-depth on top of the constant-time
+  // password check. period must be 10 or 60 seconds.
+  //   VERIFY_LIMITER — hard: the verify endpoint is a password oracle.
+  //   TOKEN_LIMITER  — moderate: gated mint, keyed per admin session + IP.
+  "ratelimits": [
+    {
+      "name": "VERIFY_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "TOKEN_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ]
+  // Secrets (ADMIN_PASSWORD, ADMIN_SESSION_SECRET, LIVEKIT_API_KEY,
+  // LIVEKIT_API_SECRET, LIVEKIT_URL) are NEVER declared here — they are set
+  // with `wrangler secret put` (production) and `.dev.vars` (local, gitignored).
+  // See .dev.vars.example.
+}

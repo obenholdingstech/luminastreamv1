@@ -8,8 +8,11 @@ import {
   ArrowLeft,
   Clock,
   Gauge,
+  KeyRound,
+  Loader2,
   Mic,
   Repeat,
+  Server,
   Signal,
   SignalHigh,
   SignalLow,
@@ -21,6 +24,8 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
+import { API_BASE } from '@/lib/apiBase';
+import { mintViaServer } from '@/lib/serverMint';
 
 // DEV-ONLY page — Stage 1 WebRTC transport validation.
 // Paste a token from `node scripts/generate-livekit-token.js` and compare live
@@ -118,6 +123,19 @@ export default function LiveKitTest() {
   // from agentConfig.config (the applied-truth pattern from Phase 2)
   const [knobEdits, setKnobEdits] = useState({});
 
+  // Server-mint path — only surfaces when VITE_API_BASE is set. Password →
+  // /api/admin/verify → /api/livekit/token, auto-filling the URL + token
+  // fields above. Manual paste stays the dev fallback, so a drill never
+  // depends on the Worker being up.
+  const apiConfigured = Boolean(API_BASE);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [mintRoom, setMintRoom] = useState('luminastream-test');
+  const [mintIdentity, setMintIdentity] = useState('test-user');
+  const [adminToken, setAdminToken] = useState('');
+  const [minting, setMinting] = useState(false);
+  const [mintError, setMintError] = useState('');
+  const [mintNotice, setMintNotice] = useState('');
+
   const status = STATUS[connectionState] || STATUS[ConnectionState.Disconnected];
   const quality = QUALITY[connectionQuality] || QUALITY[ConnectionQuality.Unknown];
   const isDisconnected = connectionState === ConnectionState.Disconnected;
@@ -127,6 +145,43 @@ export default function LiveKitTest() {
   const handleConnect = () => {
     localStorage.setItem(URL_STORAGE_KEY, url.trim());
     connect();
+  };
+
+  const canMint =
+    apiConfigured &&
+    isDisconnected &&
+    !minting &&
+    Boolean(mintRoom.trim()) &&
+    Boolean(mintIdentity.trim()) &&
+    Boolean(adminPassword || adminToken);
+
+  const handleMintViaServer = async () => {
+    setMinting(true);
+    setMintError('');
+    setMintNotice('');
+    try {
+      const identity = mintIdentity.trim();
+      const {
+        token: lkToken,
+        url: lkUrl,
+        adminToken: session,
+      } = await mintViaServer({
+        password: adminPassword,
+        adminToken,
+        room: mintRoom.trim(),
+        identity,
+      });
+      setAdminToken(session);
+      if (lkUrl) setUrl(lkUrl);
+      setToken(lkToken);
+      setAdminPassword(''); // don't keep the password around once it's exchanged
+      setMintNotice(`token minted for ${identity} — ready to connect`);
+    } catch (err) {
+      if (err.status === 401) setAdminToken(''); // stale session → force re-auth next time
+      setMintError(err.message || 'mint failed');
+    } finally {
+      setMinting(false);
+    }
   };
 
   return (
@@ -223,6 +278,97 @@ export default function LiveKitTest() {
             <div className="mt-4 flex items-start gap-2 text-xs text-[#EF4444] border border-[#EF4444]/30 bg-[#EF4444]/5 rounded-md p-3">
               <AlertTriangle size={13} className="shrink-0 mt-0.5" />
               <span>{error}</span>
+            </div>
+          )}
+
+          {/* Server-mint path — only when VITE_API_BASE is set. The manual URL
+              + token fields above remain the dev fallback so drills never
+              depend on the Worker being up. */}
+          {apiConfigured && (
+            <div className="mt-6 pt-5 border-t border-[#1A1A2E]">
+              <div className="flex items-center gap-2 mb-3">
+                <Server size={13} className="text-[#6366F1]" />
+                <h3 className="text-[11px] tracking-widest uppercase text-[#64748B]">
+                  Mint via server
+                </h3>
+                <span className="text-[9px] text-[#4A5568] ml-auto">
+                  manual paste above stays the dev fallback
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-[10px] tracking-widest uppercase text-[#64748B] mb-1.5">
+                    Room
+                  </label>
+                  <input
+                    type="text"
+                    value={mintRoom}
+                    onChange={(e) => setMintRoom(e.target.value)}
+                    disabled={!isDisconnected || minting}
+                    className="w-full bg-[#13131F] border border-[#1A1A2E] rounded-md px-3 py-2 text-xs font-mono text-white placeholder-[#4A5568] focus:outline-none focus:border-[#6366F1] disabled:opacity-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] tracking-widest uppercase text-[#64748B] mb-1.5">
+                    Identity
+                  </label>
+                  <input
+                    type="text"
+                    value={mintIdentity}
+                    onChange={(e) => setMintIdentity(e.target.value)}
+                    disabled={!isDisconnected || minting}
+                    className="w-full bg-[#13131F] border border-[#1A1A2E] rounded-md px-3 py-2 text-xs font-mono text-white placeholder-[#4A5568] focus:outline-none focus:border-[#6366F1] disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              <label className="block text-[10px] tracking-widest uppercase text-[#64748B] mb-1.5">
+                Admin password
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && canMint) handleMintViaServer();
+                  }}
+                  disabled={!isDisconnected || minting}
+                  placeholder={
+                    adminToken ? 'session active — re-enter only if it expires' : 'admin password'
+                  }
+                  autoComplete="off"
+                  className="flex-1 bg-[#13131F] border border-[#1A1A2E] rounded-md px-3 py-2 text-xs font-mono text-white placeholder-[#4A5568] focus:outline-none focus:border-[#6366F1] disabled:opacity-50"
+                />
+                <button
+                  onClick={handleMintViaServer}
+                  disabled={!canMint}
+                  className="flex items-center gap-1.5 bg-[#6366F1] hover:bg-[#818CF8] disabled:opacity-40 disabled:hover:bg-[#6366F1] text-white text-xs tracking-wide rounded-md px-5 py-2 transition-colors whitespace-nowrap"
+                >
+                  {minting ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <KeyRound size={13} />
+                  )}
+                  {minting ? 'Minting…' : 'Mint via server'}
+                </button>
+              </div>
+
+              {mintError && (
+                <div className="mt-3 flex items-start gap-2 text-xs text-[#EF4444] border border-[#EF4444]/30 bg-[#EF4444]/5 rounded-md p-3">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span>{mintError}</span>
+                </div>
+              )}
+              {mintNotice && !mintError && (
+                <p className="mt-3 text-[11px] text-[#10B981]">{mintNotice}</p>
+              )}
+
+              <p className="mt-3 text-[9px] text-[#4A5568] leading-relaxed">
+                Password → server verifies (constant-time) → LiveKit token minted server-side
+                (≤6h) and auto-filled above. The LiveKit secret never reaches the browser.
+              </p>
             </div>
           )}
         </div>
@@ -526,9 +672,11 @@ export default function LiveKitTest() {
 
         <p className="mt-6 text-[10px] text-[#4A5568] leading-relaxed">
           Stage 1 transport validation — runs alongside the existing WebSocket voice pipeline
-          without touching it. Generate a 2-hour token with{' '}
-          <code className="text-[#64748B]">node scripts/generate-livekit-token.js</code>. In
-          production, tokens will be issued by a server-side endpoint.
+          without touching it. Generate a token with{' '}
+          <code className="text-[#64748B]">node scripts/generate-livekit-token.js</code> and paste
+          it, or — when <code className="text-[#64748B]">VITE_API_BASE</code> is set — use{' '}
+          <span className="text-[#94A3B8]">Mint via server</span> above, the production path that
+          keeps the LiveKit secret server-side.
         </p>
       </div>
     </div>

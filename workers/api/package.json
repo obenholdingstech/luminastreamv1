@@ -1,0 +1,16 @@
+{
+  "name": "luminastream-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LuminaStream API Worker — admin gate + server-side LiveKit token minting.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.36.0"
+  }
+}

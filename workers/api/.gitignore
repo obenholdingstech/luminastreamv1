@@ -1,0 +1,9 @@
+# Local secrets for `wrangler dev` — NEVER commit. Use .dev.vars.example as the
+# committed template.
+.dev.vars
+
+# wrangler build/state cache
+.wrangler/
+
+# deps (this subpackage installs wrangler locally)
+node_modules/
