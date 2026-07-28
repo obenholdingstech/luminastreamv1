@@ -47,78 +47,99 @@ Open the local URL printed by Vite.
 
 ## Deploy — Cloudflare Pages (studio.luminastream.live)
 
-The frontend is a static Vite build (`npm run build` → `dist/`) served by
-Cloudflare Pages via **Git integration**: Cloudflare builds and deploys on
-every push to `main`, entirely from its dashboard. We deliberately do NOT use
-`wrangler pages deploy` (direct upload) — it needs a Cloudflare API token, and
-this repo is public, so no Cloudflare config or credentials live in the repo
-at all. Everything below happens in the Cloudflare dashboard.
+The frontend is a static Vite build (`npm run build` → `dist/`) served by the
+Cloudflare **Pages** project `luminastream-studio` (`luminastream-studio.pages.dev`).
+**Production deploys are automated and are a property of the merge** — exactly
+like the Worker. Nobody deploys the frontend by hand.
 
-### One-time setup (exact clicks)
+A push to `main` that touches the frontend build inputs triggers
+[`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml),
+which runs `npm ci`, **fails the job if `VITE_API_BASE` is empty or unset**,
+builds with that value baked in, and uploads `dist/` to the `luminastream-studio`
+project via the official `cloudflare/wrangler-action` (direct upload, pinned
+wrangler — no Pages Git integration, no dashboard build). The workflow watches
+`src/**`, `public/**`, `index.html`, `package*.json`, the `vite`/`tailwind`/`postcss`
+configs, and the workflow file itself.
 
-1. Log in at `dash.cloudflare.com` → in the left sidebar open
-   **Workers & Pages**.
-2. Click **Create application** → select the **Pages** tab →
-   **Connect to Git**.
-3. Sign in with GitHub when prompted and click **Install & Authorize**
-   (grant access to the `obenholdingstech` org — you can restrict the
-   install to just this repository).
-4. Pick the **luminastreamv1** repository → **Begin setup**.
-5. On **Set up builds and deployments**:
-   - **Project name**: `luminastream-studio` (this becomes
-     `luminastream-studio.pages.dev`)
-   - **Production branch**: `main`
-   - **Framework preset**: `Vite`
-   - **Build command**: `npm run build`
-   - **Build output directory**: `dist`
-   - Leave **Root directory** empty; add no environment variables for now
-     (see `VITE_API_BASE` below).
-6. Click **Save and Deploy** and wait for the first build to go green.
-   The site is now live at `luminastream-studio.pages.dev`.
+`VITE_API_BASE` is a GitHub Actions **repository variable** (not a secret — it
+is public config: the production Worker URL). Vite bakes it into the bundle at
+build time, so editing the variable changes nothing until the next build; a push
+to `main` — or a **Re-run** of the latest workflow — rebuilds and redeploys. The
+build guard exists because an empty base silently ships a frontend that talks to
+same-origin `/api` with no backend behind it — the same regression the
+`src/lib/apiBase.build.test.js` sentinel catches at the unit level.
 
-### Custom domain (studio.luminastream.live)
+### First deploy (bootstrap — done once, by hand)
 
-Do this from the Pages project, not from DNS — adding a bare CNAME without
-registering the custom domain on the project first fails with a 522.
+The Pages project is created and seeded once with wrangler; every deploy after
+that is the merge workflow above. To reproduce from scratch (auth first with
+`npx wrangler login`, or `export CLOUDFLARE_API_TOKEN=<token>`):
 
-1. Open the project under **Workers & Pages** → **Custom domains** tab →
-   **Set up a domain**.
-2. Enter `studio.luminastream.live` → **Continue**.
-3. If the `luminastream.live` zone is in this Cloudflare account, confirm
-   the DNS record when prompted — Cloudflare adds the CNAME automatically.
-   If DNS is hosted elsewhere, create this record at that DNS provider:
-   `CNAME  studio  luminastream-studio.pages.dev`.
+```bash
+npx wrangler pages project create luminastream-studio --production-branch main
+# Build with the API base from an env var — never commit the literal:
+VITE_API_BASE="$(gh variable get VITE_API_BASE)" npm run build
+npx wrangler pages deploy dist --project-name=luminastream-studio --branch=main
+```
 
-### API base URL (`VITE_API_BASE`)
+The project name is **load-bearing**: the Worker's CORS allowlist hardcodes
+`PAGES_PROJECT = 'luminastream-studio'` (see `workers/api/src/cors.js`), so any
+other name silently breaks preview-deploy CORS.
 
-The old Base44 backend proxy is dead. The frontend reads one build-time
-variable, `VITE_API_BASE` (see `src/lib/apiBase.js`):
+### Verify a deploy
 
-- **Unset (the default)** — the site, including `/livekit-test`, works fully
-  without it. Legacy Base44 calls go to same-origin `/api/...` paths and fail
-  soft, though the shape differs by host: the local dev server returns a
-  plain 404, while the deployed site's SPA fallback answers `/api/...` with
-  the app document (`index.html`, HTTP 200). Neither has a backend behind it;
-  the frontend tolerates both.
-- **When a real API backend exists**: project → **Settings** →
-  **Environment variables** → **Add variable** → name `VITE_API_BASE`,
-  value e.g. `https://api.luminastream.live` (no trailing slash needed —
-  it is normalized) → save, then re-deploy (**Deployments** → latest →
-  **Retry deployment**, or push a commit). Vite bakes the value in at build
-  time; editing the variable alone changes nothing until a rebuild.
+```bash
+scripts/check-live.sh
+```
+
+One PASS/FAIL line per layer — Worker `/api/health`, the Pages root, and
+`/livekit-test` (which must serve the app shell via SPA fallback, **not** JSON) —
+with a nonzero exit if any layer is down. This is the instrument the original
+incident lacked: a "frontend deployed anywhere?" answer in one command. Override
+the targets with `WORKER_URL=` / `PAGES_URL=` to smoke-test the custom domain or
+staging.
 
 ### Why /livekit-test works deployed
 
-The build emits no top-level `404.html`, so Pages serves the app in SPA
-mode: every unmatched path (e.g. a hard refresh on
-`studio.luminastream.live/livekit-test`) returns `index.html` and React
-Router takes over — identical to the Vite dev server. No `_redirects` file
-or Pages Function is needed. The page itself stays serverless: generate a
-token locally with `node scripts/generate-livekit-token.js` and paste it in,
-same as on localhost. No secret is ever part of the deployment. Once the API
-Worker below is deployed and `VITE_API_BASE` is set, `/livekit-test` also
-gains a **Mint via server** button (password → server-minted token), the
-production path — see the next section.
+The build emits no top-level `404.html`, so Pages serves the app in SPA mode:
+every unmatched path (e.g. a hard refresh on `/livekit-test`) returns
+`index.html` and React Router takes over — identical to the Vite dev server. No
+`_redirects` file or Pages Function is needed. The page itself stays serverless:
+generate a token locally with `node scripts/generate-livekit-token.js` and paste
+it in, same as on localhost. No secret is ever part of the deployment. Because
+`VITE_API_BASE` points at the Worker, `/livekit-test` also gains a **Mint via
+server** button (password → server-minted token), the production path.
+
+### Remaining human steps (deliberate walls)
+
+Two things stay manual on purpose — each changes account-level permissions or
+public DNS, which are human acts, never a merge side effect.
+
+**1. Token permission (one-time — already done).** The Cloudflare API token in
+GitHub Actions (`CLOUDFLARE_API_TOKEN`) needs **Account · Cloudflare Pages ·
+Edit** on top of the Workers scopes it already carried. Dash → **My Profile →
+API Tokens →** edit the token → **Add** the **Cloudflare Pages : Edit**
+permission → **Continue** → **Save**. CI never edits its own permissions.
+
+**2. Move the custom domain from the Worker to Pages (one-time).**
+`studio.luminastream.live` is currently attached to the **Worker**
+(`luminastream-api`) and serves API JSON at its root. Move it to the Pages
+project:
+
+- **Detach from the Worker:** Dash → **Workers & Pages** → `luminastream-api` →
+  **Settings → Domains & Routes** → the `studio.luminastream.live` row →
+  **Remove**.
+- **Attach to Pages:** open the `luminastream-studio` project → **Custom
+  domains** → **Set up a domain** → enter `studio.luminastream.live` →
+  **Continue** → **Activate domain**. If the `luminastream.live` zone lives in
+  this account, Cloudflare updates the CNAME for you; otherwise create
+  `CNAME  studio  luminastream-studio.pages.dev` at your DNS provider.
+
+Until this move, the site is live and fully functional at
+`luminastream-studio.pages.dev`, and `studio.luminastream.live` keeps serving
+the Worker. Verify the cutover with
+`PAGES_URL=https://studio.luminastream.live scripts/check-live.sh`. DNS stays a
+human act by doctrine — the CI token intentionally has no DNS scope.
 
 ## API Worker (Cloudflare)
 
@@ -224,20 +245,22 @@ curl https://luminastream-api.<account>.workers.dev/api/health
 
 ### Point the frontend at the Worker
 
-In the Cloudflare **Pages** project (`luminastream-studio`) → **Settings** →
-**Environment variables**, set `VITE_API_BASE` to the production Worker URL (no
-trailing slash), then redeploy the Pages project (Vite bakes it in at build
-time). `/livekit-test` will then show the **Mint via server** path. Leaving
-`VITE_API_BASE` unset keeps the manual-paste dev fallback and changes nothing.
+`VITE_API_BASE` is a GitHub Actions **repository variable** (repo → **Settings →
+Secrets and variables → Actions → Variables**), set to the production Worker URL
+(no trailing slash — it is normalized). The Pages workflow bakes it into the
+bundle at build time, so a push to `main` — or a **Re-run** of the latest run —
+applies a change. With it set, `/livekit-test` shows the **Mint via server**
+path; unsetting it now *fails the Pages deploy guard* rather than silently
+shipping a frontend with a blank API base.
 
 ### Custom domain (`api.luminastream.live`) — a deliberate human step
 
 DNS is **not** automated and the CI token intentionally has **no DNS scope**.
 Pointing a custom domain changes public DNS — rare and sensitive — so it stays
 a manual act: in the dashboard open the Worker → **Settings → Domains & Routes →
-Add** → `api.luminastream.live`, then set
-`VITE_API_BASE=https://api.luminastream.live` on the Pages project. CORS keys
-off the browser's Origin (the studio site), not the API host, so either the
+Add** → `api.luminastream.live`, then update the `VITE_API_BASE` GitHub Actions
+variable to `https://api.luminastream.live` and re-run the Pages workflow. CORS
+keys off the browser's Origin (the studio site), not the API host, so either the
 `workers.dev` URL or the custom domain works.
 
 ### Local development
