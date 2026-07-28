@@ -4,6 +4,18 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 28 July 2026 — Micro-fix: pin wranglerVersion in deploy workflow, PR #16 held (full record: devlog/SESSIONS.md)
+
+- PR #14 MERGED (2d37382) → first deploy-worker.yml run FAILED: wrangler-action fell back to
+  its bundled wrangler 3.90.0 (no wrangler.jsonc support — that's 3.91+) → exit 1.
+- Fix: pin `wranglerVersion: "4.36.0"` on the cloudflare/wrangler-action step (verified input
+  name in the action's docs; exact = deterministic; matches workers/api/package.json ^4.36.0).
+- Verified: workflow YAML parses, pin on the right step. Full run confirmable only post-merge.
+- Next: PR #16 → CodeRabbit → **HOLD MERGE for CTO**; after merge, confirm Actions green +
+  `curl <worker-url>/api/health`.
+
+---
+
 ## 28 July 2026 — S3-Lite B: API Worker (admin gate + LiveKit mint), PR #14 held for CTO (full record: devlog/SESSIONS.md)
 
 - `workers/api/` Cloudflare Worker, **zero deps**: GET /api/health; POST /api/admin/verify

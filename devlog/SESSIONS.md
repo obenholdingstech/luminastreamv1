@@ -4,6 +4,51 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — Micro-fix: pin wranglerVersion in deploy workflow (PR #16, branch fix/deploy-wrangler-version)
+
+### Task (verbatim)
+
+> MICRO-FIX (branch: fix/deploy-wrangler-version): the deploy workflow's
+> wrangler-action installed its fallback wrangler 3.90.0 (log evidence), which
+> predates wrangler.jsonc support (3.91+) → deploy exits 1. Fix: add an explicit
+> `wranglerVersion` input to the cloudflare/wrangler-action step matching the
+> package.json devDependency, so version resolution is deterministic and immune
+> to detection quirks. Verify the exact input name against the action's current
+> docs. PR → CodeRabbit → hold for CTO; after merge, confirm the Actions run is
+> green and `curl <worker-url>/api/health` answers.
+
+### What was done
+
+- Context: **PR #14 merged to main** (18:10 UTC, `2d37382`); the first
+  `deploy-worker.yml` production run failed — `cloudflare/wrangler-action`'s
+  bundled fallback **wrangler 3.90.0** can't parse `wrangler.jsonc` (support
+  landed in 3.91).
+- **Verified the input name** against the action's current docs:
+  **`wranglerVersion`** (camelCase); accepts an exact version, a major, a range,
+  or `latest`.
+- Branched `fix/deploy-wrangler-version` from up-to-date main; added
+  `wranglerVersion: "4.36.0"` to the wrangler-action step — an **exact** pin
+  (deterministic, no detection fallback) matching `workers/api/package.json`'s
+  `^4.36.0` devDep and the documented floor for `wrangler.jsonc` + the
+  rate-limit bindings.
+
+### Verification
+
+- Workflow YAML parses (ruby); asserted the pin is on the wrangler-action step's
+  `with:` (`wranglerVersion="4.36.0"`, `command=deploy`,
+  `workingDirectory=workers/api`).
+- The full CI run can only be confirmed **post-merge** (the workflow triggers on
+  push to `main`).
+
+### Next
+
+- PR #16 → CodeRabbit → **HOLD MERGE** for CTO.
+- After merge: confirm the Actions run is green and
+  `curl https://luminastream-api.<account>.workers.dev/api/health` →
+  `{"ok":true,…}`.
+
+---
+
 ## 28 July 2026 — Stage 3-Lite, Session B: API Worker — admin gate + LiveKit mint (branch feat/s3lite-worker-auth)
 
 ### Task (verbatim)
