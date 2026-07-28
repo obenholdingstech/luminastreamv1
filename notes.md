@@ -20,6 +20,49 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
+## 28 July 2026 — Micro-fix: pin wranglerVersion in deploy workflow, PR #16 held (full record: devlog/SESSIONS.md)
+
+- PR #14 MERGED (2d37382) → first deploy-worker.yml run FAILED: wrangler-action fell back to
+  its bundled wrangler 3.90.0 (no wrangler.jsonc support — that's 3.91+) → exit 1.
+- Fix: pin `wranglerVersion: "4.36.0"` on the cloudflare/wrangler-action step (verified input
+  name in the action's docs; exact = deterministic; matches workers/api/package.json ^4.36.0).
+- Verified: workflow YAML parses, pin on the right step. Full run confirmable only post-merge.
+- Next: PR #16 → CodeRabbit → **HOLD MERGE for CTO**; after merge, confirm Actions green +
+  `curl <worker-url>/api/health`.
+
+---
+
+## 28 July 2026 — S3-Lite B: API Worker (admin gate + LiveKit mint), PR #14 held for CTO (full record: devlog/SESSIONS.md)
+
+- `workers/api/` Cloudflare Worker, **zero deps**: GET /api/health; POST /api/admin/verify
+  (rate-limit 5/60s → constant-time SHA-256 digest compare → 12h HMAC session token);
+  POST /api/livekit/token (30/60s IP limit → X-Admin-Token gate → hand-rolled HS256 LiveKit
+  token, 6h clamp). CORS: studio + *.luminastream-studio.pages.dev + localhost:5173.
+- Minted by hand via Web Crypto (SDK pulls Node-only siblings); claims verified vs
+  livekit-server-sdk + its TokenVerifier + the **real LiveKit Cloud** (Twirp ListRooms → 200).
+- Frontend: `src/lib/serverMint.js` + LiveKitTest "Mint via server" (gated on VITE_API_BASE);
+  manual paste stays the dev fallback. README has Amy's exact wrangler secret/deploy steps.
+- CodeRabbit round closed (75a1f47): 1 Major (rate-limit ordering on token endpoint — now
+  limit-first, +regression test) + 1 docs, both confirmed resolved, re-review pass.
+- CEO addendum (CI/CD): `.github/workflows/deploy-worker.yml` (push main+workers/** →
+  tests → wrangler-action@v3 deploys **production**); wrangler `env.staging` (agent/manual
+  deploys default to staging via `npm run deploy`); `scripts/put-worker-secrets.sh`
+  (secrets.env → stdin → `wrangler secret put`, never echoed); README = narrow token mint
+  (Workers Scripts:Edit + Account Settings:Read, **no DNS**) + GitHub secrets; custom-domain
+  DNS stays a human act. Verified: both dry-runs bundle, YAML + `bash -n` OK.
+- Owner follow-up: session secret documented as `openssl rand -base64 32` into secrets.env
+  (README + .dev.vars.example); ADMIN_SESSION_SECRET rotation noted as the **kill switch**
+  (invalidates all outstanding sessions). Script already set all 5 secrets; base64 `=`-padding
+  extraction proven byte-exact.
+- Verified: 35/35 worker + 21/21 frontend tests, lint clean, typecheck at main baseline (+0),
+  build green, `wrangler deploy --dry-run` bundles both prod + staging w/ rate limiters.
+- CodeRabbit: 2 rounds, **4/4 findings resolved** (round 2: secret-script preflight + checkout
+  persist-credentials:false, both confirmed). Check green; PR #14 mergeable.
+- Next: **HOLD MERGE for CTO** on PR #14; on merge, workflow auto-deploys production (needs
+  CLOUDFLARE_* GitHub secrets). Amy: token→GitHub, run secret script, set VITE_API_BASE.
+
+---
+
 ## 27 July 2026 — S3-Lite A: Cloudflare Pages hosting, PR #13 (full record: devlog/SESSIONS.md)
 
 - Chose git-connected Pages over wrangler (verified live CF docs): dashboard-only, zero Cloudflare config/keys in the public repo. Build: npm run build → dist, preset Vite. /livekit-test works via automatic SPA fallback (no 404.html in output) — proven on built dist w/ vite preview + headless Chrome.
