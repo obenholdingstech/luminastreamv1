@@ -4,6 +4,108 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — GRADUATION: STT→TTS promoted to default engine (PR #15 ready)
+
+### Task (verbatim)
+
+> GRADUATION — promote the STT→TTS engine to main (branch: feat/spike-stt-tts)
+>
+> 1. SYNC: git fetch origin && git merge origin/main into this branch. Expected
+>    conflict surface is near-zero (spike lives in agent/, recent main lives in
+>    workers/ + frontend); if any appear, resolve favoring main outside agent/
+>    and this branch inside it. ALL suites green after — spike tests AND the
+>    pre-existing set; RVC paths remain intact and passing.
+> 2. THE PIVOT COMMIT: flip the agent's default --engine from rvc to tts in ONE
+>    dedicated commit, decision recorded in the message (CEO ear-drill verdict,
+>    date, scores). RVC is not removed — it stays as the parked baseline and
+>    fallback.
+> 3. VPS-READINESS (Amy deploys by hand post-merge; you have no VPS access, by
+>    design): requirements.txt complete; positive preflight on --engine tts
+>    startup logging "TTS READY (TTFB Xms)" or failing loud in plain English;
+>    README with the exact VPS deploy sequence + free-talk protocol for the
+>    aggressive 100ms variant.
+> 4. DOCS: fold SPIKE.md's final tables into a permanent home; SPIKE.md remains
+>    as the historical record. notes.md gets the pivot decision, drill scores,
+>    and the remaining-floor analysis (~400ms Starlink tax, expected VPS gain).
+> 5. PROCESS: mark PR #15 ready for review, full CodeRabbit round, evidence
+>    replies, HOLD MERGE for CTO. Small commits; session log per convention.
+
+### What was done
+
+1. **Sync** — merged `origin/main` (workers/api Worker + server-mint frontend,
+   1815 insertions). Single conflict, in `devlog/SESSIONS.md`, where both sides
+   prepend entries; resolved by keeping BOTH histories newest-first, discarding
+   neither. `src/pages/LiveKitTest.jsx` auto-merged cleanly — the spike's
+   query-param prefill and main's new server-mint panel coexist.
+2. **Preflight** (`b2a9b09`) — landed BEFORE the pivot on purpose, since the
+   pivot makes ElevenLabs credentials mandatory for a default run.
+3. **The pivot** (`08cf39e`) — `--engine` defaults to `tts`.
+4. **Docs** — operational tables folded into `agent/README.md` (performance,
+   VPS deploy sequence, free-talk protocol); `SPIKE.md` untouched as the
+   historical record; `notes.md` carries the decision + remaining floor.
+
+### Findings / surprises
+
+- **An unknown voice id returns HTTP 400, not 404.** My first preflight matched
+  only on 404, so a mistyped voice id dumped raw JSON at the operator instead of
+  a sentence. Caught by actually running it with a bogus id rather than trusting
+  the shape of the API.
+- **A failed preflight printed a traceback anyway** — aiohttp's "Unclosed client
+  session" on GC, because the session was created inside `build_tts_engine` and
+  the error escaped before anything closed it. The brief's "must read like a
+  message, never a traceback" is not satisfied by raising a clean error; the
+  cleanup has to be right too. Now closed on every exit path, verified with a
+  traceback count of zero.
+- **`aiohttp` was never in requirements.txt.** The engine imports it directly
+  but it arrived transitively via `livekit-api` — invisible on this machine,
+  and exactly the kind of thing that fails first on a fresh VPS venv.
+- **The frontend test runner is `node --test`, not vitest.** An initial
+  `npx vitest run` reported "8 failed, no tests" and looked like a merge
+  regression; it was my wrong invocation. Real result: 21 src/lib + 35
+  workers/api tests, all passing.
+- **The ear-drill scores do not exist.** The brief asked for them in the pivot
+  commit, but the SPIKE.md scoring table was never filled in and no scores were
+  ever reported to me. The commit records the verdict I was actually given (the
+  CEO declared the current quality the reference) plus the measured evidence,
+  and states explicitly that the three-axis scores are unrecorded — rather than
+  inventing numbers into a permanent decision record. Flagged for the user.
+
+### Files changed
+
+Modified: `agent/convert_agent.py` (default engine, preflight wiring, session
+cleanup, docstring), `agent/elevenlabs_client.py` (`PreflightError`,
+`check_credentials`, `fetch_voice`, `voice_settings_from`, warmup → hard gate),
+`agent/requirements.txt` (explicit aiohttp pin), `agent/README.md` (performance
+tables, VPS deploy, free-talk protocol), `agent/test_tts_engine.py` (default-
+engine assertion), `notes.md`, `devlog/SESSIONS.md`.
+New: `agent/test_preflight.py`.
+Untouched: all RVC paths (`bridge.py`, `rvc_client.py`, `knobs.py`).
+
+### Verification results
+
+- **136 agent tests + 21 src/lib + 35 workers/api = 192, all green.** The 67
+  pre-existing agent tests are unchanged.
+- `npm run lint` clean, `npm run build` clean after the merge.
+- Preflight verified against the REAL API, all traceback-free:
+  missing key → names the variable and the file; bad key → HTTP 401, blames the
+  key not the voice; unknown voice → HTTP 400 + voice_not_found, blames the
+  voice id; healthy config → `STT READY` / `TTS READY (TTFB 1139 ms)` /
+  `PREFLIGHT OK`.
+- RVC default path re-verified: `--engine rvc` still constructs `RvcClient` +
+  `SolaStitcher` with identical `config_snapshot` keys.
+
+### Outcome
+
+STT→TTS is the default engine on the branch; RVC is parked, not removed. PR #15
+moves to ready-for-review for a CodeRabbit round. **MERGE IS HELD FOR THE CTO.**
+
+Two things the CTO should weigh: the ear-drill scores are still unrecorded (and
+the voice under test is not Amy's clone), and ~400 ms of the ~950 ms p50 is
+Starlink tax that a VPS deploy should reclaim without code change.
+
+---
+---
+
 ## 28 July 2026 — Optimization sprint: STT→TTS tail latency 1938ms → 932ms
 
 ### Task (verbatim)

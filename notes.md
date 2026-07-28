@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 28 July 2026 — GRADUATION: STT→TTS is now the DEFAULT engine (PR #15 ready for review)
+
+- **Pivot committed (08cf39e):** `--engine` defaults to `tts`. RVC is NOT removed — `--engine rvc` is the parked baseline/fallback, unchanged and green. Rests on measured evidence: tail p50 1938→932ms, p95 2511→949ms (drill); live conversation 86 utterances p50 1001ms/p90 1111ms; quality flat throughout (transcripts byte-identical, WER unchanged 0.1458, no splitting/clipping).
+- **Ear-drill scores NOT recorded** — the clean/latency-feel/is-it-ME table in SPIKE.md is still blank, and the voice at ELEVENLABS_VOICE_ID is "Celebrity lilcrush linda", not Amy, so "is it ME?" is not yet meaningful. The pivot commit says so explicitly rather than inventing numbers. **Append the scores to this file once drilled.**
+- **Remaining floor:** ~400ms of the ~950ms p50 is Starlink RTT (measured: 200ms TCP, 433ms TLS to api.elevenlabs.io). **VPS deploy should reach p50 ~550-650ms with zero code change** — the biggest lever left. Needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID hand-typed into the VPS secrets.env by Amy; deploy sequence + preflight in agent/README.md.
+- **p95 in live conversation (1920ms) is structural, not a defect:** synthesized audio plays for about as long as the speech took to say, so continuous talking accumulates backlog that drains at pauses. Video-sync budget for the avatar leg must be ELASTIC, not fixed.
+- Merged origin/main (workers/api + server-mint frontend) — only conflict was SESSIONS.md ordering, both histories kept. All suites green: 136 py + 21 src/lib + 35 workers/api. Positive preflight added (STT READY / TTS READY / PREFLIGHT OK; failures are plain sentences, never tracebacks). Next: CodeRabbit round, then **HOLD FOR CTO** — do not merge.
+
 ## 28 July 2026 — Optimization sprint: tail latency HALVED, target met (full record: devlog/SESSIONS.md)
 
 - **p50 1938 → 932ms, p95 2511 → 949ms** on the same drill, quality untouched (transcripts byte-identical, WER unchanged 0.1458, 5/5 utterances). Default config is `--tts-hangover-ms 200`; one launch command in SPIKE.md.
