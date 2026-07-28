@@ -164,6 +164,13 @@ Verified: `bash -n` + an extraction test (keeps `=` in values, skips missing);
 workflow YAML parses (ruby); `wrangler deploy --dry-run` for BOTH top-level and
 `--env staging` bundle with their own rate limiters; Worker **35/35**, lint clean.
 
+Follow-up (owner): the script already covered all five secrets incl.
+`ADMIN_SESSION_SECRET`; documented generating it as `openssl rand -base64 32`
+into `secrets.env` (README + `.dev.vars.example`) and added a **kill-switch**
+note — rotating `ADMIN_SESSION_SECRET` instantly invalidates every outstanding
+admin session (HMAC verify fails closed; wrangler applies the new secret on the
+next request, no redeploy). Proved base64 (`=` padding) extraction is byte-exact.
+
 ### Next
 
 - **HOLD MERGE** — awaiting CTO decision on PR #14. On merge, the new workflow

@@ -22,6 +22,10 @@ Running summary of every working session, **newest entry first**. Each entry: wh
   (secrets.env → stdin → `wrangler secret put`, never echoed); README = narrow token mint
   (Workers Scripts:Edit + Account Settings:Read, **no DNS**) + GitHub secrets; custom-domain
   DNS stays a human act. Verified: both dry-runs bundle, YAML + `bash -n` OK.
+- Owner follow-up: session secret documented as `openssl rand -base64 32` into secrets.env
+  (README + .dev.vars.example); ADMIN_SESSION_SECRET rotation noted as the **kill switch**
+  (invalidates all outstanding sessions). Script already set all 5 secrets; base64 `=`-padding
+  extraction proven byte-exact.
 - Verified: 35/35 worker + 21/21 frontend tests, lint clean, typecheck at main baseline (+0),
   build green, `wrangler deploy --dry-run` bundles both prod + staging w/ rate limiters.
 - Next: **HOLD MERGE for CTO** on PR #14; on merge, workflow auto-deploys production (needs

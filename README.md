@@ -184,9 +184,17 @@ below.
 
 #### Inject the Worker's runtime secrets (Amy, once per environment)
 
-Put the values in the gitignored `secrets.env` at the repo root
-(`ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` = output of `openssl rand -hex 32`,
-`LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL`), then:
+Put the values in the gitignored `secrets.env` at the repo root:
+`ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `LIVEKIT_API_KEY`,
+`LIVEKIT_API_SECRET`, `LIVEKIT_URL`. Generate the session secret with:
+
+```bash
+openssl rand -base64 32
+```
+
+and set it in `secrets.env` as `ADMIN_SESSION_SECRET=<that output>` (create the
+line for first setup; replace it to rotate). Then push the secrets to
+Cloudflare:
 
 ```bash
 npx wrangler login                          # or: export CLOUDFLARE_API_TOKEN=<token>
@@ -198,6 +206,13 @@ The script pipes each value straight from `secrets.env` into
 `wrangler secret put` over stdin — **no value is ever printed** or written to a
 tracked file. Re-run it to rotate. Live logs: `npm run tail` (staging) or
 `npx wrangler tail` (production), from `workers/api`.
+
+> **Kill switch.** Rotating `ADMIN_SESSION_SECRET` (put a fresh
+> `openssl rand -base64 32` value in `secrets.env`, replacing the old line, and
+> re-run the script) **instantly invalidates every outstanding admin session**:
+> the Worker verifies each session token's HMAC against this secret, so changing
+> it makes all previously issued tokens fail closed and forces re-login. Wrangler
+> applies the new secret on the next request — no redeploy needed.
 
 Verify a deploy:
 

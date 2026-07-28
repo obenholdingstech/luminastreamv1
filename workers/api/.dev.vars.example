@@ -8,8 +8,10 @@
 ADMIN_PASSWORD=change-me-locally
 
 # HMAC key that signs the ~12h admin session token. Generate a fresh random
-# one, e.g.:  openssl rand -hex 32
-ADMIN_SESSION_SECRET=0000000000000000000000000000000000000000000000000000000000000000
+# one:  openssl rand -base64 32
+# Rotating this value instantly invalidates every outstanding admin session
+# (the kill switch — see the README "API Worker" section).
+ADMIN_SESSION_SECRET=replace-with-openssl-rand-base64-32
 
 # LiveKit Cloud project credentials (same values as the local secrets.env used
 # by scripts/generate-livekit-token.js).
