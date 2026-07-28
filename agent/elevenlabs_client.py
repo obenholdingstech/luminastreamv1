@@ -98,23 +98,63 @@ def resolve_voice_settings(base):
     return settings
 
 
-async def fetch_voice_settings(session, api_key, voice_id):
-    """The clone's own settings, so env overrides deviate from ITS baseline."""
+def check_credentials(api_key, voice_id):
+    """Names exactly what is missing, before any network call is attempted."""
+    missing = [name for name, value in
+               (("ELEVENLABS_API_KEY", api_key), ("ELEVENLABS_VOICE_ID", voice_id))
+               if not value or not str(value).strip()]
+    if missing:
+        raise PreflightError(
+            f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} "
+            f"missing from secrets.env (repo root, same file as the LIVEKIT_* "
+            f"keys). The tts engine cannot start without "
+            f"{'it' if len(missing) == 1 else 'them'}."
+        )
+
+
+async def fetch_voice(session, api_key, voice_id):
+    """Validate the key AND the voice id in one call; raise plain English.
+
+    Deliberately fails the run rather than falling back: a bad key or a voice
+    that is not on this account is a deploy mistake, and discovering it from
+    silent fallback settings hours later is worse than not starting.
+    """
     try:
         async with session.get(f"https://{API_HOST}/v1/voices/{voice_id}",
                                headers={"xi-api-key": api_key}) as r:
+            body = await r.text()
+            if r.status in (401, 403):
+                raise PreflightError(
+                    "ElevenLabs rejected ELEVENLABS_API_KEY (HTTP %d). Check the "
+                    "key in secrets.env — it may be mistyped, revoked, or from a "
+                    "different account." % r.status)
+            # An unknown voice comes back 400 with a voice_not_found code, not
+            # the 404 you would expect — verified live against a bogus id.
+            if r.status == 404 or "voice_not_found" in body:
+                raise PreflightError(
+                    f"ELEVENLABS_VOICE_ID {voice_id!r} does not exist on this "
+                    f"account (HTTP {r.status}). Check the id in secrets.env "
+                    "against the voice library.")
             if r.status != 200:
-                raise RuntimeError(f"{r.status}: {(await r.text())[:120]}")
-            voice = await r.json()
-        settings = voice.get("settings") or {}
-        merged = dict(FALLBACK_VOICE_SETTINGS)
-        merged.update({k: v for k, v in settings.items() if v is not None})
-        log.info("voice %r (%s) settings: %s",
-                 voice.get("name"), voice.get("category"), merged)
-        return merged
+                raise PreflightError(
+                    f"ElevenLabs voice lookup failed (HTTP {r.status}): {body[:160]}")
+            return json.loads(body)
+    except PreflightError:
+        raise
     except Exception as exc:
-        log.warning("voice lookup failed (%s) — using fallback settings", exc)
-        return dict(FALLBACK_VOICE_SETTINGS)
+        raise PreflightError(
+            f"Could not reach {API_HOST} to verify credentials ({exc!r}). "
+            "Check outbound network/DNS on this host.")
+
+
+def voice_settings_from(voice):
+    """The clone's own settings, so env overrides deviate from ITS baseline."""
+    settings = voice.get("settings") or {}
+    merged = dict(FALLBACK_VOICE_SETTINGS)
+    merged.update({k: v for k, v in settings.items() if v is not None})
+    log.info("voice %r (%s) settings: %s",
+             voice.get("name"), voice.get("category"), merged)
+    return merged
 
 
 def pcm48_to_pcm16k_bytes(pcm48, resampler=None):
@@ -129,6 +169,17 @@ def pcm48_to_pcm16k_bytes(pcm48, resampler=None):
         return b""
     down = (resampler or Resampler48to16()).process(pcm48[:usable])
     return (np.clip(down, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+
+class PreflightError(Exception):
+    """A configuration problem the operator can fix.
+
+    Carried to the top and printed as a plain sentence. Amy deploys this by
+    hand on the VPS, hand-typing two secrets into a file; the difference
+    between "ELEVENLABS_API_KEY is missing from secrets.env" and a 30-line
+    aiohttp traceback is the difference between a 10-second fix and a support
+    round trip. Anything raised here must read like a message.
+    """
 
 
 class SttError(Exception):
@@ -385,26 +436,42 @@ class TtsClient:
             return False
 
     async def warmup(self, governor=None):
-        """Synthesize one character before the room join, discarding the audio.
+        """POSITIVE PREFLIGHT: synthesize one character and prove the path works.
 
-        The first synthesis of a run measured 993 ms TTFB against ~376 ms
-        steady-state — a cold-voice penalty that landed entirely in the first
-        utterance's tail and dominated p95. Same philosophy as the RVC warmup:
-        the stream never sees a cold model. Costs one billable character, and
-        goes through the governor like everything else.
+        Two jobs in one call. It warms the voice (the first synthesis of a run
+        measured ~1000 ms TTFB against ~350 ms steady), and it is the assertion
+        that the whole TTS path — key, voice, network, quota, audio format —
+        actually functions, made BEFORE the agent joins a room and someone
+        speaks into it. Same discipline as lk_smoke.py's `CONNECTED OK`: a
+        deploy either prints TTS READY or says plainly what is wrong.
+
+        Costs one billable character and is metered like everything else.
         """
         try:
             if governor is not None:
                 governor.reserve_tts(1)
-            t0 = time.perf_counter()
-            async for _chunk, _ttfb in self.stream("."):
-                break                       # first chunk is all we need
-            log.info("TTS voice warm (%.0f ms, 1 char)",
-                     (time.perf_counter() - t0) * 1000)
-            return True
         except Exception as exc:
-            log.warning("TTS warmup failed (%s) — first utterance may be slow", exc)
-            return False
+            raise PreflightError(
+                f"The spend governor refused the 1-character preflight synthesis "
+                f"({exc}). SPIKE_MAX_TTS_CHARS is set too low to start.")
+        t0 = time.perf_counter()
+        try:
+            got_audio = False
+            async for _chunk, _ttfb in self.stream("."):
+                got_audio = True
+                break                       # first chunk is all we need
+        except TtsError as exc:
+            raise PreflightError(
+                f"TTS preflight synthesis failed: {exc}. The key and voice were "
+                f"accepted, so this is the synthesis endpoint itself — check "
+                f"quota/plan for model {self.model!r}.")
+        if not got_audio:
+            raise PreflightError(
+                f"TTS preflight returned no audio for model {self.model!r}.")
+        ttfb = (time.perf_counter() - t0) * 1000
+        log.info("TTS READY (TTFB %.0f ms) — model=%s voice=%s",
+                 ttfb, self.model, self.voice_id)
+        return ttfb
 
     async def stream(self, text):
         """Yield (float32 chunk @48k, ttfb_ms) — ttfb_ms set on the first chunk only.

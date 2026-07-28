@@ -68,10 +68,13 @@ from bridge import CTX, HOP, SOLA, XFADE, SolaStitcher, WindowAssembler
 from capture import SessionCapture
 from elevenlabs_client import (
     DEFAULT_TTS_MODEL,
+    PreflightError,
     SttClient,
     TtsClient,
-    fetch_voice_settings,
+    check_credentials,
+    fetch_voice,
     resolve_voice_settings,
+    voice_settings_from,
 )
 from endpointer import PcmQueue, UtteranceEndpointer
 from rvc_client import RvcClient
@@ -948,11 +951,7 @@ async def build_tts_engine(args):
 
     api_key = os.environ.get("ELEVENLABS_API_KEY")
     voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
-    if not api_key or not voice_id:
-        raise SystemExit(
-            "--engine tts needs ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in "
-            "secrets.env (loaded from the repo root, same as the LIVEKIT_* keys)"
-        )
+    check_credentials(api_key, voice_id)
 
     drill_lines = []
     if args.drill_script:
@@ -964,8 +963,20 @@ async def build_tts_engine(args):
     # was the entire 1043 ms vs 323 ms gap on the first utterance of a run.
     http = aiohttp.ClientSession(
         connector=aiohttp.TCPConnector(keepalive_timeout=120, limit=8))
-    base_settings = await fetch_voice_settings(http, api_key, voice_id)
-    voice_settings = resolve_voice_settings(base_settings)
+    try:
+        return await _preflight_and_build(args, http, api_key, voice_id,
+                                          governor, drill_lines)
+    except BaseException:
+        # Close the session a failed preflight opened. Otherwise aiohttp prints
+        # an "Unclosed client session" traceback on GC, burying the single
+        # sentence the operator actually needs to read.
+        await http.close()
+        raise
+
+
+async def _preflight_and_build(args, http, api_key, voice_id, governor, drill_lines):
+    voice = await fetch_voice(http, api_key, voice_id)
+    voice_settings = resolve_voice_settings(voice_settings_from(voice))
     log.info("voice_settings in force: %s", voice_settings)
 
     stt = SttClient(http, api_key)
@@ -984,12 +995,15 @@ async def build_tts_engine(args):
     # inside the first utterance's tail. Same philosophy as the RVC warmup.
     try:
         await stt.connect()
+        log.info("STT READY (%s)", stt.model)
     except Exception as exc:
-        log.warning("STT session not ready at startup: %s — will connect on "
-                    "the first utterance", exc)
+        raise PreflightError(
+            f"Could not open the ElevenLabs realtime STT session ({exc!r}). The "
+            f"key and voice were accepted, so this is the realtime endpoint — "
+            f"check outbound WebSocket access to {stt.url.split('?')[0]}.")
     await tts.warmup(governor)
-    log.info("tts engine ready: tts=%s stt=%s voice=%s",
-             args.tts_model, stt.model, voice_id)
+    log.info("PREFLIGHT OK — engine=tts model=%s stt=%s voice=%r",
+             args.tts_model, stt.model, voice.get("name"))
     return http, engine.start()
 
 
@@ -1029,3 +1043,8 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("stopped by user")
+    except PreflightError as exc:
+        # A config problem the operator can fix. Print the sentence and exit —
+        # a traceback here would bury the one line that matters.
+        log.error("PREFLIGHT FAILED — %s", exc)
+        raise SystemExit(2)

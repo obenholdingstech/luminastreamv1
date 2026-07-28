@@ -9,6 +9,11 @@ pytest==8.4.2
 # Phase 1 — capture diagnostics (capture.py / analyze_capture.py)
 aiofiles==25.1.0
 matplotlib==3.9.4
+# STT→TTS engine (--engine tts): the ElevenLabs clients speak HTTP + WebSocket
+# through aiohttp. It arrives transitively via livekit-api today, but this
+# engine imports it directly — pinning it explicitly so a fresh VPS venv cannot
+# lose it to an unrelated dependency change.
+aiohttp==3.13.5
 # Phase 3 — Silero VAD gate (vad.py), inference via onnxruntime (Phase 3.1).
 # torch is still imported by silero-vad for tensor plumbing, so it is pinned
 # from the CPU-only index: the default index drags ~5 GB of nvidia-*-cu12
