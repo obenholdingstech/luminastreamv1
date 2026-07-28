@@ -686,7 +686,7 @@ class ConvertAgent:
                 if self.capture:
                     self.capture.event("vad_gate", state=state, seq=seq,
                                        prob=round(self.vad.last_prob or 0.0, 3))
-            self.tts.feed_hop(hop, gate_open, is_speech)
+            await self.tts.feed_hop(hop, gate_open, is_speech)
 
         # Output side: 1 frame in → 1 frame out, same pacing contract as the
         # RVC path, same OutputGate, same AudioSource.
@@ -814,6 +814,11 @@ async def main():
     parser.add_argument("--report", default=None, metavar="PATH",
                         help="--engine tts: write the per-utterance metrics + "
                              "latency table as JSON on shutdown")
+    parser.add_argument("--tts-hangover-ms", type=float, default=None, metavar="MS",
+                        help="--engine tts: override --vad-hangover-ms in tts mode. "
+                             "The hangover sits directly in tail_latency (the gate "
+                             "must close before the transcript is committed), so it "
+                             "is worth tuning separately from the RVC noise gate")
     parser.add_argument("--run-seconds", type=float, default=None, metavar="N",
                         help="exit cleanly after N seconds (scripted E2E runs); "
                              "default is to run until SIGINT/SIGTERM")
@@ -837,10 +842,16 @@ async def main():
 
     # VAD loads BEFORE the room join, same philosophy as the RVC warmup.
     # Load failure ⇒ fail-open (ungated), the stream still runs.
+    hangover_ms = args.vad_hangover_ms
+    if args.engine == "tts" and args.tts_hangover_ms is not None:
+        hangover_ms = args.tts_hangover_ms
+        log.info("tts-mode hangover override: %.0f ms (default %.0f)",
+                 hangover_ms, args.vad_hangover_ms)
+
     vad = None
     if not args.no_vad:
         vad = VadGate(threshold=args.vad_threshold,
-                      hangover_ms=args.vad_hangover_ms).load()
+                      hangover_ms=hangover_ms).load()
         if vad.active:
             log.info("VAD on: threshold=%.2f hangover=%dms (%d hops of %dms)",
                      vad.threshold, vad.hangover_ms, vad.hangover_hops,
@@ -948,7 +959,11 @@ async def build_tts_engine(args):
         drill_lines = wer.load_script(args.drill_script)
         log.info("drill script: %d lines from %s", len(drill_lines), args.drill_script)
 
-    http = aiohttp.ClientSession()
+    # keepalive_timeout well above the ping interval: an idle pooled connection
+    # reaped between utterances makes the next one pay a full reconnect, which
+    # was the entire 1043 ms vs 323 ms gap on the first utterance of a run.
+    http = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(keepalive_timeout=120, limit=8))
     base_settings = await fetch_voice_settings(http, api_key, voice_id)
     voice_settings = resolve_voice_settings(base_settings)
     log.info("voice_settings in force: %s", voice_settings)
@@ -964,14 +979,15 @@ async def build_tts_engine(args):
         outgate=OutputGate(queue, PRIME_SAMPLES),
         drill_lines=drill_lines,
     )
-    # Open the STT socket before the room join — the ~900 ms handshake would
-    # otherwise land inside the first utterance's tail_latency (same
-    # philosophy as the RVC warmup).
+    # Warm BOTH vendors before the room join — the STT handshake (~900 ms) and
+    # the TTS cold-voice penalty (993 ms vs ~376 ms steady) would otherwise land
+    # inside the first utterance's tail. Same philosophy as the RVC warmup.
     try:
         await stt.connect()
     except Exception as exc:
         log.warning("STT session not ready at startup: %s — will connect on "
                     "the first utterance", exc)
+    await tts.warmup(governor)
     log.info("tts engine ready: tts=%s stt=%s voice=%s",
              args.tts_model, stt.model, voice_id)
     return http, engine.start()

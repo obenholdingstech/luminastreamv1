@@ -164,6 +164,11 @@ class SttClient:
         self.utterances = 0
         self.reconnects = 0
         self.stale_retries = 0
+        self.commits = 0                 # streamed utterances
+        self.fallbacks = 0               # utterances that had to burst-upload
+        self._stream_resampler = None
+        self._pending = None             # newest hop, held back to carry the commit
+        self._stream_ok = False
 
     @property
     def url(self):
@@ -197,6 +202,83 @@ class SttClient:
                 log.warning("STT socket closed — reconnecting")
             await self.connect()
 
+    # ── streaming path (the fast one) ────────────────────────────────
+    #
+    # Audio goes out WHILE the speaker is still talking, so at gate-close only
+    # the final hop and a commit remain. Measured: commit→final 311 ms p50
+    # versus 860 ms for burst-uploading the same utterance afterwards.
+    #
+    # The last hop is deliberately HELD BACK and sent as the commit itself.
+    # The alternative — committing with a chunk of digital silence — measured
+    # marginally slower (332 ms) and injects audio the speaker never produced.
+    #
+    # INVARIANT: commits are issued from the frame path in gate-close order and
+    # consumed by the single utterance worker in the same order, so exactly one
+    # commit is outstanding per queued utterance and transcripts cannot be
+    # mismatched. Pushes for the NEXT utterance may safely interleave with an
+    # awaited final — the server treats a commit as the segment boundary.
+
+    async def begin_utterance(self):
+        """Start streaming a new utterance. Failures degrade to the burst path."""
+        try:
+            await self._ensure()
+        except Exception as exc:
+            self._stream_ok = False
+            log.warning("STT unavailable at utterance start (%s) — will burst-upload", exc)
+            return False
+        self._stream_resampler = Resampler48to16()
+        self._pending = None
+        self._stream_ok = True
+        return True
+
+    async def push(self, pcm48):
+        """Send one hop, holding the newest back so a real chunk can carry the commit."""
+        if not self._stream_ok:
+            return
+        try:
+            buf = pcm48_to_pcm16k_bytes(pcm48, self._stream_resampler)
+            if self._pending is not None:
+                await self._send_chunk(self._pending, False)
+            self._pending = buf
+        except Exception as exc:
+            self._stream_ok = False
+            self._pending = None
+            log.warning("STT streaming broke mid-utterance (%s) — this utterance "
+                        "falls back to burst upload", exc)
+
+    async def commit(self):
+        """Flush the held hop with commit=True. True if a final is now pending."""
+        if not self._stream_ok or self._pending is None:
+            self._stream_ok = False
+            return False
+        try:
+            await self._send_chunk(self._pending, True)
+            self.commits += 1
+            return True
+        except Exception as exc:
+            log.warning("STT commit failed (%s) — falling back to burst upload", exc)
+            return False
+        finally:
+            self._pending = None
+            self._stream_ok = False
+
+    async def await_final(self):
+        """Await the transcript for the oldest outstanding commit."""
+        try:
+            return await asyncio.wait_for(self._await_final(), self.timeout_s)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise SttError(f"no final transcript within {self.timeout_s:.0f}s")
+
+    async def _send_chunk(self, buf, commit):
+        await self._ws.send_json({
+            "message_type": "input_audio_chunk",
+            "audio_base_64": base64.b64encode(buf).decode(),
+            "commit": commit,
+        })
+
+    # ── burst path (the fallback) ────────────────────────────────────
+
     async def transcribe(self, pcm48):
         """Burst-upload one complete utterance and wait for its final transcript.
 
@@ -211,7 +293,9 @@ class SttClient:
         the retry is on a fresh connection with the audio already in hand.
         """
         await self._ensure()
-        audio = pcm48_to_pcm16k_bytes(pcm48, self._resampler)
+        # A fresh decimator: this is a complete, independent utterance, and the
+        # streaming path may have left the shared one mid-stream.
+        audio = pcm48_to_pcm16k_bytes(pcm48)
         if not audio:
             raise SttError("utterance too short to upload")
         try:
@@ -280,6 +364,47 @@ class TtsClient:
         # the response silently comes back as 128 kbps MP3
         return (f"https://{API_HOST}/v1/text-to-speech/{self.voice_id}/stream"
                 f"?output_format={TTS_OUTPUT_FORMAT}")
+
+    async def ping(self):
+        """Free GET that keeps the pooled TLS connection to the API alive.
+
+        A one-character warmup at startup did NOT fix the first utterance's
+        TTFB (1028 ms vs ~350 ms steady): the connection then sat idle for ~40 s
+        while waiting for someone to speak, and an idle pooled connection is
+        reaped — so the first real synthesis paid a full reconnect anyway.
+        Warming once is useless if nothing keeps it warm.
+        """
+        try:
+            async with self.session.get(
+                    f"https://{API_HOST}/v1/voices/{self.voice_id}",
+                    headers={"xi-api-key": self.api_key}) as r:
+                await r.read()
+            return True
+        except Exception as exc:
+            log.debug("TTS keepalive ping failed: %s", exc)
+            return False
+
+    async def warmup(self, governor=None):
+        """Synthesize one character before the room join, discarding the audio.
+
+        The first synthesis of a run measured 993 ms TTFB against ~376 ms
+        steady-state — a cold-voice penalty that landed entirely in the first
+        utterance's tail and dominated p95. Same philosophy as the RVC warmup:
+        the stream never sees a cold model. Costs one billable character, and
+        goes through the governor like everything else.
+        """
+        try:
+            if governor is not None:
+                governor.reserve_tts(1)
+            t0 = time.perf_counter()
+            async for _chunk, _ttfb in self.stream("."):
+                break                       # first chunk is all we need
+            log.info("TTS voice warm (%.0f ms, 1 char)",
+                     (time.perf_counter() - t0) * 1000)
+            return True
+        except Exception as exc:
+            log.warning("TTS warmup failed (%s) — first utterance may be slow", exc)
+            return False
 
     async def stream(self, text):
         """Yield (float32 chunk @48k, ttfb_ms) — ttfb_ms set on the first chunk only.

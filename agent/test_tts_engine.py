@@ -22,18 +22,48 @@ from vad import OutputGate
 
 
 class MockStt:
+    """Mirrors SttClient's streaming contract: begin/push/commit/await_final,
+    with transcribe() as the burst fallback."""
+
     model = "mock_stt"
 
-    def __init__(self, texts=None, error=None):
+    def __init__(self, texts=None, error=None, stream_fails=False):
         self.texts = list(texts or [])
         self.error = error
-        self.calls = []          # one entry per transcribe() — the audio it got
+        self.stream_fails = stream_fails
+        self.calls = []          # one entry per transcribe() — burst fallback only
+        self.pushed = []         # hops streamed while the gate was open
+        self.commits = 0         # exactly one per streamed utterance
+        self.begins = 0
+        self.fallbacks = 0
+
+    def _next_text(self):
+        return self.texts.pop(0) if self.texts else "hello there"
+
+    async def begin_utterance(self):
+        self.begins += 1
+        return not self.stream_fails
+
+    async def push(self, pcm):
+        if not self.stream_fails:
+            self.pushed.append(np.asarray(pcm))
+
+    async def commit(self):
+        if self.stream_fails:
+            return False
+        self.commits += 1
+        return True
+
+    async def await_final(self):
+        if self.error:
+            raise self.error
+        return self._next_text()
 
     async def transcribe(self, pcm):
         self.calls.append(np.asarray(pcm))
         if self.error:
             raise self.error
-        return (self.texts.pop(0) if self.texts else "hello there"), 11.0
+        return self._next_text(), 11.0
 
 
 class MockTts:
@@ -73,13 +103,13 @@ def build(stt=None, tts=None, max_tts_chars=10_000, max_stt_seconds=1000,
     return engine, events, notices
 
 
-def utter(engine, n_speech=5, n_hangover=0, value=0.2):
+async def utter(engine, n_speech=5, n_hangover=0, value=0.2):
     """Feed one complete utterance: speech hops, hangover hops, then gate close."""
     for _ in range(n_speech):
-        engine.feed_hop(np.full(HOP, value, dtype=np.float32), True, True)
+        await engine.feed_hop(np.full(HOP, value, dtype=np.float32), True, True)
     for _ in range(n_hangover):
-        engine.feed_hop(np.zeros(HOP, dtype=np.float32), True, False)
-    engine.feed_hop(np.zeros(HOP, dtype=np.float32), False, False)
+        await engine.feed_hop(np.zeros(HOP, dtype=np.float32), True, False)
+    await engine.feed_hop(np.zeros(HOP, dtype=np.float32), False, False)
 
 
 async def wait_done(engine, n, timeout=3.0):
@@ -96,52 +126,87 @@ async def wait_done(engine, n, timeout=3.0):
 # ── endpointing contract ─────────────────────────────────────────────
 
 
-def test_exactly_one_stt_call_per_utterance():
+def test_exactly_one_commit_per_utterance():
+    """AMENDED CONTRACT (optimization sprint): audio is streamed while the gate
+    is open, so "one STT call per utterance" is now "one COMMIT per utterance".
+    That is the invariant that ever mattered — a second commit would split one
+    thought into two transcripts and desynchronize the FIFO the worker relies
+    on to match transcripts to utterances."""
     stt = MockStt()
 
     async def run():
         engine, _, _ = build(stt=stt)
         engine.start()
         for _ in range(3):
-            utter(engine, n_speech=4)
+            await utter(engine, n_speech=4)
         await wait_done(engine, 3)
         await engine.aclose()
 
     asyncio.run(run())
-    assert len(stt.calls) == 3
+    assert stt.commits == 3
+    assert stt.begins == 3
+    assert stt.calls == []          # the burst fallback was never needed
 
 
-def test_nothing_is_sent_while_the_gate_is_open():
+def test_audio_streams_while_open_but_nothing_is_COMMITTED_until_close():
+    """The amended contract, precisely: bytes may leave early — a transcript
+    may not. Committing mid-utterance would transcribe half a sentence."""
     stt = MockStt()
 
     async def run():
         engine, _, _ = build(stt=stt)
         engine.start()
         for _ in range(40):        # a long open gate — over 5 seconds of speech
-            engine.feed_hop(np.full(HOP, 0.2, dtype=np.float32), True, True)
+            await engine.feed_hop(np.full(HOP, 0.2, dtype=np.float32), True, True)
         for _ in range(50):
             await asyncio.sleep(0.001)
-        assert stt.calls == []     # not one byte left for the vendor
-        engine.feed_hop(np.zeros(HOP, dtype=np.float32), False, False)
+        assert len(stt.pushed) == 40   # audio DID stream out (the whole point)
+        assert stt.commits == 0        # but not a single commit yet
+        assert engine.records == []    # and no transcript, so nothing synthesized
+        await engine.feed_hop(np.zeros(HOP, dtype=np.float32), False, False)
         await wait_done(engine, 1)
         await engine.aclose()
 
     asyncio.run(run())
-    assert len(stt.calls) == 1
+    assert stt.commits == 1
 
 
-def test_hangover_audio_is_included_in_what_stt_receives():
+def test_hangover_audio_is_streamed_before_the_commit():
+    """Trailing consonants live in the hangover; they must reach STT before the
+    commit closes the segment, or the endpointer becomes a word-clipper."""
     stt = MockStt()
 
     async def run():
         engine, _, _ = build(stt=stt)
         engine.start()
-        utter(engine, n_speech=4, n_hangover=3)
+        await utter(engine, n_speech=4, n_hangover=3)
         await wait_done(engine, 1)
         await engine.aclose()
 
     asyncio.run(run())
-    assert len(stt.calls[0]) == 7 * HOP     # 4 speech + 3 hangover hops
+    assert len(stt.pushed) == 7      # 4 speech + 3 hangover hops, all streamed
+    assert stt.commits == 1
+
+
+def test_streaming_failure_falls_back_to_burst_upload():
+    """Fail-open: if the stream breaks, the utterance is still transcribed via
+    the proven burst path rather than lost."""
+    stt = MockStt(stream_fails=True)
+
+    async def run():
+        engine, _, _ = build(stt=stt)
+        engine.start()
+        await utter(engine, n_speech=4, n_hangover=2)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert stt.commits == 0
+    assert len(stt.calls) == 1                    # burst fallback carried it
+    assert len(stt.calls[0]) == 6 * HOP           # the whole utterance
+    assert engine.records[0]["stt_path"] == "burst_fallback"
+    assert len(engine.records) == 1               # nothing was lost
 
 
 def test_tail_latency_is_measured_from_the_end_of_SPEECH():
@@ -150,7 +215,7 @@ def test_tail_latency_is_measured_from_the_end_of_SPEECH():
     async def run(n_hangover):
         engine, _, _ = build()
         engine.start()
-        utter(engine, n_speech=4, n_hangover=n_hangover)
+        await utter(engine, n_speech=4, n_hangover=n_hangover)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine.records[0]["tail_latency_ms"]
@@ -171,9 +236,9 @@ def test_tts_refusal_skips_the_utterance_whole_and_never_truncates():
         # room for the first transcript ("hello there" = 11) but not a second
         engine, events, notices = build(tts=tts, max_tts_chars=11)
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 2)
         await engine.aclose()
         return engine, events, notices
@@ -198,7 +263,7 @@ def test_stt_refusal_makes_no_vendor_call_at_all():
     async def run():
         engine, _, notices = build(stt=stt, tts=tts, max_stt_seconds=0.1)
         engine.start()
-        utter(engine, n_speech=5)                  # 5 hops = 640 ms > 0.1 s
+        await utter(engine, n_speech=5)                  # 5 hops = 640 ms > 0.1 s
         await wait_done(engine, 1)
         await engine.aclose()
         return engine, notices
@@ -217,9 +282,9 @@ def test_agent_survives_a_refusal_and_processes_the_next_utterance():
     async def run():
         engine, _, _ = build(stt=stt, tts=tts, max_tts_chars=12)
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 2)
         await engine.aclose()
         return engine
@@ -233,7 +298,7 @@ def test_refusal_is_loud_and_unmistakable_in_the_logs(caplog):
     async def run():
         engine, _, _ = build(max_tts_chars=1)
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
 
@@ -252,7 +317,7 @@ def test_stt_error_drops_only_that_utterance():
         engine, _, notices = build(stt=MockStt(error=SttError("socket died")),
                                    tts=tts)
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine, notices
@@ -269,10 +334,10 @@ def test_tts_error_drops_only_that_utterance_and_the_next_proceeds():
         good = MockTts()
         engine, _, notices = build(tts=MockTts(error=TtsError("HTTP 500")))
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         engine.tts = good                          # vendor recovers
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 2)
         await engine.aclose()
         return engine, notices, good
@@ -290,7 +355,7 @@ def test_empty_transcript_costs_no_tts_call():
     async def run():
         engine, _, notices = build(stt=MockStt(texts=["   "]), tts=tts)
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine, notices
@@ -303,13 +368,13 @@ def test_empty_transcript_costs_no_tts_call():
 
 def test_an_unexpected_error_does_not_kill_the_worker():
     class Exploding(MockStt):
-        async def transcribe(self, pcm):
+        async def await_final(self):     # the streaming path the engine now uses
             raise RuntimeError("something nobody predicted")
 
     async def run():
         engine, _, _ = build(stt=Exploding())
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         # the worker must still be alive to take the next one
         assert engine._worker_task is not None and not engine._worker_task.done()
@@ -332,7 +397,7 @@ def test_synthesized_audio_reaches_the_publisher_contiguously():
     async def run():
         engine, _, _ = build(tts=MockTts(chunks=chunks))
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         frames = [engine.read_frame(480) for _ in range(25)]
         await engine.aclose()
@@ -364,7 +429,7 @@ def test_per_utterance_record_carries_the_tuning_context():
     async def run():
         engine, events, _ = build(tts=MockTts(model="eleven_flash_v2_5"))
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine, events
@@ -389,7 +454,7 @@ def test_wer_is_scored_against_the_drill_script():
             drill=["The quick brown fox jumps over the lazy dog.",
                    "Mic test one two."])
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine.records[0]
@@ -405,7 +470,7 @@ def test_wer_counts_a_real_mishearing():
             stt=MockStt(texts=["the quick brown box jumps over the lazy dog"]),
             drill=["The quick brown fox jumps over the lazy dog."])
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine.records[0]
@@ -419,7 +484,7 @@ def test_latency_table_groups_by_model():
         engine, _, _ = build(tts=MockTts(model="eleven_v3"))
         engine.start()
         for _ in range(3):
-            utter(engine)
+            await utter(engine)
         await wait_done(engine, 3)
         await engine.aclose()
         return engine.latency_table()
@@ -440,7 +505,7 @@ def test_off_script_speech_is_recorded_but_not_scored():
             stt=MockStt(texts=["hey how are you doing today"]),
             drill=["The quick brown fox jumps over the lazy dog."])
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
         return engine.records[0]
@@ -456,7 +521,7 @@ def test_a_dropped_utterance_is_visible_in_the_log(caplog):
     async def run():
         engine, _, _ = build(stt=MockStt(error=SttError("socket died")))
         engine.start()
-        utter(engine)
+        await utter(engine)
         await wait_done(engine, 1)
         await engine.aclose()
 
@@ -465,3 +530,46 @@ def test_a_dropped_utterance_is_visible_in_the_log(caplog):
     msgs = [r.getMessage() for r in caplog.records]
     assert any("dropped" in m and "stt_error" in m and "socket died" in m
                for m in msgs), msgs
+
+
+# ── the governor under streaming (optimization sprint) ───────────────
+
+
+def test_streaming_meters_every_hop_before_it_is_sent():
+    """Streaming bills as it goes, so the reservation must precede the send.
+    5 hops of 128ms = 0.64s; a 0.4s cap must stop the audio going out."""
+    stt = MockStt()
+
+    async def run():
+        engine, _, notices = build(stt=stt, max_stt_seconds=0.4)
+        engine.start()
+        await utter(engine, n_speech=5)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine, notices
+
+    engine, notices = asyncio.run(run())
+    assert len(stt.pushed) == 3                    # 3 x 128ms fits in 0.4s, 4th does not
+    assert engine.governor.stt_seconds_used <= 0.4  # the cap was never exceeded
+    assert stt.commits == 0                        # abandoned, never committed
+    assert engine.skipped == 1
+    assert notices[0]["reason"] == "governor_stt"
+
+
+def test_an_abandoned_utterance_produces_no_audio_at_all():
+    """"Skipped whole" under streaming means no transcript and no synthesis —
+    nothing half-spoken reaches the listener, which is the rule that matters."""
+    tts = MockTts()
+
+    async def run():
+        engine, _, _ = build(tts=tts, max_stt_seconds=0.2)
+        engine.start()
+        await utter(engine, n_speech=6)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert tts.calls == []
+    assert engine.governor.tts_chars_used == 0
+    assert engine.queue.available == 0

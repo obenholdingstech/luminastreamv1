@@ -71,7 +71,13 @@ def score(reference, hypothesis):
     }
 
 
-OFF_SCRIPT_WER = 0.5
+# Calibrated against both observed populations rather than picked round:
+# free conversation scored 0.909-1.0 against the nearest drill line, while the
+# worst genuine drill reading scored 0.636 (the spoken-digits line, which STT
+# returns as "041-5273" — orthographically divergent but semantically perfect).
+# 0.8 separates them; 0.5 would have hidden that digit result, which is a real
+# finding about number handling and not something to sweep into "off-script".
+OFF_SCRIPT_WER = 0.8
 
 
 def best_match(hypothesis, script_lines, off_script_wer=OFF_SCRIPT_WER):

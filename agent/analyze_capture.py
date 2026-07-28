@@ -528,20 +528,34 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
     add(f"session header : {json.dumps({k: v for k, v in header.items() if k != 'event'})}")
     add(f"input          : {len(x_in) / SR:.2f} s ({len(x_in)} samples)")
     add(f"output         : {len(x_out) / SR:.2f} s ({len(x_out)} samples)")
+    engine = header.get("engine", "rvc")
     add(f"latency offset : {offset_ms:.0f} ms (envelope xcorr, peak corr {peak_corr:.3f})")
     add("")
     add(f"utterances     : {len(utterances)}")
+    if engine == "tts":
+        # Both the offset and the tail-clip test assume the output is a
+        # TIME-SHIFTED COPY of the input — true for a frame-aligned converter,
+        # false for a re-synthesis in a different voice, at a different
+        # duration, seconds later. Measured peak correlation on tts captures is
+        # ~0.05 (i.e. none), and the tail-clip count came out identical at 300,
+        # 200 and 100 ms of hangover — it is measuring noise, not clipping.
+        # Reported here rather than silently dropped, but explicitly disowned:
+        # in tts mode the real clipping evidence is the TRANSCRIPT.
+        add("  (input-vs-output alignment does not apply in tts mode: the output")
+        add("   is a re-synthesis, not a time-shifted copy. The offset and the")
+        add("   tail-clip counts below are NOT meaningful here — judge clipping")
+        add("   from the transcripts in the tts utterances section instead.)")
     for r in tail_results:
         flag = "CLIPPED TAIL" if r["clipped"] else "ok"
         add(f"  {r['start_s']:7.2f}–{r['end_s']:.2f}s  body {r['body_ratio']:.2f}  "
             f"tail {r['tail_ratio']:.2f}  {flag}")
     n_clip = sum(r["clipped"] for r in tail_results)
-    add(f"clipped tails  : {n_clip}")
+    add(f"clipped tails  : {n_clip}"
+        + ("   <- not meaningful in tts mode (see note above)" if engine == "tts" else ""))
     add("")
     counts = {"benign": 0, "vad_gated": 0, "dropout": 0}
     for _s, _e, c, _f in silences:
         counts[c] += 1
-    engine = header.get("engine", "rvc")
     add(f"output silences: {len(silences)} ({counts['benign']} benign — input silent "
         f"there too; {counts['vad_gated']} VAD-gated — intentional)")
     for s, e, category, frac in silences:

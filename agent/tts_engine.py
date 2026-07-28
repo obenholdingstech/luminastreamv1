@@ -38,6 +38,10 @@ from wer import best_match
 log = logging.getLogger("tts-engine")
 
 QUEUE_WARN_DEPTH = 2
+# Must stay UNDER the connection pool's keepalive_timeout, or the ping always
+# arrives after the connection was already reaped and warms nothing. Measured:
+# a 15 s idle gap cost the next synthesis ~700 ms of reconnect.
+KEEPALIVE_INTERVAL_S = 10
 
 
 class TtsEngine:
@@ -60,18 +64,40 @@ class TtsEngine:
         self._on_notice = on_notice    # data-channel sink
         self._work = asyncio.Queue()
         self._worker_task = None
+        self._keepalive_task = None
         self._synth_in_flight = False
         self.records = []              # one dict per completed utterance
         self.skipped = 0               # dropped for any reason
         self.max_queue_depth = 0
+        self.hop_seconds = endpointer.hop / endpointer.sr
+        self._utt_streaming = False    # a stream is open for the current utterance
+        self._utt_refusal = None       # governor refusal that ended it early
+        self._utt_stt_reserved = 0.0   # STT seconds already metered for it
 
     # ── lifecycle ────────────────────────────────────────────────────
 
     def start(self):
         self._worker_task = asyncio.ensure_future(self._worker())
+        self._keepalive_task = asyncio.ensure_future(self._keepalive())
         return self
 
+    async def _keepalive(self):
+        """Keep the TTS connection pooled through conversational silences.
+
+        Speech is bursty: a speaker can easily go a minute without talking, and
+        the idle connection is reaped in that time so the next utterance pays a
+        reconnect it should not. Pings only while nothing is in flight, and the
+        ping itself is a free GET.
+        """
+        while True:
+            await asyncio.sleep(KEEPALIVE_INTERVAL_S)
+            if not self._synth_in_flight:
+                await self.tts.ping()
+
     async def aclose(self):
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
         if self._worker_task is not None:
             self._worker_task.cancel()
             try:
@@ -90,18 +116,63 @@ class TtsEngine:
 
     # ── input side ───────────────────────────────────────────────────
 
-    def feed_hop(self, hop_pcm, gate_open, is_speech):
-        """Called once per hop from the frame loop. Never blocks, never awaits."""
+    async def feed_hop(self, hop_pcm, gate_open, is_speech):
+        """Called once per hop from the frame loop.
+
+        Audio is streamed to STT as it arrives (see SttClient's streaming
+        section). This awaits a websocket send, exactly as the RVC path already
+        awaits send_window from its frame loop.
+
+        SPEND, and why per-hop metering is the right shape here: streaming
+        means audio is billed as it goes out, so the reservation has to happen
+        BEFORE each hop leaves rather than once at gate-close. Every hop is
+        therefore reserved before it is sent — the cap can never be exceeded.
+        If a hop cannot be afforded, streaming stops immediately and the whole
+        utterance is abandoned: no commit, no transcript, no synthesis, no
+        output. That still satisfies the rule the addendum actually cares
+        about — nothing half-spoken is ever produced — while keeping the hard
+        ceiling exact.
+        """
+        if gate_open:
+            if not self._utt_streaming:
+                self._utt_streaming = True
+                self._utt_refusal = None
+                self._utt_stt_reserved = 0.0
+                await self.stt.begin_utterance()
+            if self._utt_refusal is None:
+                try:
+                    self.governor.reserve_stt(self.hop_seconds)
+                    self._utt_stt_reserved += self.hop_seconds
+                    await self.stt.push(hop_pcm)
+                except GovernorRefusal as refusal:
+                    # One refusal per utterance: streaming stops here and the
+                    # utterance is dropped whole when the endpointer emits it.
+                    self._utt_refusal = refusal
+
         utt = self.endpointer.feed_hop(hop_pcm, gate_open, is_speech)
         if utt is None:
             return
+
+        # Commit from the frame path, the instant the gate closes — waiting for
+        # the worker to dequeue would put its scheduling delay in the tail.
+        utt.governor_refusal = self._utt_refusal
+        utt.stt_reserved_s = self._utt_stt_reserved
+        utt.committed = False
+        if self._utt_refusal is None:
+            utt.committed = await self.stt.commit()
+            utt.t_commit = time.monotonic()
+            if not utt.committed:
+                self.stt.fallbacks += 1
+        self._utt_streaming = False
+
         self._work.put_nowait(utt)
         depth = self._work.qsize()
         self.max_queue_depth = max(self.max_queue_depth, depth)
         if depth >= QUEUE_WARN_DEPTH:
             log.warning("utterance queue depth %d — the speaker is ahead of the "
                         "pipeline (latency budget exceeded, not an error)", depth)
-        self.event("utterance_end", **utt.summary(), queue_depth=depth)
+        self.event("utterance_end", **utt.summary(), queue_depth=depth,
+                   streamed=utt.committed)
 
     # ── output side ──────────────────────────────────────────────────
 
@@ -166,17 +237,31 @@ class TtsEngine:
             "voice_settings": dict(self.tts.voice_settings),
         }
 
-        # 1. STT budget — refuse ⇒ the utterance is skipped WHOLE, never trimmed
-        try:
-            self.governor.reserve_stt(utt.duration_s)
-        except GovernorRefusal as refusal:
+        # 1. STT budget. Streaming already metered this utterance hop-by-hop
+        # (see feed_hop); a refusal there ended it, and it is dropped here.
+        refusal = getattr(utt, "governor_refusal", None)
+        if refusal is not None:
             self._drop(utt, "governor_stt", str(refusal),
                        {"governor": refusal.as_dict()})
             return
 
-        # 2. Transcribe
+        # 2. Transcribe. The streamed path only waits for the final; the burst
+        # fallback re-sends the whole utterance and so re-reserves it in full —
+        # over-counting the streamed part on purpose, the safe direction.
         try:
-            transcript, stt_ms = await self.stt.transcribe(utt.pcm)
+            if getattr(utt, "committed", False):
+                transcript = await self.stt.await_final()
+                stt_ms = (time.monotonic() - utt.t_commit) * 1000.0
+                rec["stt_path"] = "streamed"
+            else:
+                try:
+                    self.governor.reserve_stt(utt.duration_s)
+                except GovernorRefusal as exc:
+                    self._drop(utt, "governor_stt", str(exc),
+                               {"governor": exc.as_dict()})
+                    return
+                transcript, stt_ms = await self.stt.transcribe(utt.pcm)
+                rec["stt_path"] = "burst_fallback"
         except SttError as exc:
             self._drop(utt, "stt_error", str(exc))
             return
