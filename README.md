@@ -115,7 +115,139 @@ mode: every unmatched path (e.g. a hard refresh on
 Router takes over — identical to the Vite dev server. No `_redirects` file
 or Pages Function is needed. The page itself stays serverless: generate a
 token locally with `node scripts/generate-livekit-token.js` and paste it in,
-same as on localhost. No secret is ever part of the deployment.
+same as on localhost. No secret is ever part of the deployment. Once the API
+Worker below is deployed and `VITE_API_BASE` is set, `/livekit-test` also
+gains a **Mint via server** button (password → server-minted token), the
+production path — see the next section.
+
+## API Worker (Cloudflare)
+
+`workers/api/` is our first owned backend: a single Cloudflare Worker with an
+**admin gate** and **server-side LiveKit token minting**, so real users get a
+LiveKit token without the API secret ever touching the browser. It replaces
+the DEV-ONLY `scripts/generate-livekit-token.js`.
+
+| Method | Path                 | Auth              | Purpose                                            |
+| ------ | -------------------- | ----------------- | -------------------------------------------------- |
+| GET    | `/api/health`        | none              | `{ ok, version }`                                  |
+| POST   | `/api/admin/verify`  | none (hard limit) | `{ password }` → `{ ok, token, expiresAt }` (~12h) |
+| POST   | `/api/livekit/token` | `X-Admin-Token`   | `{ room, identity }` → LiveKit token (≤6h)         |
+
+The token is minted by hand with Web Crypto (HS256), so the Worker has **zero
+dependencies**; its claims are verified against `livekit-server-sdk` in the
+tests and were validated against the live LiveKit Cloud project. Rate limiting
+uses the native Workers binding (per-colo): **5/60s** on verify, **30/60s** on
+mint. CORS is limited to `studio.luminastream.live`, our
+`*.luminastream-studio.pages.dev` previews, and `localhost:5173`.
+
+### Deploy — automated production, manual staging
+
+**Production deploys are automated.** A push to `main` that touches
+`workers/**` triggers [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml),
+which runs the Worker tests and then deploys the top-level (production) Worker
+`luminastream-api` via the official `cloudflare/wrangler-action`. Nobody
+deploys production by hand.
+
+**Staging** (`luminastream-api-staging`) is the default target for manual and
+agent deploys:
+
+```bash
+cd workers/api && npm install
+npm run deploy            # → wrangler deploy --env staging
+```
+
+#### One-time setup (Amy): mint a narrow token, paste into GitHub
+
+1. **Mint a scoped Cloudflare API token.** Dash → **My Profile → API Tokens →
+   Create Token → Create Custom Token**. Grant only the two scopes wrangler
+   needs to deploy a Worker — nothing more:
+   - **Account · Workers Scripts · Edit**
+   - **Account · Account Settings · Read**
+
+   Under **Account Resources**, restrict it to the single LuminaStream account
+   (not "all accounts"). Add **no Zone / DNS / Routes / KV / R2** permissions —
+   we deploy to `*.workers.dev`, so the token needs zero DNS reach. Set a
+   bounded **expiry** (e.g. 1 year) and put a rotation reminder on the calendar.
+2. **Find the Account ID** — Dash → **Workers & Pages** → right sidebar
+   **Account ID** (also printed by `npx wrangler whoami`).
+3. **Store both in GitHub** — repo → **Settings → Secrets and variables →
+   Actions → New repository secret**:
+   - `CLOUDFLARE_API_TOKEN` = the token from step 1
+   - `CLOUDFLARE_ACCOUNT_ID` = the Account ID from step 2
+
+   (Optional hardening: scope these to a `production` GitHub **Environment** and
+   add required reviewers to gate each deploy behind a human approval.)
+
+The LiveKit and admin secrets are **not** stored in GitHub — CI only ships
+code. They live in Cloudflare's per-Worker secret store, set once by the script
+below.
+
+#### Inject the Worker's runtime secrets (Amy, once per environment)
+
+Put the values in the gitignored `secrets.env` at the repo root:
+`ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `LIVEKIT_API_KEY`,
+`LIVEKIT_API_SECRET`, `LIVEKIT_URL`. Generate the session secret with:
+
+```bash
+openssl rand -base64 32
+```
+
+and set it in `secrets.env` as `ADMIN_SESSION_SECRET=<that output>` (create the
+line for first setup; replace it to rotate). Then push the secrets to
+Cloudflare:
+
+```bash
+npx wrangler login                          # or: export CLOUDFLARE_API_TOKEN=<token>
+scripts/put-worker-secrets.sh staging       # set them on the staging Worker
+scripts/put-worker-secrets.sh production     # and on the production Worker
+```
+
+The script pipes each value straight from `secrets.env` into
+`wrangler secret put` over stdin — **no value is ever printed** or written to a
+tracked file. Re-run it to rotate. Live logs: `npm run tail` (staging) or
+`npx wrangler tail` (production), from `workers/api`.
+
+> **Kill switch.** Rotating `ADMIN_SESSION_SECRET` (put a fresh
+> `openssl rand -base64 32` value in `secrets.env`, replacing the old line, and
+> re-run the script) **instantly invalidates every outstanding admin session**:
+> the Worker verifies each session token's HMAC against this secret, so changing
+> it makes all previously issued tokens fail closed and forces re-login. Wrangler
+> applies the new secret on the next request — no redeploy needed.
+
+Verify a deploy:
+
+```bash
+curl https://luminastream-api-staging.<account>.workers.dev/api/health
+curl https://luminastream-api.<account>.workers.dev/api/health
+# → {"ok":true,"version":"0.1.0"}
+```
+
+### Point the frontend at the Worker
+
+In the Cloudflare **Pages** project (`luminastream-studio`) → **Settings** →
+**Environment variables**, set `VITE_API_BASE` to the production Worker URL (no
+trailing slash), then redeploy the Pages project (Vite bakes it in at build
+time). `/livekit-test` will then show the **Mint via server** path. Leaving
+`VITE_API_BASE` unset keeps the manual-paste dev fallback and changes nothing.
+
+### Custom domain (`api.luminastream.live`) — a deliberate human step
+
+DNS is **not** automated and the CI token intentionally has **no DNS scope**.
+Pointing a custom domain changes public DNS — rare and sensitive — so it stays
+a manual act: in the dashboard open the Worker → **Settings → Domains & Routes →
+Add** → `api.luminastream.live`, then set
+`VITE_API_BASE=https://api.luminastream.live` on the Pages project. CORS keys
+off the browser's Origin (the studio site), not the API host, so either the
+`workers.dev` URL or the custom domain works.
+
+### Local development
+
+```bash
+cd workers/api
+cp .dev.vars.example .dev.vars   # fill in real values — .dev.vars is gitignored
+npx wrangler dev                 # → http://localhost:8787
+npm test                         # node --test (offline, no secrets)
+```
 
 ## Use The Hosted Backend
 

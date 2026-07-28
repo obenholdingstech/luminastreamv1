@@ -4,6 +4,190 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — Stage 3-Lite, Session B: API Worker — admin gate + LiveKit mint (branch feat/s3lite-worker-auth)
+
+### Task (verbatim)
+
+> STAGE 3-LITE, Session B — Worker: admin gate + LiveKit token mint
+> (branch: feat/s3lite-worker-auth)
+>
+> GOAL: One Cloudflare Worker (workers/api/) providing our first two owned backend
+> endpoints: an admin gate and server-side LiveKit token minting — the path real
+> users will eventually take, replacing the DEV-ONLY local script.
+>
+> VERIFY BEFORE WRITING CODE (convention): current Workers + wrangler config
+> format and deploy flow against live docs; whether livekit-server-sdk runs in the
+> Workers runtime (else mint the JWT manually — HS256 via Web Crypto, claims per
+> LiveKit's current token spec — and validate a minted token against the real
+> LiveKit Cloud project before calling it done); current Workers rate-limiting
+> options on our plan, pick the simplest real one.
+>
+> ENDPOINTS: (1) POST /api/admin/verify — {password} vs env ADMIN_PASSWORD via
+> constant-time compare (SHA-256 both sides, compare digests — never ===), returns
+> a short-lived HMAC session token (~12h) sent as X-Admin-Token thereafter.
+> (2) POST /api/livekit/token — requires valid X-Admin-Token; {room, identity} →
+> LiveKit token (join, canPublish, canSubscribe, ttl ≤ 6h) from LIVEKIT_API_KEY/
+> SECRET in Worker env. NO ungated minting. (3) GET /api/health — {ok, version}.
+>
+> RULES: secrets only via `wrangler secret put` (document exact commands, never
+> values); .dev.vars gitignored; zero credentials in any commit. Rate limit verify
+> hard, token moderately. CORS: studio.luminastream.live, *.pages.dev previews,
+> localhost:5173. Frontend: when VITE_API_BASE set, LiveKitTest gains a "mint via
+> server" path (password → verify → token auto-filled); manual paste stays the dev
+> fallback. Tests: token claims + expiry, constant-time compare, auth rejections,
+> CORS matrix, rate-limit trips. DOCS & PROCESS: README Worker section with Amy's
+> exact deploy steps; PR via gh → CodeRabbit → HOLD MERGE for CTO.
+
+### What was done
+
+- Git hygiene: `main` pulled (PR #13 fast-forwarded in), `feat/s3lite-pages`
+  deleted, branched `feat/s3lite-worker-auth`.
+- **Verified live before coding** (convention):
+  - wrangler: `wrangler.jsonc` is Cloudflare's recommended format; required keys
+    `name`/`main`/`compatibility_date`; secrets via `wrangler secret put` +
+    `.dev.vars`. No `nodejs_compat` needed — the Worker is pure Web APIs.
+  - `livekit-server-sdk` v2 uses `jose` (Workers-OK) but its package pulls in
+    Node-only siblings (`@livekit/rtc-node` native) → **mint the JWT by hand**
+    with Web Crypto HS256. Exact claim shape read from the installed SDK source
+    and empirically probed: header `{"alg":"HS256"}`, payload `{name?,
+    video{roomJoin,room,canPublish,canSubscribe}, iss, exp, nbf, sub}` — **no
+    `iat`**.
+  - Rate limiting: native Workers Rate Limiting binding (GA 2025-09-19),
+    `ratelimits` + `simple{limit,period}`, period ∈ {10,60}, per-colo. Simplest
+    real option → used it.
+- `workers/api/` (**zero runtime deps**): `src/crypto.js` (base64url, sha256,
+  hmac, `timingSafeEqual`, `constantTimeCompareSecrets`), `session.js` (12h HMAC
+  session sign/verify, sig-checked before payload trusted), `livekit.js` (HS256
+  mint, 6h clamp), `cors.js` (allowlist + preflight), `index.js` (router + 3
+  handlers). `wrangler.jsonc` with two limiters; `package.json`;
+  `.dev.vars.example`; local `.gitignore`; `README.md`.
+- Endpoints exactly per spec. `/api/admin/verify`: rate-limit 5/60s → 500 if
+  unconfigured → 400 on blank pw → constant-time SHA-256 digest compare → 12h
+  session token. `/api/livekit/token`: X-Admin-Token gate → 30/60s → mint,
+  returns `{token, url, room, identity, expiresAt}`. `/api/health` public.
+- CORS scoped to `studio.luminastream.live` + `*.luminastream-studio.pages.dev`
+  (our project's previews) + `localhost:5173` — deliberately tighter than a
+  literal `*.pages.dev` (rationale in cors.js); no ACL credentials (session is a
+  header, not a cookie).
+- Frontend: `src/lib/serverMint.js` (`verifyAdmin` / `mintToken` / `mintViaServer`
+  with a one-shot re-auth on 401) + `LiveKitTest.jsx` "Mint via server" block,
+  rendered **only when `VITE_API_BASE` is set**. Manual URL/token paste stays the
+  dev fallback.
+- Docs: README "API Worker (Cloudflare)" — Amy's exact `wrangler login` /
+  `secret put` (×5) / `deploy` / `curl /api/health` / `VITE_API_BASE` wiring +
+  optional `api.luminastream.live` route. No secret values anywhere.
+
+### Key findings / surprises
+
+- jose/LiveKit emit **no `iat`** and a bare `{"alg":"HS256"}` header (no `typ`) —
+  replicated exactly so the equivalence check is byte-clean.
+- **Validated against the REAL LiveKit Cloud project** (creds from secrets.env):
+  (1) claim-by-claim equivalence vs SDK `AccessToken`; (2) the SDK's own
+  `TokenVerifier` accepts our hand-minted token; (3) Twirp `ListRooms` with an
+  admin token **our Worker code signed** → **HTTP 200** (it even listed the live
+  `luminastream-test` room). Real LiveKit Cloud accepts our signing. Project
+  subdomain kept out of the repo and these logs.
+- Node 24 ships `crypto.subtle` + global `Request`/`Response`, so the Worker's
+  default export is unit-testable via `node --test` with injected fakes (env +
+  rate limiters) — no miniflare needed. The offline SDK-equivalence/live checks
+  live in the scratchpad, not the committed suite, to keep tests dep-free.
+
+### Files changed
+
+- NEW `workers/api/`: `src/{crypto,session,livekit,cors,index}.js`,
+  `test/{crypto,session,livekit,http}.test.js`, `wrangler.jsonc`, `package.json`,
+  `.dev.vars.example`, `.gitignore`, `README.md`.
+- NEW `src/lib/serverMint.js` + `src/lib/serverMint.test.js`.
+- `src/pages/LiveKitTest.jsx` (gated server-mint UI), `README.md` (Worker
+  section), `.gitignore` (`.dev.vars`, `.wrangler/`).
+
+### Verification
+
+- Worker tests **34/34** (claims/expiry, constant-time, session tamper/expiry/
+  bad-subject, auth rejections, CORS matrix incl. dot-boundary + suffix-spoof,
+  rate-limit trips, method/404).
+- Frontend node tests **21/21** (serverMint 8 incl. re-auth & no-retry paths +
+  existing apiBase/knobState). Lint **clean**. Typecheck **60 errors = main
+  baseline** (my files add 0). `npm run build` green.
+- `wrangler deploy --dry-run`: config parses, Worker bundles **10.59 KiB**, both
+  rate-limit bindings registered (VERIFY 5/60s, TOKEN 30/60s).
+- Live LiveKit Cloud token acceptance: **HTTP 200** (see findings).
+
+### CodeRabbit round (PR #14)
+
+Two findings, both fixed in `75a1f47` and explicitly confirmed resolved by
+CodeRabbit (`<review_comment_addressed>`); re-review **pass**, no new findings:
+
+- 🟠 **Major (security)**: `/api/livekit/token` ran `verifySession` BEFORE the
+  rate-limit, so anonymous garbage-token spam hit the HMAC-verify path
+  unthrottled. Moved the IP-keyed limiter ahead of verification (limit-first,
+  like `/api/admin/verify`); dropped the `sub:ip` key (subject unknown
+  pre-verify, always `admin`). New regression test asserts **429-before-401**.
+  CR: "closes the anonymous HMAC-verification flood path."
+- 🟡 **Minor (docs)**: Worker local-dev used `npm run dev` (repo reserves that
+  for frontend-only Base44 work) → `npx wrangler dev` in both READMEs.
+
+Post-fix: Worker **35/35**, lint clean. Merge still **HELD**.
+
+### Addendum — automated deployment (CEO directive)
+
+Directive: GitHub Actions deploy on merge; staging env; scripted secret
+injection; README = token-mint + GitHub secrets (DNS stays a human act).
+
+Verified live first: `cloudflare/wrangler-action` is **@v3** (inputs apiToken,
+accountId, command, environment, workingDirectory); wrangler named-env
+inheritance — **ratelimits + observability + vars + bindings are
+NON-inheritable**, so staging must redefine them; minimal deploy token =
+**Workers Scripts: Edit + Account Settings: Read**, account-scoped, with **no**
+Zone/DNS/Routes/KV/R2.
+
+- `wrangler.jsonc`: added `env.staging` (name `luminastream-api-staging`, its
+  own `observability` + `ratelimits` with namespace_ids 2001/2002 → counters
+  isolated from prod). Top-level stays production. `package.json` `deploy`/`tail`
+  now default to `--env staging` (agent/manual → staging); **no** local
+  production-deploy script (production is CI-only).
+- `.github/workflows/deploy-worker.yml`: on push to `main` touching `workers/**`,
+  runs the Worker tests then `cloudflare/wrangler-action@v3` `command: deploy`
+  (top-level = production) with `apiToken`/`accountId` from GitHub secrets.
+  `permissions: contents: read`, a `concurrency` guard, and
+  `environment: production` (optional approval gate). Production deploys ONLY here.
+- `scripts/put-worker-secrets.sh [staging|production]`: pipes each value from the
+  gitignored `secrets.env` straight into `wrangler secret put` over stdin — pure
+  `grep|cut|tr` pipe, value never in a shell var, never echoed; bash-3.2-safe
+  empty-array guard. Sets all five Worker secrets.
+- README: replaced the manual deploy steps with the automated flow — narrow
+  token mint (exact two scopes, expiry, no DNS) → paste `CLOUDFLARE_API_TOKEN` /
+  `CLOUDFLARE_ACCOUNT_ID` into GitHub → run the secret script. Custom-domain DNS
+  documented as a deliberate human act (the token has no DNS scope).
+
+Verified: `bash -n` + an extraction test (keeps `=` in values, skips missing);
+workflow YAML parses (ruby); `wrangler deploy --dry-run` for BOTH top-level and
+`--env staging` bundle with their own rate limiters; Worker **35/35**, lint clean.
+
+Follow-up (owner): the script already covered all five secrets incl.
+`ADMIN_SESSION_SECRET`; documented generating it as `openssl rand -base64 32`
+into `secrets.env` (README + `.dev.vars.example`) and added a **kill-switch**
+note — rotating `ADMIN_SESSION_SECRET` instantly invalidates every outstanding
+admin session (HMAC verify fails closed; wrangler applies the new secret on the
+next request, no redeploy). Proved base64 (`=` padding) extraction is byte-exact.
+
+CodeRabbit round 2 (addendum, d5afef6): 2 findings — `put-worker-secrets.sh`
+all-or-nothing **preflight** (Major: prevents partial updates and a rotation
+silently keeping an old secret) + checkout `persist-credentials: false` (Minor)
+— both fixed and **confirmed resolved** by CodeRabbit. All **4** PR findings
+across 2 rounds resolved; check green, PR **mergeable**, merge **HELD** for CTO.
+
+### Next
+
+- **HOLD MERGE** — awaiting CTO decision on PR #14. On merge, the new workflow
+  auto-deploys the **production** Worker (once the `CLOUDFLARE_*` GitHub Actions
+  secrets exist).
+- Amy: mint the narrow token → GitHub secrets; run
+  `scripts/put-worker-secrets.sh` for staging + production; set `VITE_API_BASE`
+  on the Pages project.
+
+---
+
 ## 27 July 2026 — Stage 3-Lite, Session A: Cloudflare Pages hosting (PR #13)
 
 ### Task (verbatim)
