@@ -4,6 +4,123 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — Stage 3-Lite, Session B: API Worker — admin gate + LiveKit mint (branch feat/s3lite-worker-auth)
+
+### Task (verbatim)
+
+> STAGE 3-LITE, Session B — Worker: admin gate + LiveKit token mint
+> (branch: feat/s3lite-worker-auth)
+>
+> GOAL: One Cloudflare Worker (workers/api/) providing our first two owned backend
+> endpoints: an admin gate and server-side LiveKit token minting — the path real
+> users will eventually take, replacing the DEV-ONLY local script.
+>
+> VERIFY BEFORE WRITING CODE (convention): current Workers + wrangler config
+> format and deploy flow against live docs; whether livekit-server-sdk runs in the
+> Workers runtime (else mint the JWT manually — HS256 via Web Crypto, claims per
+> LiveKit's current token spec — and validate a minted token against the real
+> LiveKit Cloud project before calling it done); current Workers rate-limiting
+> options on our plan, pick the simplest real one.
+>
+> ENDPOINTS: (1) POST /api/admin/verify — {password} vs env ADMIN_PASSWORD via
+> constant-time compare (SHA-256 both sides, compare digests — never ===), returns
+> a short-lived HMAC session token (~12h) sent as X-Admin-Token thereafter.
+> (2) POST /api/livekit/token — requires valid X-Admin-Token; {room, identity} →
+> LiveKit token (join, canPublish, canSubscribe, ttl ≤ 6h) from LIVEKIT_API_KEY/
+> SECRET in Worker env. NO ungated minting. (3) GET /api/health — {ok, version}.
+>
+> RULES: secrets only via `wrangler secret put` (document exact commands, never
+> values); .dev.vars gitignored; zero credentials in any commit. Rate limit verify
+> hard, token moderately. CORS: studio.luminastream.live, *.pages.dev previews,
+> localhost:5173. Frontend: when VITE_API_BASE set, LiveKitTest gains a "mint via
+> server" path (password → verify → token auto-filled); manual paste stays the dev
+> fallback. Tests: token claims + expiry, constant-time compare, auth rejections,
+> CORS matrix, rate-limit trips. DOCS & PROCESS: README Worker section with Amy's
+> exact deploy steps; PR via gh → CodeRabbit → HOLD MERGE for CTO.
+
+### What was done
+
+- Git hygiene: `main` pulled (PR #13 fast-forwarded in), `feat/s3lite-pages`
+  deleted, branched `feat/s3lite-worker-auth`.
+- **Verified live before coding** (convention):
+  - wrangler: `wrangler.jsonc` is Cloudflare's recommended format; required keys
+    `name`/`main`/`compatibility_date`; secrets via `wrangler secret put` +
+    `.dev.vars`. No `nodejs_compat` needed — the Worker is pure Web APIs.
+  - `livekit-server-sdk` v2 uses `jose` (Workers-OK) but its package pulls in
+    Node-only siblings (`@livekit/rtc-node` native) → **mint the JWT by hand**
+    with Web Crypto HS256. Exact claim shape read from the installed SDK source
+    and empirically probed: header `{"alg":"HS256"}`, payload `{name?,
+    video{roomJoin,room,canPublish,canSubscribe}, iss, exp, nbf, sub}` — **no
+    `iat`**.
+  - Rate limiting: native Workers Rate Limiting binding (GA 2025-09-19),
+    `ratelimits` + `simple{limit,period}`, period ∈ {10,60}, per-colo. Simplest
+    real option → used it.
+- `workers/api/` (**zero runtime deps**): `src/crypto.js` (base64url, sha256,
+  hmac, `timingSafeEqual`, `constantTimeCompareSecrets`), `session.js` (12h HMAC
+  session sign/verify, sig-checked before payload trusted), `livekit.js` (HS256
+  mint, 6h clamp), `cors.js` (allowlist + preflight), `index.js` (router + 3
+  handlers). `wrangler.jsonc` with two limiters; `package.json`;
+  `.dev.vars.example`; local `.gitignore`; `README.md`.
+- Endpoints exactly per spec. `/api/admin/verify`: rate-limit 5/60s → 500 if
+  unconfigured → 400 on blank pw → constant-time SHA-256 digest compare → 12h
+  session token. `/api/livekit/token`: X-Admin-Token gate → 30/60s → mint,
+  returns `{token, url, room, identity, expiresAt}`. `/api/health` public.
+- CORS scoped to `studio.luminastream.live` + `*.luminastream-studio.pages.dev`
+  (our project's previews) + `localhost:5173` — deliberately tighter than a
+  literal `*.pages.dev` (rationale in cors.js); no ACL credentials (session is a
+  header, not a cookie).
+- Frontend: `src/lib/serverMint.js` (`verifyAdmin` / `mintToken` / `mintViaServer`
+  with a one-shot re-auth on 401) + `LiveKitTest.jsx` "Mint via server" block,
+  rendered **only when `VITE_API_BASE` is set**. Manual URL/token paste stays the
+  dev fallback.
+- Docs: README "API Worker (Cloudflare)" — Amy's exact `wrangler login` /
+  `secret put` (×5) / `deploy` / `curl /api/health` / `VITE_API_BASE` wiring +
+  optional `api.luminastream.live` route. No secret values anywhere.
+
+### Key findings / surprises
+
+- jose/LiveKit emit **no `iat`** and a bare `{"alg":"HS256"}` header (no `typ`) —
+  replicated exactly so the equivalence check is byte-clean.
+- **Validated against the REAL LiveKit Cloud project** (creds from secrets.env):
+  (1) claim-by-claim equivalence vs SDK `AccessToken`; (2) the SDK's own
+  `TokenVerifier` accepts our hand-minted token; (3) Twirp `ListRooms` with an
+  admin token **our Worker code signed** → **HTTP 200** (it even listed the live
+  `luminastream-test` room). Real LiveKit Cloud accepts our signing. Project
+  subdomain kept out of the repo and these logs.
+- Node 24 ships `crypto.subtle` + global `Request`/`Response`, so the Worker's
+  default export is unit-testable via `node --test` with injected fakes (env +
+  rate limiters) — no miniflare needed. The offline SDK-equivalence/live checks
+  live in the scratchpad, not the committed suite, to keep tests dep-free.
+
+### Files changed
+
+- NEW `workers/api/`: `src/{crypto,session,livekit,cors,index}.js`,
+  `test/{crypto,session,livekit,http}.test.js`, `wrangler.jsonc`, `package.json`,
+  `.dev.vars.example`, `.gitignore`, `README.md`.
+- NEW `src/lib/serverMint.js` + `src/lib/serverMint.test.js`.
+- `src/pages/LiveKitTest.jsx` (gated server-mint UI), `README.md` (Worker
+  section), `.gitignore` (`.dev.vars`, `.wrangler/`).
+
+### Verification
+
+- Worker tests **34/34** (claims/expiry, constant-time, session tamper/expiry/
+  bad-subject, auth rejections, CORS matrix incl. dot-boundary + suffix-spoof,
+  rate-limit trips, method/404).
+- Frontend node tests **21/21** (serverMint 8 incl. re-auth & no-retry paths +
+  existing apiBase/knobState). Lint **clean**. Typecheck **60 errors = main
+  baseline** (my files add 0). `npm run build` green.
+- `wrangler deploy --dry-run`: config parses, Worker bundles **10.59 KiB**, both
+  rate-limit bindings registered (VERIFY 5/60s, TOKEN 30/60s).
+- Live LiveKit Cloud token acceptance: **HTTP 200** (see findings).
+
+### Next
+
+- PR via `gh` → CodeRabbit → evidence replies → **HOLD MERGE** for CTO review.
+- After merge + deploy: Amy runs the README secret/deploy steps and sets
+  `VITE_API_BASE` on the Pages project to the Worker URL.
+
+---
+
 ## 27 July 2026 — Stage 3-Lite, Session A: Cloudflare Pages hosting (PR #13)
 
 ### Task (verbatim)
