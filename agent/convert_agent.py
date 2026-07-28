@@ -53,6 +53,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 from datetime import timedelta
 from pathlib import Path
 
@@ -813,6 +814,9 @@ async def main():
     parser.add_argument("--report", default=None, metavar="PATH",
                         help="--engine tts: write the per-utterance metrics + "
                              "latency table as JSON on shutdown")
+    parser.add_argument("--run-seconds", type=float, default=None, metavar="N",
+                        help="exit cleanly after N seconds (scripted E2E runs); "
+                             "default is to run until SIGINT/SIGTERM")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -875,14 +879,49 @@ async def main():
     stats_task = asyncio.ensure_future(agent._stats_loop())
     try:
         await agent.start(url, token)
-        await asyncio.Event().wait()  # run until Ctrl-C
+        await wait_for_stop(args.run_seconds)
     finally:
         stats_task.cancel()
-        await agent.aclose()
+        # The run ends on SIGINT, so teardown happens inside a cancelled task.
+        # The measurements are the whole point of the run — never lose them to
+        # a shutdown error.
+        try:
+            await agent.aclose()
+        except Exception:
+            log.exception("error during shutdown — reporting anyway")
         if tts_engine is not None:
             write_spike_report(tts_engine, args.report)
         if http is not None:
             await http.close()
+
+
+async def wait_for_stop(run_seconds=None):
+    """Block until SIGINT/SIGTERM, or until run_seconds elapses.
+
+    The default `asyncio.Event().wait()` relies on the interpreter's default
+    SIGINT handling, which does not reliably interrupt this process: the
+    LiveKit Rust FFI runs its own threads and an orphaned agent (parent shell
+    gone) was observed ignoring SIGINT entirely, stranding the run with its
+    measurements unwritten. Installing explicit loop signal handlers makes
+    shutdown deterministic, and --run-seconds removes signals from scripted
+    E2E runs altogether.
+    """
+    loop = asyncio.get_event_loop()
+    stop = asyncio.Event()
+    for signame in ("SIGINT", "SIGTERM"):
+        try:
+            loop.add_signal_handler(getattr(signal, signame), stop.set)
+        except (NotImplementedError, AttributeError, RuntimeError):
+            pass  # not available on this platform — fall back to default handling
+    if run_seconds is None:
+        await stop.wait()
+        log.info("stop signal received — shutting down")
+        return
+    try:
+        await asyncio.wait_for(stop.wait(), run_seconds)
+        log.info("stop signal received — shutting down")
+    except asyncio.TimeoutError:
+        log.info("--run-seconds %.0f elapsed — shutting down", run_seconds)
 
 
 async def build_tts_engine(args):

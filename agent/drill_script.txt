@@ -1,0 +1,15 @@
+# The fixed drill script for the STT→TTS spike (SPIKE.md).
+#
+# One line per utterance. The reader pauses between lines so the VAD gate
+# closes and each line is endpointed as its own utterance.
+#
+# Lines 1-2 are carried over from the Phase 2/3/4 protocol so results stay
+# comparable across phases; 3-5 probe what this engine specifically can get
+# wrong — proper nouns and digits (which STT either nails or mangles, and
+# which text normalization at TTS time can also mispronounce) and a long
+# clause with internal commas that a hangover-based endpointer could cut early.
+The quick brown fox jumps over the lazy dog.
+Mic test one two.
+My name is Amy and I am recording the reference take.
+Call me back on zero four one five, two seven three.
+When the light turns green, start reading, and keep going until the end.

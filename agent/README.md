@@ -237,6 +237,37 @@ attributable to configs.
 Change one variable at a time — the capture's `config_change` events pin
 every segment to its exact config, so post-hoc attribution is automatic.
 
+## SPIKE — STT→TTS second engine (`--engine tts`, EXPERIMENTAL)
+
+A second engine behind the same agent, transport and VAD: instead of converting
+frames, it transcribes each utterance (ElevenLabs Scribe v2 Realtime) and
+re-speaks it in the cloned voice (ElevenLabs TTS). **`--engine rvc` is the
+default and is untouched — in tts mode the RVC client is never constructed.**
+
+```bash
+./.venv/bin/python convert_agent.py --engine tts --mode convert \
+    --tts-model eleven_flash_v2_5 \
+    --capture-dir captures --drill-script drill_script.txt \
+    --report report.json [--run-seconds 70]
+
+# scripted E2E: publish a WAV into the room as a real-time participant
+./.venv/bin/python publish_wav.py drill_48k.wav --room luminastream-spike
+```
+
+Needs `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` in the repo-root
+`secrets.env`. **Every billable call is capped per run** by `spend_governor.py`
+(`SPIKE_MAX_TTS_CHARS`, default 5000; `SPIKE_MAX_STT_SECONDS`, default 300);
+an utterance that would exceed a cap is skipped whole, never truncated, and
+logs `[governor] utterance skipped (would exceed cap)`. Voice expressiveness is
+env-tunable via `SPIKE_TTS_STABILITY` / `SPIKE_TTS_SIMILARITY_BOOST` /
+`SPIKE_TTS_STYLE` / `SPIKE_TTS_SPEED` / `SPIKE_TTS_SPEAKER_BOOST`.
+
+`--engine tts` refuses `--no-vad`: the gate *is* the utterance endpointer.
+
+Measured result: tail latency p50 1.9–2.7 s depending on model, versus the RVC
+path's ~200 ms. **Full architecture, API-verification tables, latency
+breakdown and Amy's drill protocol live in [`SPIKE.md`](../SPIKE.md).**
+
 ## Convert agent — RunPod runbook (real RVC)
 
 > **SUPERSEDED (22 Jul):** the agent must NOT run on RunPod — the RunPod

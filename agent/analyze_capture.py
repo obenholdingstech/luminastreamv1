@@ -541,6 +541,7 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
     counts = {"benign": 0, "vad_gated": 0, "dropout": 0}
     for _s, _e, c, _f in silences:
         counts[c] += 1
+    engine = header.get("engine", "rvc")
     add(f"output silences: {len(silences)} ({counts['benign']} benign — input silent "
         f"there too; {counts['vad_gated']} VAD-gated — intentional)")
     for s, e, category, frac in silences:
@@ -552,6 +553,16 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
         near = [ev["event"] for ev in events
                 if ev["event"] in ("drop", "underrun", "stale", "window_lost")
                 and s - 0.5 <= ev["out_pos"] / SR <= e + 0.5]
+        if engine == "tts":
+            # The dropout verdict assumes a frame-aligned converter: audio in,
+            # audio out ~one window later. The tts engine answers a whole
+            # utterance at a time, seconds after it was spoken, so output
+            # silence while the input is active is the ENGINE'S LATENCY, not
+            # garble — there is no converter here to garble anything.
+            add(f"  ENGINE-LATENCY {s:7.2f}–{e:.2f}s  input active {frac:.0%}  "
+                f"(structural in tts mode: the answer arrives ~tail_latency "
+                f"later; see the tts utterances section)")
+            continue
         cause = (f"events nearby: {sorted(set(near))} → starvation"
                  if near else "NO events → converter garbled/suppressed it")
         add(f"  DROPOUT {s:7.2f}–{e:.2f}s  input active {frac:.0%}  ({cause})")
