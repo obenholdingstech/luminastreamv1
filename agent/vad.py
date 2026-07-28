@@ -213,6 +213,20 @@ class OutputGate:
         self.drained = False
         self._fade_pos = None
 
+    def force_prime(self):
+        """Prime now, regardless of buffer depth (TTS engine only).
+
+        Additive for the spike's TTS mode; the RVC path never calls it and is
+        unaffected. A synthesized utterance can legitimately be SHORTER than
+        prime_samples ("yes."), and the normal rule would then never prime —
+        leaving that audio stuck in the buffer to leak into the next utterance.
+        The engine calls this once synthesis is complete, when no more audio is
+        coming and whatever is buffered is all there will ever be.
+        """
+        if not self.primed:
+            self.primed = True
+            self._fade_pos = 0   # still ramp in — no click on the short one
+
     def _apply_fade_in(self, samples):
         if self._fade_pos is None or self._fade_pos >= self.ramp:
             return samples

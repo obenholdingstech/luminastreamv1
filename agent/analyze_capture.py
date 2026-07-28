@@ -461,6 +461,19 @@ def plot_dropout_map(path, env_out, hop_ms, silences, events, out_dur_s):
                 ax.axvline(t, color="#1baf7a", lw=1.0, ls=":")
                 ax.annotate(label, xy=(t, ymax * 1.02), color="#1baf7a",
                             fontsize=7, ha="left", rotation=90, va="top")
+            elif kind == "utterance":
+                # SPIKE: pin each synthesized answer to where it was published
+                t = ev["out_pos"] / SR
+                ax.axvline(t, color="#1baf7a", lw=1.0, ls="-.")
+                ax.annotate(f"#{ev.get('index')} {ev.get('tail_latency_ms')}ms",
+                            xy=(t, ymax * 1.02), color="#1baf7a",
+                            fontsize=7, ha="left", rotation=90, va="top")
+            elif kind == "utterance_dropped":
+                t = ev["out_pos"] / SR
+                ax.axvline(t, color=C_CRIT, lw=1.0, ls="-.")
+                ax.annotate(str(ev.get("reason")), xy=(t, ymax * 1.02),
+                            color=C_CRIT, fontsize=7, ha="left",
+                            rotation=90, va="top")
             continue
         m = marks[kind]
         ax.scatter(ev["out_pos"] / SR, ymax * 1.05, s=30, zorder=3,
@@ -515,15 +528,30 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
     add(f"session header : {json.dumps({k: v for k, v in header.items() if k != 'event'})}")
     add(f"input          : {len(x_in) / SR:.2f} s ({len(x_in)} samples)")
     add(f"output         : {len(x_out) / SR:.2f} s ({len(x_out)} samples)")
+    engine = header.get("engine", "rvc")
     add(f"latency offset : {offset_ms:.0f} ms (envelope xcorr, peak corr {peak_corr:.3f})")
     add("")
     add(f"utterances     : {len(utterances)}")
+    if engine == "tts":
+        # Both the offset and the tail-clip test assume the output is a
+        # TIME-SHIFTED COPY of the input — true for a frame-aligned converter,
+        # false for a re-synthesis in a different voice, at a different
+        # duration, seconds later. Measured peak correlation on tts captures is
+        # ~0.05 (i.e. none), and the tail-clip count came out identical at 300,
+        # 200 and 100 ms of hangover — it is measuring noise, not clipping.
+        # Reported here rather than silently dropped, but explicitly disowned:
+        # in tts mode the real clipping evidence is the TRANSCRIPT.
+        add("  (input-vs-output alignment does not apply in tts mode: the output")
+        add("   is a re-synthesis, not a time-shifted copy. The offset and the")
+        add("   tail-clip counts below are NOT meaningful here — judge clipping")
+        add("   from the transcripts in the tts utterances section instead.)")
     for r in tail_results:
         flag = "CLIPPED TAIL" if r["clipped"] else "ok"
         add(f"  {r['start_s']:7.2f}–{r['end_s']:.2f}s  body {r['body_ratio']:.2f}  "
             f"tail {r['tail_ratio']:.2f}  {flag}")
     n_clip = sum(r["clipped"] for r in tail_results)
-    add(f"clipped tails  : {n_clip}")
+    add(f"clipped tails  : {n_clip}"
+        + ("   <- not meaningful in tts mode (see note above)" if engine == "tts" else ""))
     add("")
     counts = {"benign": 0, "vad_gated": 0, "dropout": 0}
     for _s, _e, c, _f in silences:
@@ -539,6 +567,16 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
         near = [ev["event"] for ev in events
                 if ev["event"] in ("drop", "underrun", "stale", "window_lost")
                 and s - 0.5 <= ev["out_pos"] / SR <= e + 0.5]
+        if engine == "tts":
+            # The dropout verdict assumes a frame-aligned converter: audio in,
+            # audio out ~one window later. The tts engine answers a whole
+            # utterance at a time, seconds after it was spoken, so output
+            # silence while the input is active is the ENGINE'S LATENCY, not
+            # garble — there is no converter here to garble anything.
+            add(f"  ENGINE-LATENCY {s:7.2f}–{e:.2f}s  input active {frac:.0%}  "
+                f"(structural in tts mode: the answer arrives ~tail_latency "
+                f"later; see the tts utterances section)")
+            continue
         cause = (f"events nearby: {sorted(set(near))} → starvation"
                  if near else "NO events → converter garbled/suppressed it")
         add(f"  DROPOUT {s:7.2f}–{e:.2f}s  input active {frac:.0%}  ({cause})")
@@ -565,6 +603,26 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
                 flags += f"  rejected: {sorted(ev['rejected'])}"
             add(f"  t={ev['t']:7.2f}s  {keys}{flags}")
             add(f"           applied config: {json.dumps(ev.get('config'))}")
+
+    # SPIKE (--engine tts): per-utterance STT→TTS results on the same timeline
+    spoken = [ev for ev in events if ev["event"] == "utterance"]
+    dropped = [ev for ev in events if ev["event"] == "utterance_dropped"]
+    if spoken or dropped:
+        add("")
+        add(f"tts utterances : {len(spoken)} synthesized, {len(dropped)} dropped")
+        for ev in spoken:
+            add(f"  t={ev['t']:7.2f}s  #{ev.get('index')} tail={ev.get('tail_latency_ms')}ms "
+                f"(stt {ev.get('stt_ms')}ms + ttfb {ev.get('tts_ttfb_ms')}ms) "
+                f"{ev.get('chars')} chars  wer={ev.get('wer')}  [{ev.get('model_id')}]")
+            add(f"           {ev.get('transcript')!r}")
+        for ev in dropped:
+            add(f"  t={ev['t']:7.2f}s  #{ev.get('index')} DROPPED ({ev.get('reason')}): "
+                f"{ev.get('detail')}")
+        tails = [ev["tail_latency_ms"] for ev in spoken
+                 if ev.get("tail_latency_ms") is not None]
+        if tails:
+            add(f"  tail_latency   : p50 {percentile(tails, 50):.0f} ms, "
+                f"p95 {percentile(tails, 95):.0f} ms, max {max(tails):.0f} ms")
     return "\n".join(lines) + "\n"
 
 

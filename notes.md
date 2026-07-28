@@ -2,6 +2,34 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 28 July 2026 — GRADUATION: STT→TTS is now the DEFAULT engine (PR #15 ready for review)
+
+- **CEO verdict (verbal, 28 July 2026), recorded verbatim:** *"clean 7/10, beats RVC on purity, emotions inconsistent vs live prosody."* CTO approved the PR for merge on the strength of it.
+- **The full 3-model scorecard was NOT completed.** The verdict above is a single verbal assessment, not the structured drill: there are no per-model clean / latency-feel / "is it ME?" scores for `eleven_flash_v2_5`, `eleven_multilingual_v2` or `eleven_v3`, and the table in SPIKE.md remains blank. Treat "7/10" as an overall impression of the shipped default config, not a per-model result.
+- **Two caveats that limit what the verdict can mean.** (1) The voice under test is the clone at `ELEVENLABS_VOICE_ID`, named "Celebrity lilcrush linda" — not Amy — so no "is it ME?" judgement has actually been made. (2) *"emotions inconsistent vs live prosody"* is the expected structural cost of this architecture, not a tuning defect: the engine discards the speaker's delivery at the transcript boundary and re-generates prosody from text alone. RVC preserves delivery because it never leaves the audio domain. That trade is what "beats RVC on purity" buys — worth revisiting against `voice_settings` (stability/style) and `eleven_v3` before accepting it as the ceiling.
+
+- **Pivot committed (08cf39e):** `--engine` defaults to `tts`. RVC is NOT removed — `--engine rvc` is the parked baseline/fallback, unchanged and green. Rests on measured evidence: tail p50 1938→932ms, p95 2511→949ms (drill); live conversation 86 utterances p50 1001ms/p90 1111ms; quality flat throughout (transcripts byte-identical, WER unchanged 0.1458, no splitting/clipping).
+- **Ear-drill: superseded by the verbal verdict at the top of this entry.** The pivot commit (08cf39e) was written before any verdict existed and states that the scores were unrecorded — still true of the per-model scorecard, which remains blank in SPIKE.md. Fill it in there if the 3-model drill is ever run.
+- **Remaining floor:** ~400ms of the ~950ms p50 is Starlink RTT (measured: 200ms TCP, 433ms TLS to api.elevenlabs.io). **VPS deploy should reach p50 ~550-650ms with zero code change** — the biggest lever left. Needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID hand-typed into the VPS secrets.env by Amy; deploy sequence + preflight in agent/README.md.
+- **p95 in live conversation (1920ms) is structural, not a defect:** synthesized audio plays for about as long as the speech took to say, so continuous talking accumulates backlog that drains at pauses. Video-sync budget for the avatar leg must be ELASTIC, not fixed.
+- Merged origin/main (workers/api + server-mint frontend) — only conflict was SESSIONS.md ordering, both histories kept. All suites green: 136 py + 21 src/lib + 35 workers/api. Positive preflight added (STT READY / TTS READY / PREFLIGHT OK; failures are plain sentences, never tracebacks). CodeRabbit round complete (10 findings, all addressed — see PR #15). **CTO has since approved for merge; the merge itself is still the CTO's to press.**
+
+## 28 July 2026 — Optimization sprint: tail latency HALVED, target met (full record: devlog/SESSIONS.md)
+
+- **p50 1938 → 932ms, p95 2511 → 949ms** on the same drill, quality untouched (transcripts byte-identical, WER unchanged 0.1458, 5/5 utterances). Default config is `--tts-hangover-ms 200`; one launch command in SPIKE.md.
+- Wins: streaming STT while the gate is open (STT 1121→315ms; test contract amended deliberately to "nothing COMMITTED while open"), and connection keepalive — the first-utterance ~1040ms TTFB was aiohttp's pool reaping the idle connection (default timeout 15s, my ping was 20s, so it always arrived too late). Rejected: `optimize_streaming_latency` + text normalization, both pure noise.
+- **~400ms of the remaining 954ms is Starlink RTT** (measured: 200ms TCP, 433ms TLS). VPS topology is the biggest lever left — should reach p50 ~550-650ms with no code change. **Needs ELEVENLABS_API_KEY in the VPS secrets.env — Amy to place it, I did not copy it.**
+- Trap avoided: analyzer's "clipped tails" is meaningless in tts mode (3 at 300ms baseline, 3 at 200ms, 2 at 100ms; envelope corr 0.047) — nearly cited it as clipping evidence. Analyzer now disowns it; transcripts are the real evidence.
+- Open for the CEO's ear: aggressive `--tts-hangover-ms 100` hits p50 787ms but may split sentences at natural pauses — the drill (1.6s gaps) cannot show this, free-talking can. Both configs presented, not chosen.
+
+## 28 July 2026 — SPIKE: STT→TTS engine measured; answer is NO (draft PR, full record: devlog/SESSIONS.md)
+
+- Built `--engine tts` (Scribe v2 Realtime → cloned-voice TTS) behind the existing agent; `--engine rvc` default and bit-identical (RVC client never constructed in tts mode). Governor written+green BEFORE any billable call: per-run caps, skips utterances whole, never truncates.
+- Live E2E, 3 models: tail_latency p50 1938 / 2459 / 2741 ms (flash / v3 / MMv2) vs RVC's ~200 ms. ~1.5s of it is serialized vendor round trips → structural, not tuning. 0 skipped, 0 underruns, 0 clipped tails, ~990 chars/min of speech.
+- Surprises: `output_format` is a query param (body → silent MP3); HTTP beats the TTS websocket everywhere and v3 rejects WS entirely; 16k STT upload cut latency-to-final 1463→871ms; v3 was NOT the slowest — MMv2 was; WER can't vary by TTS model (all 7 edits = one digit-normalization line, other four lines 0.0).
+- **Decision: branch stays DRAFT.** Good turn-taking tech, wrong for live conversion. Voice ID in secrets.env is named "Celebrity lilcrush linda", not Amy — confirm before "is it ME?" scoring.
+- Next: Amy's drill (SPIKE.md protocol, 3 scores x 3 models). If revisited: stream audio to STT while the gate is open (~800-1000ms saving, deliberately out of scope here).
+
 ---
 
 ## 28 July 2026 — Micro-fix: pin wranglerVersion in deploy workflow, PR #16 held (full record: devlog/SESSIONS.md)

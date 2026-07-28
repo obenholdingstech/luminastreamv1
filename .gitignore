@@ -40,3 +40,10 @@ CTO_HANDOVER*.md
 # .dev.vars.example is a different filename and stays tracked.
 .dev.vars
 .wrangler/
+
+# Compiled Python (a stray literal $HOME dir once got committed this way)
+*.pyc
+__pycache__/
+
+# Generated run reports from --report (evidence lives on the PR, not in git)
+agent/*report*.json

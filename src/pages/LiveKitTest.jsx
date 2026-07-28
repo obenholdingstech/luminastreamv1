@@ -94,8 +94,22 @@ function StatTile({ label, value, unit, icon: IconCmp, color }) {
   );
 }
 
+// DEV-ONLY convenience: prefill the SERVER URL from the query string so a
+// ready-to-use test link can be handed over.
+//
+// The token is deliberately NOT prefillable. It is a bearer credential, and a
+// query string is the worst place to put one: it persists in browser history,
+// gets copied into chat when someone shares "the link", and shows up in
+// proxy/analytics logs and referrer headers. The convenience was not worth the
+// leak surface. Use the server-mint panel below, or paste the token by hand.
+function paramOr(name, fallback) {
+  if (typeof window === 'undefined') return fallback;
+  return new URLSearchParams(window.location.search).get(name) || fallback;
+}
+
 export default function LiveKitTest() {
-  const [url, setUrl] = useState(() => localStorage.getItem(URL_STORAGE_KEY) || '');
+  const [url, setUrl] = useState(
+    () => paramOr('url', localStorage.getItem(URL_STORAGE_KEY) || ''));
   const [token, setToken] = useState('');
 
   const {

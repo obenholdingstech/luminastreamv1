@@ -4,6 +4,422 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — GRADUATION: STT→TTS promoted to default engine (PR #15 ready)
+
+### Task (verbatim)
+
+> GRADUATION — promote the STT→TTS engine to main (branch: feat/spike-stt-tts)
+>
+> 1. SYNC: git fetch origin && git merge origin/main into this branch. Expected
+>    conflict surface is near-zero (spike lives in agent/, recent main lives in
+>    workers/ + frontend); if any appear, resolve favoring main outside agent/
+>    and this branch inside it. ALL suites green after — spike tests AND the
+>    pre-existing set; RVC paths remain intact and passing.
+> 2. THE PIVOT COMMIT: flip the agent's default --engine from rvc to tts in ONE
+>    dedicated commit, decision recorded in the message (CEO ear-drill verdict,
+>    date, scores). RVC is not removed — it stays as the parked baseline and
+>    fallback.
+> 3. VPS-READINESS (Amy deploys by hand post-merge; you have no VPS access, by
+>    design): requirements.txt complete; positive preflight on --engine tts
+>    startup logging "TTS READY (TTFB Xms)" or failing loud in plain English;
+>    README with the exact VPS deploy sequence + free-talk protocol for the
+>    aggressive 100ms variant.
+> 4. DOCS: fold SPIKE.md's final tables into a permanent home; SPIKE.md remains
+>    as the historical record. notes.md gets the pivot decision, drill scores,
+>    and the remaining-floor analysis (~400ms Starlink tax, expected VPS gain).
+> 5. PROCESS: mark PR #15 ready for review, full CodeRabbit round, evidence
+>    replies, HOLD MERGE for CTO. Small commits; session log per convention.
+
+### What was done
+
+1. **Sync** — merged `origin/main` (workers/api Worker + server-mint frontend,
+   1815 insertions). Single conflict, in `devlog/SESSIONS.md`, where both sides
+   prepend entries; resolved by keeping BOTH histories newest-first, discarding
+   neither. `src/pages/LiveKitTest.jsx` auto-merged cleanly — the spike's
+   query-param prefill and main's new server-mint panel coexist.
+2. **Preflight** (`b2a9b09`) — landed BEFORE the pivot on purpose, since the
+   pivot makes ElevenLabs credentials mandatory for a default run.
+3. **The pivot** (`08cf39e`) — `--engine` defaults to `tts`.
+4. **Docs** — operational tables folded into `agent/README.md` (performance,
+   VPS deploy sequence, free-talk protocol); `SPIKE.md` untouched as the
+   historical record; `notes.md` carries the decision + remaining floor.
+
+### Findings / surprises
+
+- **An unknown voice id returns HTTP 400, not 404.** My first preflight matched
+  only on 404, so a mistyped voice id dumped raw JSON at the operator instead of
+  a sentence. Caught by actually running it with a bogus id rather than trusting
+  the shape of the API.
+- **A failed preflight printed a traceback anyway** — aiohttp's "Unclosed client
+  session" on GC, because the session was created inside `build_tts_engine` and
+  the error escaped before anything closed it. The brief's "must read like a
+  message, never a traceback" is not satisfied by raising a clean error; the
+  cleanup has to be right too. Now closed on every exit path, verified with a
+  traceback count of zero.
+- **`aiohttp` was never in requirements.txt.** The engine imports it directly
+  but it arrived transitively via `livekit-api` — invisible on this machine,
+  and exactly the kind of thing that fails first on a fresh VPS venv.
+- **The frontend test runner is `node --test`, not vitest.** An initial
+  `npx vitest run` reported "8 failed, no tests" and looked like a merge
+  regression; it was my wrong invocation. Real result: 21 src/lib + 35
+  workers/api tests, all passing.
+- **The ear-drill scores do not exist.** The brief asked for them in the pivot
+  commit, but the SPIKE.md scoring table was never filled in and no scores were
+  ever reported to me. The commit records the verdict I was actually given (the
+  CEO declared the current quality the reference) plus the measured evidence,
+  and states explicitly that the three-axis scores are unrecorded — rather than
+  inventing numbers into a permanent decision record. Flagged for the user.
+
+### Files changed
+
+Modified: `agent/convert_agent.py` (default engine, preflight wiring, session
+cleanup, docstring), `agent/elevenlabs_client.py` (`PreflightError`,
+`check_credentials`, `fetch_voice`, `voice_settings_from`, warmup → hard gate),
+`agent/requirements.txt` (explicit aiohttp pin), `agent/README.md` (performance
+tables, VPS deploy, free-talk protocol), `agent/test_tts_engine.py` (default-
+engine assertion), `notes.md`, `devlog/SESSIONS.md`.
+New: `agent/test_preflight.py`.
+Untouched: all RVC paths (`bridge.py`, `rvc_client.py`, `knobs.py`).
+
+### Verification results
+
+- **136 agent tests + 21 src/lib + 35 workers/api = 192, all green.** The 67
+  pre-existing agent tests are unchanged.
+- `npm run lint` clean, `npm run build` clean after the merge.
+- Preflight verified against the REAL API, all traceback-free:
+  missing key → names the variable and the file; bad key → HTTP 401, blames the
+  key not the voice; unknown voice → HTTP 400 + voice_not_found, blames the
+  voice id; healthy config → `STT READY` / `TTS READY (TTFB 1139 ms)` /
+  `PREFLIGHT OK`.
+- RVC default path re-verified: `--engine rvc` still constructs `RvcClient` +
+  `SolaStitcher` with identical `config_snapshot` keys.
+
+### Outcome
+
+STT→TTS is the default engine on the branch; RVC is parked, not removed. PR #15
+moves to ready-for-review for a CodeRabbit round. **MERGE IS HELD FOR THE CTO.**
+
+Two things the CTO should weigh: the ear-drill scores are still unrecorded (and
+the voice under test is not Amy's clone), and ~400 ms of the ~950 ms p50 is
+Starlink tax that a VPS deploy should reclaim without code change.
+
+---
+---
+
+## 28 July 2026 — Optimization sprint: STT→TTS tail latency 1938ms → 932ms
+
+### Task (verbatim)
+
+> OPTIMIZATION SPRINT — STT→TTS engine latency (branch: feat/spike-stt-tts,
+> same worktree). Full autonomy: you own the route; we own the destination.
+>
+> PRODUCT NORTH STAR (optimize with this in mind): LuminaStream lets a user
+> clone their voice (or licensed voices of their choice) and speak through it
+> in real time, synced with an AI video avatar (Decart Lucy, later). Audio will
+> be the pacing leg — video can be buffered to match audio, never the reverse —
+> so every ms you cut here is a ms of end-to-end experience. The CEO has heard
+> the current quality and declared it the reference: the mission is keeping
+> THAT quality while cutting time roughly in half.
+>
+> TARGET: tail_latency p50 ≤ 1000ms (stretch: 800), p95 ≤ 1500ms, measured by
+> the existing per-utterance instrumentation on the same 5-line drill.
+> QUALITY FLOOR: no change that audibly degrades output survives — when a
+> tradeoff exists, present both configs for the CEO's ears rather than choosing.
+>
+> KNOWN LEVERS — hypotheses, not orders. Test, measure, keep or kill; find
+> better ones: [streaming STT while gate open — contract HEREBY AMENDED to
+> permit it; early/incremental synthesis; VAD hangover as tts-specific tunable;
+> re-test TTS transports; VPS topology; STT vendor swap; session/connection
+> reuse, warm websockets, request pipelining, model/voice_settings]
+>
+> HARD WALLS (unchanged): spend governor stays green before every billable
+> experiment; RVC paths untouched and their tests green; fail-open preserved;
+> no secrets in commits; capture/analyzer keep working in tts mode.
+>
+> DISCIPLINE: SPIKE.md grows an experiment ledger — every lever gets a row:
+> hypothesis → measured before/after (p50/p95) → kept/rejected + why. End state:
+> a config the CEO can drill with one launch command, and an honest table of
+> what the remaining floor is and why. Small commits on the draft PR; session
+> log per convention; committable boundary if limits hit.
+
+### What was done
+
+Nine levers tested, each measured before/after on the same 5-line drill. Full
+ledger with numbers is in SPIKE.md; summary:
+
+- **Streaming STT** (kept, biggest win). Audio now streams while the gate is
+  open; at gate-close only the final hop and a commit remain. Isolated probe:
+  commit→final 311ms vs 860ms burst. In-agent STT component 1121 → 315ms.
+- **Connection keepalive** (kept). See findings — this was the p95 fix.
+- **VAD hangover as `--tts-hangover-ms`** (kept at 200ms default).
+- **TTS vendor latency knobs** (rejected — pure noise).
+- **VPS topology** (flagged for Amy, not actioned — needs a key on the VPS).
+
+### Findings / surprises
+
+- **`optimize_streaming_latency` does nothing measurable.** 0→4 spanned
+  345–374ms, inside run-to-run scatter; `apply_text_normalization` likewise.
+  The documented "lower latency at quality cost" tradeoff did not materialise
+  at all — which is good news, since there was no quality to trade away.
+- **The first-utterance penalty was NOT a cold voice.** ~1040ms TTFB vs ~340ms
+  steady. A 1-char warmup at startup absorbed the penalty — and then the first
+  real utterance paid it again 15 seconds later. The cause was aiohttp's
+  connection pool: default `keepalive_timeout` is 15s, my keepalive ping was
+  every 20s, so the ping *always* arrived after the connection had already been
+  reaped. Warming once is useless if nothing keeps it warm. Ping interval now
+  sits under the pool timeout (10s vs 120s): first-utterance TTFB 1043 → 355ms,
+  p95 1782 → 1080ms. This also means every conversational silence longer than
+  the pool timeout was silently costing a reconnect.
+- **~400ms of the remaining 954ms is Starlink.** Measured directly from this
+  Mac: TCP connect 200ms, TLS 433ms, trivial-GET TTFB 710ms. One round trip is
+  ~200ms and the tail contains two (STT commit, TTS request). Moving the engine
+  to the VPS should land p50 near 550–650ms with no code change and no quality
+  risk — the single biggest remaining lever, and it is a deployment decision.
+- **`analyze_capture.py`'s clipped-tail count is meaningless in tts mode.** It
+  flagged 3 clipped tails at 200ms hangover and 2 at 100ms — but also 3 at the
+  unchanged 300ms baseline, and envelope cross-correlation peaked at 0.047.
+  The detector assumes output is a time-shifted copy of input; a re-synthesis
+  in a different voice at a different duration is not. Nearly cited it as
+  evidence that shortening the hangover caused clipping, which would have been
+  wrong. The real clipping evidence in tts mode is the transcript, which was
+  byte-identical at 300/200/100ms. Analyzer now disowns both metrics in tts mode.
+- **The hangover tradeoff is real but the drill cannot see it.** 100ms hits the
+  stretch target (p50 787ms) with identical drill transcripts — but the drill's
+  lines are separated by 1.6s of silence, while natural speech pauses
+  mid-sentence for 100–300ms. A 128ms hangover will split real sentences into
+  separately-synthesized fragments. Presented both configs rather than choosing.
+- **Governor semantics had to change shape for streaming.** Audio is now billed
+  as it goes out, so a single reservation at gate-close would meter after the
+  fact. Moved to per-hop reservation *before* each send — the ceiling stays
+  exact, and a mid-utterance refusal abandons the whole utterance (no commit,
+  no transcript, no synthesis, no audio) rather than truncating it.
+
+### Files changed
+
+Modified: `agent/elevenlabs_client.py` (streaming begin/push/commit/await_final,
+hold-last-hop commit, `ping`, `warmup`), `agent/tts_engine.py` (async feed_hop,
+per-hop metering, keepalive task, streamed/fallback paths),
+`agent/convert_agent.py` (`--tts-hangover-ms`, pooled connector, warmup call),
+`agent/wer.py` (off-script threshold 0.5 → 0.8, calibrated),
+`agent/analyze_capture.py` (disown alignment + tail-clip in tts mode),
+`agent/test_tts_engine.py` (contract amended + streaming/governor tests),
+`agent/README.md`, `SPIKE.md` (experiment ledger).
+
+### Verification results
+
+- **122 tests pass** (67 pre-existing unchanged). Mock vendors only.
+- Test contract amended deliberately: `test_nothing_is_sent_while_the_gate_is_open`
+  → `test_audio_streams_while_open_but_nothing_is_COMMITTED_until_close`, plus
+  `test_exactly_one_commit_per_utterance` and a streaming-failure fallback test.
+- Live drill, real LiveKit + real ElevenLabs, `eleven_flash_v2_5`:
+
+  | config | tail p50 | p95 | TTFB p50 | STT p50 | WER |
+  |---|---|---|---|---|---|
+  | baseline (before sprint) | 1938 ms | 2511 ms | 372 | 1121 | 0.1458 |
+  | streaming STT only | 1074 ms | 1720 ms | 376 | 315 | 0.1458 |
+  | + keepalive | 1063 ms | 1080 ms | 323 | 349 | 0.1458 |
+  | **+ hangover 200 (default)** | **954 / 932 ms** | **1009 / 949 ms** | 352 | 324 | 0.1458 |
+  | + hangover 100 (aggressive) | 787 ms | 880 ms | 331 | 321 | 0.1458 |
+
+  5/5 utterances every run, no splitting, transcripts identical throughout,
+  corpus WER unchanged at 0.1458 (the one spoken-digits line).
+- Governor green before every billable experiment; spend across the whole
+  sprint stayed inside per-run caps with `refusals=0`.
+
+### Outcome
+
+**Target met: p50 932–954ms (was 1938), p95 949–1009ms (was 2511) — roughly
+halved, with the CEO's declared reference quality untouched.** Stretch target
+(800ms) is reachable at `--tts-hangover-ms 100` and is offered rather than
+chosen, because the risk it carries is one only an ear can judge.
+
+Next, in order of value: (1) VPS topology — ~400ms of pure network sits in the
+tail and a deployment move should take most of it; needs an ElevenLabs key in
+the VPS `secrets.env`, **for Amy to place, not for me to copy**. (2) Amy's ear
+on safe-vs-aggressive hangover, ideally free-talking rather than reading.
+
+---
+---
+
+## 28 July 2026 — SPIKE: STT→TTS second engine (`--engine tts`), DRAFT PR
+
+### Task (verbatim)
+
+> SPIKE — STT→TTS voice engine (branch: feat/spike-stt-tts) — EXPERIMENTAL
+> Full build-and-retest autonomy granted: iterate against real APIs and real
+> LiveKit to green without check-ins. PR opens as DRAFT; merge is not the goal —
+> an answered question is.
+>
+> GOAL: Second engine behind the existing agent: --engine rvc|tts (default rvc,
+> completely untouched; RVC client not initialized in tts mode). In tts mode the
+> Phase 3 VAD gate becomes an utterance endpointer: buffer speech while open; on
+> gate-close, transcribe the utterance (STT), synthesize with Amy's cloned
+> ElevenLabs voice, stream synthesized PCM back through the existing output path
+> (jitter buffer/publisher unchanged, 48k mono).
+>
+> GUARDRAIL FIRST — write the spend governor before any API call exists:
+> hard per-run caps MAX_TTS_CHARS (default 5000) and MAX_STT_SECONDS (default
+> 300), env-overridable, loud refusal past cap, agent stays alive. ElevenLabs
+> bills per character; an autonomous loop must be PHYSICALLY unable to drain
+> the Creator account.
+>
+> VERIFY BEFORE CODING (live docs + real calls, current IDs never hardcoded):
+> - TTS: streaming endpoints (websocket vs HTTP stream), TTFB behavior, PCM
+>   output format/rates. Model knob must accept: eleven_flash_v2_5 (speed),
+>   eleven_multilingual_v2 (quality), eleven_v3 (ceiling probe — expected to
+>   miss the latency budget; measure it anyway).
+> - STT: default candidate is ElevenLabs Scribe v2 Realtime (one vendor, one
+>   key); verify streaming support + latency-to-final; note Deepgram streaming
+>   as runner-up with one-line reasoning. Pick ONE for the spike.
+> - Voice: ELEVENLABS_VOICE_ID + ELEVENLABS_API_KEY from secrets.env.
+>
+> METRICS (the spike IS an instrument):
+> - tail_latency := last speech sample (gate-close minus hangover) → first
+>   synthesized sample enqueued. Per utterance; report p50/p95 per model_id.
+> - Per utterance: STT ms, transcript, TTS TTFB ms, chars billed, model_id.
+> - WER/edit-distance vs the known drill script per utterance (transcript
+>   fidelity is a first-class result — accent robustness lives here).
+> - --capture-dir works in tts mode; utterance events into meta.jsonl so
+>   analyze_capture.py aligns them.
+>
+> TESTS (mock vendors; real APIs only in E2E):
+> - Endpointer: exactly one STT call per utterance; hangover audio included;
+>   nothing sent while gate open.
+> - Governor refusal without crash. Fail-open: STT/TTS error drops that
+>   utterance with logged reason; stream survives; next utterance proceeds.
+> - Output continuity: 48k mono into jitter buffer, no clicks at boundaries.
+> E2E (the Phase 3/4 harness: audio-file publisher, real LiveKit, real APIs):
+> fixed script in → transcripts match, audio returns, tail_latency table
+> produced across all three models, total spend inside governor caps.
+>
+> DOCS: SPIKE.md — architecture, the latency table, observed cost per minute of
+> speech, and Amy's drill protocol: same fixed script, one reading per model,
+> three scores each: clean /10, latency-feel /10, "is it ME?" /10.
+> Session log per convention; small commits; committable boundary if limits hit.
+>
+> ADDENDUM — governor semantics + expressiveness knobs:
+> 1. The spend governor is financial only. It must NEVER truncate an utterance
+>    to fit remaining budget — if an utterance would exceed it, skip that
+>    utterance WHOLE, log '[governor] utterance skipped (would exceed cap)',
+>    and say so on the data channel. A tripped governor must be unmistakable
+>    in the logs — never confusable with a pipeline bug.
+> 2. Caps are per-process-run and env-overridable (SPIKE_MAX_TTS_CHARS /
+>    SPIKE_MAX_STT_SECONDS) for deliberate longer sessions.
+> 3. Expose ElevenLabs voice_settings (stability, similarity_boost, and style
+>    if the current API supports it per live docs) as env-configurable values,
+>    logged per utterance alongside model_id — expressiveness tuning is part
+>    of what the spike measures, and Amy's MMv2 clone output is the declared
+>    quality reference the other models are judged against.
+
+### What was done
+
+Order was deliberate: **the spend governor and its 18 tests were written and
+green before a single billable line of code existed.** Only read-only API calls
+(`/v1/models`, `/v1/voices/{id}`, `/v1/user/subscription`) were made before
+that; every billable probe afterwards ran through the governor.
+
+1. `spend_governor.py` + `test_spend_governor.py` — two per-run meters,
+   reserve-then-call, refusal commits nothing.
+2. Live API verification (below), then `elevenlabs_client.py`,
+   `endpointer.py`, `tts_engine.py`, `wer.py`.
+3. `convert_agent.py` wired for `--engine rvc|tts`; every RVC touchpoint
+   guarded so the default path is bit-identical (verified: default still
+   constructs `RvcClient` + `SolaStitcher` with the same `config_snapshot`
+   keys, and the 67 pre-existing tests are unchanged and green).
+4. `publish_wav.py` E2E harness, `drill_script.txt`, live E2E across all three
+   TTS models, `SPIKE.md`.
+
+### Findings / surprises
+
+- **`output_format` is a QUERY param on the TTS endpoint, not a body field.**
+  In the body it is silently ignored and the response is default 128 kbps MP3.
+  Caught only by noticing 36 KB could not be 2.3 s of 48 kHz PCM — it costs the
+  same and decodes to plausible-looking garbage in a PCM path. The first round
+  of TTFB numbers was measured on MP3 and had to be discarded.
+- **HTTP `/stream` beats the `stream-input` WebSocket on every model**
+  (flash 365 vs 642 ms; MMv2 900 vs 2460 ms) and **`eleven_v3` is rejected at
+  WS handshake entirely**. The WS exists for text still being produced by an
+  LLM; we have the full transcript at once, so its buffering is pure latency.
+- **`scribe_v2_realtime` is the only model the realtime STT socket accepts** —
+  `scribe_v2`/`scribe_v1` connect happily and never emit a transcript.
+- **Uploading STT audio at 16 kHz instead of 48 kHz cut p50 latency-to-final
+  from 1463 ms to 871 ms** (3.0x smaller payload, byte-identical transcript).
+  Reused `vad.py`'s existing `Resampler48to16` rather than writing a second one.
+- **`pcm_48000` is accepted on this account (tier: pro, not Creator)** — so
+  synthesis enters the existing 48 kHz output path with zero resampling.
+- **`SolaStitcher` is wrong for TTS.** SOLA splices *overlapping* re-converted
+  windows; synthesized audio is contiguous, so SOLA would crossfade a signal
+  onto a shifted copy of itself and manufacture comb filtering. Swapped for a
+  contiguous `PcmQueue` exposing the same surface, leaving `OutputGate` and the
+  publisher untouched.
+- **`eleven_v3` was NOT the slowest** despite being nominated as the ceiling
+  probe: it beat `eleven_multilingual_v2` on both TTFB and tail latency. The
+  quality reference is the slowest model.
+- **WER cannot vary by TTS model** in this architecture — transcription happens
+  before the TTS model is consulted. All 7 corpus edits came from one line of
+  spoken digits being transcribed as `041-5273` (semantically perfect,
+  orthographically different); the other four lines scored exactly 0.0.
+- **SIGINT did not reliably reach the agent.** An orphaned run ignored it and
+  had to be `kill -9`'d, stranding a completed drill with its report unwritten.
+  Added explicit loop signal handlers plus `--run-seconds` for scripted runs,
+  and guarded report writing against teardown errors.
+- **The analyzer's "converter garbled" verdict lies in tts mode** — it assumes
+  a frame-aligned converter, but the answer arrives ~tail_latency later by
+  construction. Now reported as `ENGINE-LATENCY`.
+- `ELEVENLABS_VOICE_ID` resolves to a cloned voice named **"Celebrity lilcrush
+  linda"** (IVC, not PVC), not one named "Amy". Used as specified; flagged for
+  confirmation before "is it ME?" scoring means anything.
+
+### Files changed
+
+New: `SPIKE.md`, `agent/spend_governor.py`, `agent/elevenlabs_client.py`,
+`agent/endpointer.py`, `agent/tts_engine.py`, `agent/wer.py`,
+`agent/publish_wav.py`, `agent/drill_script.txt`,
+`agent/test_spend_governor.py`, `agent/test_endpointer.py`,
+`agent/test_tts_engine.py`, `agent/test_wer.py`.
+Modified: `agent/convert_agent.py` (`--engine`, guarded RVC touchpoints,
+`--run-seconds`, signal handling, report), `agent/vad.py` (additive
+`OutputGate.force_prime()`), `agent/analyze_capture.py` (utterance markers +
+table, tts-mode silence attribution), `agent/README.md`.
+Untouched: `echo_agent.py`, `bridge.py`, `rvc_client.py`, `knobs.py`,
+`capture.py`, all of `src/`.
+
+### Verification results
+
+- **117 tests pass** (67 pre-existing unchanged + 50 new). Mock vendors only.
+- `lk_smoke.py` → `CONNECTED OK` before any live run.
+- Live E2E, real LiveKit Cloud + real ElevenLabs, 5-line drill per model,
+  publisher pacing drift ≤ 19 ms:
+
+  | model | tail p50 | p95 | TTFB p50 | STT p50 |
+  |---|---|---|---|---|
+  | `eleven_flash_v2_5` | 1938 ms | 2511 ms | 372 ms | 1121 ms |
+  | `eleven_v3` | 2459 ms | 2850 ms | 734 ms | 1015 ms |
+  | `eleven_multilingual_v2` | 2741 ms | 3071 ms | 942 ms | 1162 ms |
+
+  0 skipped, 0 dropped, 0 underruns, 0 clipped tails, max queue depth 1.
+  Corpus WER 0.1458 (all 7 edits = one digit-normalization line; 0.0 on the
+  other four). Spend per run 213 chars / ~14.8 s STT — ~4% of the char cap,
+  `refusals=0`. Measured cost ~990 chars per minute of speech.
+- `analyze_capture.py` on a tts session: 5 utterances, 0 clipped tails,
+  utterance markers aligned on the waveform timeline.
+
+### Outcome
+
+**The question is answered: no.** ~1.5 s of the ~1.9 s best case is serialized
+vendor round trips on a chain that cannot start synthesizing before the speaker
+stops. Versus the RVC path's ~200 ms, the gap is structural rather than tuning,
+so this engine is a turn-taking technology, not a live voice-conversion one.
+Audio quality and transcript fidelity are both excellent, which is why it is
+worth keeping on the shelf for a turn-based product, and why the branch stays a
+DRAFT rather than being merged.
+
+Not pursued (deliberately, per the brief's test contract): streaming audio to
+STT *while* the gate is open, which would cut roughly 800–1000 ms and is the
+obvious next experiment if this direction is revisited.
+
+---
+---
 ## 28 July 2026 — Micro-fix: pin wranglerVersion in deploy workflow (PR #16, branch fix/deploy-wrangler-version)
 
 ### Task (verbatim)
