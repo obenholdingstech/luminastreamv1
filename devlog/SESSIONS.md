@@ -4,6 +4,186 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 28 July 2026 — SPIKE: STT→TTS second engine (`--engine tts`), DRAFT PR
+
+### Task (verbatim)
+
+> SPIKE — STT→TTS voice engine (branch: feat/spike-stt-tts) — EXPERIMENTAL
+> Full build-and-retest autonomy granted: iterate against real APIs and real
+> LiveKit to green without check-ins. PR opens as DRAFT; merge is not the goal —
+> an answered question is.
+>
+> GOAL: Second engine behind the existing agent: --engine rvc|tts (default rvc,
+> completely untouched; RVC client not initialized in tts mode). In tts mode the
+> Phase 3 VAD gate becomes an utterance endpointer: buffer speech while open; on
+> gate-close, transcribe the utterance (STT), synthesize with Amy's cloned
+> ElevenLabs voice, stream synthesized PCM back through the existing output path
+> (jitter buffer/publisher unchanged, 48k mono).
+>
+> GUARDRAIL FIRST — write the spend governor before any API call exists:
+> hard per-run caps MAX_TTS_CHARS (default 5000) and MAX_STT_SECONDS (default
+> 300), env-overridable, loud refusal past cap, agent stays alive. ElevenLabs
+> bills per character; an autonomous loop must be PHYSICALLY unable to drain
+> the Creator account.
+>
+> VERIFY BEFORE CODING (live docs + real calls, current IDs never hardcoded):
+> - TTS: streaming endpoints (websocket vs HTTP stream), TTFB behavior, PCM
+>   output format/rates. Model knob must accept: eleven_flash_v2_5 (speed),
+>   eleven_multilingual_v2 (quality), eleven_v3 (ceiling probe — expected to
+>   miss the latency budget; measure it anyway).
+> - STT: default candidate is ElevenLabs Scribe v2 Realtime (one vendor, one
+>   key); verify streaming support + latency-to-final; note Deepgram streaming
+>   as runner-up with one-line reasoning. Pick ONE for the spike.
+> - Voice: ELEVENLABS_VOICE_ID + ELEVENLABS_API_KEY from secrets.env.
+>
+> METRICS (the spike IS an instrument):
+> - tail_latency := last speech sample (gate-close minus hangover) → first
+>   synthesized sample enqueued. Per utterance; report p50/p95 per model_id.
+> - Per utterance: STT ms, transcript, TTS TTFB ms, chars billed, model_id.
+> - WER/edit-distance vs the known drill script per utterance (transcript
+>   fidelity is a first-class result — accent robustness lives here).
+> - --capture-dir works in tts mode; utterance events into meta.jsonl so
+>   analyze_capture.py aligns them.
+>
+> TESTS (mock vendors; real APIs only in E2E):
+> - Endpointer: exactly one STT call per utterance; hangover audio included;
+>   nothing sent while gate open.
+> - Governor refusal without crash. Fail-open: STT/TTS error drops that
+>   utterance with logged reason; stream survives; next utterance proceeds.
+> - Output continuity: 48k mono into jitter buffer, no clicks at boundaries.
+> E2E (the Phase 3/4 harness: audio-file publisher, real LiveKit, real APIs):
+> fixed script in → transcripts match, audio returns, tail_latency table
+> produced across all three models, total spend inside governor caps.
+>
+> DOCS: SPIKE.md — architecture, the latency table, observed cost per minute of
+> speech, and Amy's drill protocol: same fixed script, one reading per model,
+> three scores each: clean /10, latency-feel /10, "is it ME?" /10.
+> Session log per convention; small commits; committable boundary if limits hit.
+>
+> ADDENDUM — governor semantics + expressiveness knobs:
+> 1. The spend governor is financial only. It must NEVER truncate an utterance
+>    to fit remaining budget — if an utterance would exceed it, skip that
+>    utterance WHOLE, log '[governor] utterance skipped (would exceed cap)',
+>    and say so on the data channel. A tripped governor must be unmistakable
+>    in the logs — never confusable with a pipeline bug.
+> 2. Caps are per-process-run and env-overridable (SPIKE_MAX_TTS_CHARS /
+>    SPIKE_MAX_STT_SECONDS) for deliberate longer sessions.
+> 3. Expose ElevenLabs voice_settings (stability, similarity_boost, and style
+>    if the current API supports it per live docs) as env-configurable values,
+>    logged per utterance alongside model_id — expressiveness tuning is part
+>    of what the spike measures, and Amy's MMv2 clone output is the declared
+>    quality reference the other models are judged against.
+
+### What was done
+
+Order was deliberate: **the spend governor and its 18 tests were written and
+green before a single billable line of code existed.** Only read-only API calls
+(`/v1/models`, `/v1/voices/{id}`, `/v1/user/subscription`) were made before
+that; every billable probe afterwards ran through the governor.
+
+1. `spend_governor.py` + `test_spend_governor.py` — two per-run meters,
+   reserve-then-call, refusal commits nothing.
+2. Live API verification (below), then `elevenlabs_client.py`,
+   `endpointer.py`, `tts_engine.py`, `wer.py`.
+3. `convert_agent.py` wired for `--engine rvc|tts`; every RVC touchpoint
+   guarded so the default path is bit-identical (verified: default still
+   constructs `RvcClient` + `SolaStitcher` with the same `config_snapshot`
+   keys, and the 67 pre-existing tests are unchanged and green).
+4. `publish_wav.py` E2E harness, `drill_script.txt`, live E2E across all three
+   TTS models, `SPIKE.md`.
+
+### Findings / surprises
+
+- **`output_format` is a QUERY param on the TTS endpoint, not a body field.**
+  In the body it is silently ignored and the response is default 128 kbps MP3.
+  Caught only by noticing 36 KB could not be 2.3 s of 48 kHz PCM — it costs the
+  same and decodes to plausible-looking garbage in a PCM path. The first round
+  of TTFB numbers was measured on MP3 and had to be discarded.
+- **HTTP `/stream` beats the `stream-input` WebSocket on every model**
+  (flash 365 vs 642 ms; MMv2 900 vs 2460 ms) and **`eleven_v3` is rejected at
+  WS handshake entirely**. The WS exists for text still being produced by an
+  LLM; we have the full transcript at once, so its buffering is pure latency.
+- **`scribe_v2_realtime` is the only model the realtime STT socket accepts** —
+  `scribe_v2`/`scribe_v1` connect happily and never emit a transcript.
+- **Uploading STT audio at 16 kHz instead of 48 kHz cut p50 latency-to-final
+  from 1463 ms to 871 ms** (3.0x smaller payload, byte-identical transcript).
+  Reused `vad.py`'s existing `Resampler48to16` rather than writing a second one.
+- **`pcm_48000` is accepted on this account (tier: pro, not Creator)** — so
+  synthesis enters the existing 48 kHz output path with zero resampling.
+- **`SolaStitcher` is wrong for TTS.** SOLA splices *overlapping* re-converted
+  windows; synthesized audio is contiguous, so SOLA would crossfade a signal
+  onto a shifted copy of itself and manufacture comb filtering. Swapped for a
+  contiguous `PcmQueue` exposing the same surface, leaving `OutputGate` and the
+  publisher untouched.
+- **`eleven_v3` was NOT the slowest** despite being nominated as the ceiling
+  probe: it beat `eleven_multilingual_v2` on both TTFB and tail latency. The
+  quality reference is the slowest model.
+- **WER cannot vary by TTS model** in this architecture — transcription happens
+  before the TTS model is consulted. All 7 corpus edits came from one line of
+  spoken digits being transcribed as `041-5273` (semantically perfect,
+  orthographically different); the other four lines scored exactly 0.0.
+- **SIGINT did not reliably reach the agent.** An orphaned run ignored it and
+  had to be `kill -9`'d, stranding a completed drill with its report unwritten.
+  Added explicit loop signal handlers plus `--run-seconds` for scripted runs,
+  and guarded report writing against teardown errors.
+- **The analyzer's "converter garbled" verdict lies in tts mode** — it assumes
+  a frame-aligned converter, but the answer arrives ~tail_latency later by
+  construction. Now reported as `ENGINE-LATENCY`.
+- `ELEVENLABS_VOICE_ID` resolves to a cloned voice named **"Celebrity lilcrush
+  linda"** (IVC, not PVC), not one named "Amy". Used as specified; flagged for
+  confirmation before "is it ME?" scoring means anything.
+
+### Files changed
+
+New: `SPIKE.md`, `agent/spend_governor.py`, `agent/elevenlabs_client.py`,
+`agent/endpointer.py`, `agent/tts_engine.py`, `agent/wer.py`,
+`agent/publish_wav.py`, `agent/drill_script.txt`,
+`agent/test_spend_governor.py`, `agent/test_endpointer.py`,
+`agent/test_tts_engine.py`, `agent/test_wer.py`.
+Modified: `agent/convert_agent.py` (`--engine`, guarded RVC touchpoints,
+`--run-seconds`, signal handling, report), `agent/vad.py` (additive
+`OutputGate.force_prime()`), `agent/analyze_capture.py` (utterance markers +
+table, tts-mode silence attribution), `agent/README.md`.
+Untouched: `echo_agent.py`, `bridge.py`, `rvc_client.py`, `knobs.py`,
+`capture.py`, all of `src/`.
+
+### Verification results
+
+- **117 tests pass** (67 pre-existing unchanged + 50 new). Mock vendors only.
+- `lk_smoke.py` → `CONNECTED OK` before any live run.
+- Live E2E, real LiveKit Cloud + real ElevenLabs, 5-line drill per model,
+  publisher pacing drift ≤ 19 ms:
+
+  | model | tail p50 | p95 | TTFB p50 | STT p50 |
+  |---|---|---|---|---|
+  | `eleven_flash_v2_5` | 1938 ms | 2511 ms | 372 ms | 1121 ms |
+  | `eleven_v3` | 2459 ms | 2850 ms | 734 ms | 1015 ms |
+  | `eleven_multilingual_v2` | 2741 ms | 3071 ms | 942 ms | 1162 ms |
+
+  0 skipped, 0 dropped, 0 underruns, 0 clipped tails, max queue depth 1.
+  Corpus WER 0.1458 (all 7 edits = one digit-normalization line; 0.0 on the
+  other four). Spend per run 213 chars / ~14.8 s STT — ~4% of the char cap,
+  `refusals=0`. Measured cost ~990 chars per minute of speech.
+- `analyze_capture.py` on a tts session: 5 utterances, 0 clipped tails,
+  utterance markers aligned on the waveform timeline.
+
+### Outcome
+
+**The question is answered: no.** ~1.5 s of the ~1.9 s best case is serialized
+vendor round trips on a chain that cannot start synthesizing before the speaker
+stops. Versus the RVC path's ~200 ms, the gap is structural rather than tuning,
+so this engine is a turn-taking technology, not a live voice-conversion one.
+Audio quality and transcript fidelity are both excellent, which is why it is
+worth keeping on the shelf for a turn-based product, and why the branch stays a
+DRAFT rather than being merged.
+
+Not pursued (deliberately, per the brief's test contract): streaming audio to
+STT *while* the gate is open, which would cut roughly 800–1000 ms and is the
+obvious next experiment if this direction is revisited.
+
+---
+---
+
 ## 27 July 2026 — Stage 3-Lite, Session A: Cloudflare Pages hosting (PR #13)
 
 ### Task (verbatim)

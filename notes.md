@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 28 July 2026 — SPIKE: STT→TTS engine measured; answer is NO (draft PR, full record: devlog/SESSIONS.md)
+
+- Built `--engine tts` (Scribe v2 Realtime → cloned-voice TTS) behind the existing agent; `--engine rvc` default and bit-identical (RVC client never constructed in tts mode). Governor written+green BEFORE any billable call: per-run caps, skips utterances whole, never truncates.
+- Live E2E, 3 models: tail_latency p50 1938 / 2459 / 2741 ms (flash / v3 / MMv2) vs RVC's ~200 ms. ~1.5s of it is serialized vendor round trips → structural, not tuning. 0 skipped, 0 underruns, 0 clipped tails, ~990 chars/min of speech.
+- Surprises: `output_format` is a query param (body → silent MP3); HTTP beats the TTS websocket everywhere and v3 rejects WS entirely; 16k STT upload cut latency-to-final 1463→871ms; v3 was NOT the slowest — MMv2 was; WER can't vary by TTS model (all 7 edits = one digit-normalization line, other four lines 0.0).
+- **Decision: branch stays DRAFT.** Good turn-taking tech, wrong for live conversion. Voice ID in secrets.env is named "Celebrity lilcrush linda", not Amy — confirm before "is it ME?" scoring.
+- Next: Amy's drill (SPIKE.md protocol, 3 scores x 3 models). If revisited: stream audio to STT while the gate is open (~800-1000ms saving, deliberately out of scope here).
+
 ---
 
 ## 27 July 2026 — S3-Lite A: Cloudflare Pages hosting, PR #13 (full record: devlog/SESSIONS.md)
