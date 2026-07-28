@@ -171,6 +171,12 @@ note — rotating `ADMIN_SESSION_SECRET` instantly invalidates every outstanding
 admin session (HMAC verify fails closed; wrangler applies the new secret on the
 next request, no redeploy). Proved base64 (`=` padding) extraction is byte-exact.
 
+CodeRabbit round 2 (addendum, d5afef6): 2 findings — `put-worker-secrets.sh`
+all-or-nothing **preflight** (Major: prevents partial updates and a rotation
+silently keeping an old secret) + checkout `persist-credentials: false` (Minor)
+— both fixed and **confirmed resolved** by CodeRabbit. All **4** PR findings
+across 2 rounds resolved; check green, PR **mergeable**, merge **HELD** for CTO.
+
 ### Next
 
 - **HOLD MERGE** — awaiting CTO decision on PR #14. On merge, the new workflow

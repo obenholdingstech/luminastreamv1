@@ -28,6 +28,8 @@ Running summary of every working session, **newest entry first**. Each entry: wh
   extraction proven byte-exact.
 - Verified: 35/35 worker + 21/21 frontend tests, lint clean, typecheck at main baseline (+0),
   build green, `wrangler deploy --dry-run` bundles both prod + staging w/ rate limiters.
+- CodeRabbit: 2 rounds, **4/4 findings resolved** (round 2: secret-script preflight + checkout
+  persist-credentials:false, both confirmed). Check green; PR #14 mergeable.
 - Next: **HOLD MERGE for CTO** on PR #14; on merge, workflow auto-deploys production (needs
   CLOUDFLARE_* GitHub secrets). Amy: token→GitHub, run secret script, set VITE_API_BASE.
 
