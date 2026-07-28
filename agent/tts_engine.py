@@ -1,0 +1,284 @@
+"""The STT→TTS engine — the spike's second engine, behind --engine tts.
+
+Shape of one utterance, and where every measured number comes from:
+
+  VAD gate closes
+    └─ UtteranceEndpointer emits the buffered speech (hangover included)
+        └─ governor.reserve_stt(duration)      ── refuse ⇒ skip utterance WHOLE
+            └─ SttClient.transcribe()          ── one commit, one transcript
+                └─ governor.reserve_tts(chars) ── refuse ⇒ skip utterance WHOLE
+                    └─ TtsClient.stream()      ── first chunk stops the clock
+                        └─ PcmQueue → OutputGate → AudioSource (all unchanged)
+
+tail_latency is the headline: from the last SPEECH sample (gate-close minus
+the hangover the endpointer actually applied) to the first synthesized sample
+ENQUEUED on the jitter buffer. Enqueued, not audible — the priming depth that
+follows is an existing, separately-tunable property of the output path
+(prime_hops), and folding it in here would measure the jitter buffer twice.
+
+Utterances are processed strictly one at a time by a single worker. Overlapping
+them would interleave two syntheses into one FIFO and produce audio in the
+wrong order; a queue depth >1 is reported instead, because "the speaker got
+ahead of the pipeline" is a real finding about the latency budget.
+
+FAIL-OPEN, everywhere: a governor refusal, an STT error, an empty transcript
+or a TTS error drops THAT utterance with a logged reason and a data-channel
+notice. The worker survives, the room stays connected, the next utterance is
+processed normally. Nothing here can take the stream down.
+"""
+
+import asyncio
+import logging
+import time
+
+from elevenlabs_client import SttError, TtsError
+from spend_governor import GovernorRefusal
+from wer import best_match
+
+log = logging.getLogger("tts-engine")
+
+QUEUE_WARN_DEPTH = 2
+
+
+class TtsEngine:
+    """Owns the utterance lifecycle, the metrics, and the TTS-side output buffer.
+
+    The agent hands it hops on the input side and pulls frames on the output
+    side; everything between is this class's problem.
+    """
+
+    def __init__(self, stt, tts, governor, endpointer, queue, outgate,
+                 drill_lines=None, on_event=None, on_notice=None):
+        self.stt = stt
+        self.tts = tts
+        self.governor = governor
+        self.endpointer = endpointer
+        self.queue = queue
+        self.outgate = outgate
+        self.drill_lines = drill_lines or []
+        self._on_event = on_event      # capture/meta.jsonl sink
+        self._on_notice = on_notice    # data-channel sink
+        self._work = asyncio.Queue()
+        self._worker_task = None
+        self._synth_in_flight = False
+        self.records = []              # one dict per completed utterance
+        self.skipped = 0               # dropped for any reason
+        self.max_queue_depth = 0
+
+    # ── lifecycle ────────────────────────────────────────────────────
+
+    def start(self):
+        self._worker_task = asyncio.ensure_future(self._worker())
+        return self
+
+    async def aclose(self):
+        if self._worker_task is not None:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._worker_task = None
+
+    def event(self, kind, **fields):
+        if self._on_event is not None:
+            self._on_event(kind, **fields)
+
+    def notice(self, payload):
+        if self._on_notice is not None:
+            self._on_notice(payload)
+
+    # ── input side ───────────────────────────────────────────────────
+
+    def feed_hop(self, hop_pcm, gate_open, is_speech):
+        """Called once per hop from the frame loop. Never blocks, never awaits."""
+        utt = self.endpointer.feed_hop(hop_pcm, gate_open, is_speech)
+        if utt is None:
+            return
+        self._work.put_nowait(utt)
+        depth = self._work.qsize()
+        self.max_queue_depth = max(self.max_queue_depth, depth)
+        if depth >= QUEUE_WARN_DEPTH:
+            log.warning("utterance queue depth %d — the speaker is ahead of the "
+                        "pipeline (latency budget exceeded, not an error)", depth)
+        self.event("utterance_end", **utt.summary(), queue_depth=depth)
+
+    # ── output side ──────────────────────────────────────────────────
+
+    def read_frame(self, n):
+        """Exactly n samples for the publisher. Reuses OutputGate untouched.
+
+        gate_open is simply "synthesis is still arriving". When it goes false
+        OutputGate plays out what is buffered and fades the final partial frame
+        to zero — the same intentional-drain path Phase 3 built for the VAD
+        gate, doing the same job at the end of an utterance.
+        """
+        if not self._synth_in_flight and self.queue.available:
+            # All the audio there will ever be for this utterance is already
+            # here; if it is thinner than the priming depth, prime anyway or it
+            # would sit here forever and leak into the next utterance.
+            self.outgate.force_prime()
+        return self.outgate.read_frame(n, self._synth_in_flight)
+
+    @property
+    def speaking(self):
+        return self._synth_in_flight or bool(self.queue.available)
+
+    # ── the worker ───────────────────────────────────────────────────
+
+    async def _worker(self):
+        while True:
+            utt = await self._work.get()
+            try:
+                await self._process(utt)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Belt and braces: _process already catches everything it
+                # expects. An unexpected error must still not kill the worker.
+                self.skipped += 1
+                log.exception("utterance %d failed unexpectedly — dropped", utt.index)
+
+    def _drop(self, utt, reason, detail, notice_extra=None):
+        self.skipped += 1
+        self.event("utterance_dropped", index=utt.index, reason=reason,
+                   detail=detail, **(notice_extra or {}))
+        payload = {"type": "tts_utterance_dropped", "index": utt.index,
+                   "reason": reason, "detail": detail}
+        if notice_extra:
+            payload.update(notice_extra)
+        self.notice(payload)
+
+    async def _process(self, utt):
+        rec = {
+            "index": utt.index,
+            "utterance_s": round(utt.duration_s, 3),
+            "speech_s": round(utt.speech_duration_s, 3),
+            "hangover_s": round(utt.hangover_s, 3),
+            "model_id": self.tts.model,
+            "stt_model_id": self.stt.model,
+            "voice_settings": dict(self.tts.voice_settings),
+        }
+
+        # 1. STT budget — refuse ⇒ the utterance is skipped WHOLE, never trimmed
+        try:
+            self.governor.reserve_stt(utt.duration_s)
+        except GovernorRefusal as refusal:
+            self._drop(utt, "governor_stt", str(refusal),
+                       {"governor": refusal.as_dict()})
+            return
+
+        # 2. Transcribe
+        try:
+            transcript, stt_ms = await self.stt.transcribe(utt.pcm)
+        except SttError as exc:
+            self._drop(utt, "stt_error", str(exc))
+            return
+        rec["stt_ms"] = round(stt_ms, 1)
+        rec["transcript"] = transcript
+
+        if not transcript.strip():
+            # Nothing to say: no TTS call, no spend. Common on a cough that
+            # cleared the VAD threshold.
+            self._drop(utt, "empty_transcript", f"STT returned nothing in {stt_ms:.0f}ms")
+            return
+
+        # WER against the drill script — transcript fidelity is a headline result
+        if self.drill_lines:
+            line, sc = best_match(transcript, self.drill_lines)
+            if sc is not None:
+                rec["drill_line"] = line
+                rec["wer"] = sc["wer"]
+                rec["cer"] = sc["cer"]
+                rec["wer_detail"] = sc
+
+        # 3. TTS budget — same whole-utterance rule
+        chars = len(transcript)
+        try:
+            self.governor.reserve_tts(chars)
+        except GovernorRefusal as refusal:
+            rec["chars"] = chars
+            self._drop(utt, "governor_tts", str(refusal),
+                       {"governor": refusal.as_dict(), "chars": chars})
+            return
+        rec["chars"] = chars
+
+        # 4. Synthesize, streaming into the jitter buffer
+        self._synth_in_flight = True
+        first_at = None
+        samples = 0
+        try:
+            async for pcm, ttfb_ms in self.tts.stream(transcript):
+                if first_at is None:
+                    first_at = time.monotonic()
+                    rec["tts_ttfb_ms"] = round(ttfb_ms, 1)
+                    rec["tail_latency_ms"] = round(utt.tail_latency_ms(first_at), 1)
+                self.queue.push(pcm)
+                samples += len(pcm)
+        except TtsError as exc:
+            self._drop(utt, "tts_error", str(exc))
+            return
+        finally:
+            self._synth_in_flight = False
+
+        if first_at is None:
+            self._drop(utt, "tts_empty", "synthesis returned no audio")
+            return
+
+        rec["audio_s"] = round(samples / 48000.0, 3)
+        rec["spend"] = self.governor.snapshot()
+        self.records.append(rec)
+        self.event("utterance", **rec)
+        self.notice({"type": "tts_utterance", "index": utt.index,
+                     "transcript": transcript,
+                     "tail_latency_ms": rec.get("tail_latency_ms"),
+                     "tts_ttfb_ms": rec.get("tts_ttfb_ms"),
+                     "stt_ms": rec.get("stt_ms"),
+                     "chars": chars, "model_id": self.tts.model,
+                     "wer": rec.get("wer")})
+        log.info("utterance %d: %.2fs speech → %r | stt %.0fms | ttfb %.0fms | "
+                 "TAIL %.0fms | %d chars | wer=%s",
+                 utt.index, utt.speech_duration_s, transcript[:60],
+                 rec["stt_ms"], rec.get("tts_ttfb_ms", -1),
+                 rec.get("tail_latency_ms", -1), chars, rec.get("wer"))
+
+    # ── reporting ────────────────────────────────────────────────────
+
+    def latency_table(self):
+        """p50/p95 of tail_latency and TTFB, grouped by model_id."""
+        by_model = {}
+        for rec in self.records:
+            if rec.get("tail_latency_ms") is None:
+                continue
+            by_model.setdefault(rec["model_id"], []).append(rec)
+        out = {}
+        for model, recs in by_model.items():
+            out[model] = {
+                "n": len(recs),
+                "tail_latency_ms": _pct([r["tail_latency_ms"] for r in recs]),
+                "tts_ttfb_ms": _pct([r["tts_ttfb_ms"] for r in recs
+                                     if r.get("tts_ttfb_ms") is not None]),
+                "stt_ms": _pct([r["stt_ms"] for r in recs
+                                if r.get("stt_ms") is not None]),
+                "chars": sum(r.get("chars", 0) for r in recs),
+            }
+        return out
+
+    def stats_line(self):
+        return (f"tts: utterances={len(self.records)} skipped={self.skipped} "
+                f"queued={self._work.qsize()} (max {self.max_queue_depth}) "
+                f"speaking={self.speaking} buffer={self.queue.available} samples | "
+                f"{self.governor.summary_line()}")
+
+
+def _pct(values):
+    """(p50, p95) with the same index convention as RvcClient.turnaround_ms."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return {
+        "p50": round(ordered[len(ordered) // 2], 1),
+        "p95": round(ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))], 1),
+        "min": round(min(ordered), 1),
+        "max": round(max(ordered), 1),
+    }

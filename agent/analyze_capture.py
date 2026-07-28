@@ -461,6 +461,19 @@ def plot_dropout_map(path, env_out, hop_ms, silences, events, out_dur_s):
                 ax.axvline(t, color="#1baf7a", lw=1.0, ls=":")
                 ax.annotate(label, xy=(t, ymax * 1.02), color="#1baf7a",
                             fontsize=7, ha="left", rotation=90, va="top")
+            elif kind == "utterance":
+                # SPIKE: pin each synthesized answer to where it was published
+                t = ev["out_pos"] / SR
+                ax.axvline(t, color="#1baf7a", lw=1.0, ls="-.")
+                ax.annotate(f"#{ev.get('index')} {ev.get('tail_latency_ms')}ms",
+                            xy=(t, ymax * 1.02), color="#1baf7a",
+                            fontsize=7, ha="left", rotation=90, va="top")
+            elif kind == "utterance_dropped":
+                t = ev["out_pos"] / SR
+                ax.axvline(t, color=C_CRIT, lw=1.0, ls="-.")
+                ax.annotate(str(ev.get("reason")), xy=(t, ymax * 1.02),
+                            color=C_CRIT, fontsize=7, ha="left",
+                            rotation=90, va="top")
             continue
         m = marks[kind]
         ax.scatter(ev["out_pos"] / SR, ymax * 1.05, s=30, zorder=3,
@@ -565,6 +578,26 @@ def build_report(session_dir, header, x_in, x_out, offset_ms, peak_corr,
                 flags += f"  rejected: {sorted(ev['rejected'])}"
             add(f"  t={ev['t']:7.2f}s  {keys}{flags}")
             add(f"           applied config: {json.dumps(ev.get('config'))}")
+
+    # SPIKE (--engine tts): per-utterance STT→TTS results on the same timeline
+    spoken = [ev for ev in events if ev["event"] == "utterance"]
+    dropped = [ev for ev in events if ev["event"] == "utterance_dropped"]
+    if spoken or dropped:
+        add("")
+        add(f"tts utterances : {len(spoken)} synthesized, {len(dropped)} dropped")
+        for ev in spoken:
+            add(f"  t={ev['t']:7.2f}s  #{ev.get('index')} tail={ev.get('tail_latency_ms')}ms "
+                f"(stt {ev.get('stt_ms')}ms + ttfb {ev.get('tts_ttfb_ms')}ms) "
+                f"{ev.get('chars')} chars  wer={ev.get('wer')}  [{ev.get('model_id')}]")
+            add(f"           {ev.get('transcript')!r}")
+        for ev in dropped:
+            add(f"  t={ev['t']:7.2f}s  #{ev.get('index')} DROPPED ({ev.get('reason')}): "
+                f"{ev.get('detail')}")
+        tails = [ev["tail_latency_ms"] for ev in spoken
+                 if ev.get("tail_latency_ms") is not None]
+        if tails:
+            add(f"  tail_latency   : p50 {percentile(tails, 50):.0f} ms, "
+                f"p95 {percentile(tails, 95):.0f} ms, max {max(tails):.0f} ms")
     return "\n".join(lines) + "\n"
 
 

@@ -29,9 +29,22 @@ become clean silence on the output with equal-power edge ramps. Fail-open:
 if the model can't load or errors, the agent runs ungated (same philosophy
 as the RVC-failure fallback). --no-vad disables it entirely.
 
-Run:  python convert_agent.py [--mode passthrough|convert] [--capture-dir PATH]
-      [--no-vad] [--vad-threshold 0.5] [--vad-hangover-ms 300]
+SPIKE (--engine tts): a second engine behind the same transport, agent and VAD.
+The RVC engine is the default and is untouched by it — in tts mode the RVC
+client is never even constructed. There, the Phase 3 VAD gate stops being a
+noise gate and becomes an utterance endpointer: speech is buffered while the
+gate is open, and at gate-close the utterance is transcribed (ElevenLabs
+Scribe v2 Realtime) and re-spoken in the cloned voice (ElevenLabs TTS), then
+streamed back through this same output path. Every billable call is metered by
+spend_governor.py. See SPIKE.md.
+
+Run:  python convert_agent.py [--engine rvc|tts] [--mode passthrough|convert]
+      [--capture-dir PATH] [--no-vad] [--vad-threshold 0.5]
+      [--vad-hangover-ms 300]
       RVC_WS_URL=ws://127.0.0.1:8000/ws/audio (default; see README.md)
+      --engine tts: [--tts-model eleven_flash_v2_5] [--drill-script PATH]
+      ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID from secrets.env;
+      SPIKE_MAX_TTS_CHARS / SPIKE_MAX_STT_SECONDS cap the run's spend.
 The RVC server must run with RVC_STREAM_CONTEXT_SECONDS=0 (stateless windows).
 """
 
@@ -43,14 +56,25 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+import aiohttp
 import numpy as np
 from dotenv import load_dotenv
 from livekit import api, rtc
 
 import knobs
+import wer
 from bridge import CTX, HOP, SOLA, XFADE, SolaStitcher, WindowAssembler
 from capture import SessionCapture
+from elevenlabs_client import (
+    DEFAULT_TTS_MODEL,
+    SttClient,
+    TtsClient,
+    fetch_voice_settings,
+    resolve_voice_settings,
+)
+from endpointer import PcmQueue, UtteranceEndpointer
 from rvc_client import RvcClient
+from tts_engine import TtsEngine
 from vad import DEFAULT_HANGOVER_MS, DEFAULT_THRESHOLD, OutputGate, VadGate
 
 DEFAULT_ROOM = "luminastream-test"
@@ -61,6 +85,7 @@ SAMPLE_RATE = 48000
 NUM_CHANNELS = 1
 
 MODES = ("passthrough", "convert")
+ENGINES = ("rvc", "tts")
 MAX_IN_FLIGHT = 2      # beyond this, drop the hop — late audio is worse than lost audio
 PRIME_SAMPLES = int(1.5 * HOP)  # jitter buffer: drain only after ~1.5 hops buffered
 RVC_RETRY_S = 5.0
@@ -96,10 +121,11 @@ def mint_token(key, secret, room, identity):
 
 class ConvertAgent:
     def __init__(self, room_name, identity, rvc_url, requested_mode, capture_dir=None,
-                 vad=None):
+                 vad=None, engine="rvc", tts_engine=None):
         self.room_name = room_name
         self.identity = identity
         self.rvc_url = rvc_url
+        self.engine = engine               # "rvc" (default) | "tts" (spike)
         self.capture_dir = capture_dir  # None ⇒ capture fully disabled
         self.capture = None             # SessionCapture while a session runs
         self.room = rtc.Room()
@@ -110,9 +136,21 @@ class ConvertAgent:
         self.mode_reason = None
 
         self.assembler = WindowAssembler()
-        self.stitcher = SolaStitcher()
         self.vad = vad                     # VadGate or None (--no-vad)
-        self.outgate = OutputGate(self.stitcher, PRIME_SAMPLES)
+        # TTS mode swaps the jitter buffer (contiguous PCM instead of SOLA-
+        # stitched overlapping windows) and nothing else on the output side:
+        # the OutputGate and the publisher below are the same objects either way.
+        self.tts = tts_engine              # TtsEngine or None
+        if engine == "tts":
+            self.stitcher = tts_engine.queue
+            self.outgate = tts_engine.outgate
+            # The engine is built before the agent (its clients must exist to
+            # be warmed up), so its sinks are attached here rather than passed in
+            tts_engine._on_event = self._tts_event
+            tts_engine._on_notice = self._tts_notice
+        else:
+            self.stitcher = SolaStitcher()
+            self.outgate = OutputGate(self.stitcher, PRIME_SAMPLES)
         self.windows_gated = 0             # hops withheld from RVC by the VAD
         self._vad_fail_published = False   # fail-open reported once on the data channel
         # Fire-and-forget keepalive: the loop only holds weak refs to tasks, so
@@ -124,7 +162,9 @@ class ConvertAgent:
         # no server-side settings echo, nothing would self-correct.
         self._config_lock = asyncio.Lock()
         self._last_hop_seq = 0             # context-accounting monotonicity assert
-        self.rvc = RvcClient(
+        # SPIKE: in tts mode the RVC client is never constructed — no socket, no
+        # warmup, no GPU. Every rvc touchpoint below is guarded on this being None.
+        self.rvc = None if engine == "tts" else RvcClient(
             rvc_url,
             on_window=self._on_converted,
             on_disconnect=self._on_rvc_drop,
@@ -236,7 +276,7 @@ class ConvertAgent:
         self._spawn(self._apply_mode(mode))
 
     async def _apply_mode(self, mode, reason=None):
-        if mode == "convert" and not self.rvc.connected:
+        if mode == "convert" and self.rvc is not None and not self.rvc.connected:
             # Can't convert right now — stay/fall back to passthrough, keep
             # requested_mode=convert so recovery flips us automatically
             log.warning("convert requested but RVC unavailable — staying in passthrough")
@@ -257,6 +297,10 @@ class ConvertAgent:
             self.assembler.reset()
             self.stitcher.reset()
             self.outgate.reset()
+            if self.tts is not None:
+                # Drop a half-buffered utterance too — on re-entry it would be
+                # a fragment with no beginning, and STT would bill for it.
+                self.tts.endpointer.reset()
             self._min_valid_seq = self.assembler.seq + 1
         else:
             # Anything still in flight is now stale
@@ -294,17 +338,48 @@ class ConvertAgent:
         except Exception as exc:
             log.error("failed to publish agent_mode: %s", exc)
 
+    # ── TTS engine sinks (SPIKE) ─────────────────────────────────────
+
+    def _tts_event(self, kind, **fields):
+        """Utterance events into meta.jsonl, so analyze_capture.py can align
+        them against the input/output waveforms on the shared t/in_pos/out_pos
+        timeline every capture event already carries."""
+        if self.capture:
+            self.capture.event(kind, **fields)
+
+    def _tts_notice(self, payload):
+        """Per-utterance results (and governor skips) onto the data channel."""
+        self._spawn(self._publish_json(payload))
+
+    async def _publish_json(self, payload):
+        if self.room.connection_state != rtc.ConnectionState.CONN_CONNECTED:
+            return
+        try:
+            await self.room.local_participant.publish_data(
+                json.dumps(payload), reliable=True)
+        except Exception as exc:
+            log.error("failed to publish %s: %s", payload.get("type"), exc)
+
     # ── Tuning knobs (Phase 4) ───────────────────────────────────────
 
     def config_snapshot(self):
         """The full APPLIED tuning config — the only truth the UI renders."""
-        snap = {
-            "index_rate": self.rvc.config.get("index_rate"),
-            "protect": self.rvc.config.get("protect"),
-            "rms_mix_rate": self.rvc.config.get("rms_mix_rate"),
-            "f0_method": self.rvc.config.get("f0_method"),
-            "prime_hops": round(self.outgate.prime_samples / HOP, 3),
-        }
+        snap = {"prime_hops": round(self.outgate.prime_samples / HOP, 3)}
+        if self.rvc is not None:
+            snap.update({
+                "index_rate": self.rvc.config.get("index_rate"),
+                "protect": self.rvc.config.get("protect"),
+                "rms_mix_rate": self.rvc.config.get("rms_mix_rate"),
+                "f0_method": self.rvc.config.get("f0_method"),
+            })
+        else:
+            # SPIKE: the tts engine's own applied truth, same contract
+            snap.update({
+                "engine": "tts",
+                "tts_model_id": self.tts.tts.model,
+                "stt_model_id": self.tts.stt.model,
+                "voice_settings": dict(self.tts.tts.voice_settings),
+            })
         if self.vad is not None:
             snap["vad_threshold"] = self.vad.threshold
             snap["vad_hangover_ms"] = self.vad.hangover_ms
@@ -321,6 +396,10 @@ class ConvertAgent:
             for name, value in applied.items():
                 target = knobs.KNOBS[name]["target"]
                 if target == "rvc":
+                    if self.rvc is None:
+                        rejected[name] = "no RVC engine (--engine tts)"
+                        adjusted.pop(name, None)  # rejected wins — never both
+                        continue
                     rvc_updates[name] = value
                 elif name == "prime_hops":
                     self.outgate.prime_samples = knobs.prime_hops_to_samples(value)
@@ -437,7 +516,8 @@ class ConvertAgent:
             self.capture = SessionCapture(self.capture_dir, {
                 "participant": identity,
                 "mode": self.mode,
-                "rvc_ws_url": self.rvc_url,
+                "engine": self.engine,
+                "rvc_ws_url": None if self.rvc is None else self.rvc_url,
                 "sample_rate": SAMPLE_RATE,
                 "hop": HOP, "ctx": CTX, "xfade": XFADE, "sola": SOLA,
                 "prime_samples": PRIME_SAMPLES,
@@ -457,7 +537,10 @@ class ConvertAgent:
                 if self.capture:
                     self.capture.add_input(bytes(frame.data))
                 if self.mode == "convert":
-                    await self._convert_frame(frame)
+                    if self.tts is not None:
+                        await self._tts_frame(frame)
+                    else:
+                        await self._convert_frame(frame)
                 else:
                     # Passthrough — the await IS the flow control
                     if self.capture:
@@ -560,6 +643,70 @@ class ConvertAgent:
             self.capture.add_output(bytes(out.data))
         await self.source.capture_frame(out)
 
+    # ── The TTS engine's frame path (SPIKE) ──────────────────────────
+
+    async def _tts_frame(self, frame):
+        """Same shape as _convert_frame: assemble hops in, publish frames out.
+
+        The input side runs the identical assembler + VAD decision the RVC path
+        uses, so both engines endpoint on the same gate and the Phase 3/4 VAD
+        knobs keep their meaning. The difference is only what the hop is handed
+        to: RVC gets a window over the websocket, the endpointer gets the hop.
+        """
+        n = frame.samples_per_channel
+        pcm = np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0
+
+        if self.vad is None or not self.vad.active:
+            # The VAD is not optional here — it IS the endpointer. Without it
+            # the gate never closes, no utterance is ever emitted, and the
+            # buffer just grows to the forced-cut bound burning STT budget on
+            # 30-second slabs. Falling back keeps the room alive and spends
+            # nothing, which is the fail-open outcome that makes sense in
+            # tts mode.
+            log.error("VAD unavailable in tts mode — falling back to passthrough "
+                      "(the gate is the endpointer; there is no engine without it)")
+            self._spawn(self._apply_mode("passthrough", "vad_required_for_tts"))
+            if self.capture:
+                self.capture.add_output(bytes(frame.data))
+            await self.source.capture_frame(frame)
+            return
+
+        for seq, window in self.assembler.feed(pcm):
+            hop = window[-HOP:]
+            was_open = self.vad.gate_open
+            gate_open = self.vad.decide_hop(hop)
+            # is_speech distinguishes a real speech hop from a hangover hop, so
+            # the endpointer can subtract the hangover when timing tail_latency
+            is_speech = (self.vad.last_prob is not None
+                         and self.vad.last_prob >= self.vad.threshold)
+            if self.vad.gate_open != was_open:
+                state = "open" if self.vad.gate_open else "closed"
+                log.info("VAD gate %s (prob %.2f)", state, self.vad.last_prob or 0.0)
+                if self.capture:
+                    self.capture.event("vad_gate", state=state, seq=seq,
+                                       prob=round(self.vad.last_prob or 0.0, 3))
+            self.tts.feed_hop(hop, gate_open, is_speech)
+
+        # Output side: 1 frame in → 1 frame out, same pacing contract as the
+        # RVC path, same OutputGate, same AudioSource.
+        underruns_before = self.stitcher.underrun_events
+        was_primed = self.outgate.primed
+        samples = self.tts.read_frame(n)
+        if self.outgate.primed and not was_primed:
+            log.info("tts jitter buffer primed")
+        if self.capture and self.stitcher.underrun_events > underruns_before:
+            self.capture.event("underrun", samples=n)
+        if self.outgate.drained and self.capture:
+            self.capture.event("tts_drained")
+
+        out = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, n)
+        np.frombuffer(out.data, dtype=np.int16)[:] = (
+            np.clip(samples, -1.0, 1.0) * 32767.0
+        ).astype(np.int16)
+        if self.capture:
+            self.capture.add_output(bytes(out.data))
+        await self.source.capture_frame(out)
+
     # ── Stats ────────────────────────────────────────────────────────
 
     async def _stats_loop(self):
@@ -567,6 +714,20 @@ class ConvertAgent:
         while True:
             await asyncio.sleep(STATS_INTERVAL_S)
             cur = (self.frames_in, self.frames_out)
+            if self.tts is not None:
+                log.info(
+                    "stats: mode=%s frames in=%d (+%d) out=%d (+%d) | gated=%d "
+                    "vad=%s | underruns=%d (%d samples) | %s",
+                    self.mode, cur[0], cur[0] - prev[0], cur[1], cur[1] - prev[1],
+                    self.windows_gated,
+                    "off" if self.vad is None
+                    else ("open" if self.vad.gate_open else "closed")
+                    if self.vad.active else "FAILED-OPEN",
+                    self.stitcher.underrun_events, self.stitcher.underrun_samples,
+                    self.tts.stats_line(),
+                )
+                prev = cur
+                continue
             p50, p95 = self.rvc.turnaround_ms()
             log.info(
                 "stats: mode=%s frames in=%d (+%d) out=%d (+%d) | windows sent=%d recv=%d "
@@ -614,7 +775,10 @@ class ConvertAgent:
                 await self.process_task  # lets the capture finalize its files
             except (asyncio.CancelledError, Exception):
                 pass
-        await self.rvc.close()
+        if self.tts is not None:
+            await self.tts.aclose()
+        if self.rvc is not None:
+            await self.rvc.close()
         await self.room.disconnect()
 
 
@@ -636,6 +800,19 @@ async def main():
     parser.add_argument("--vad-hangover-ms", type=float, default=DEFAULT_HANGOVER_MS,
                         help=f"keep the gate open this long after the last speech "
                              f"(default {DEFAULT_HANGOVER_MS} ms; rounded UP to whole hops)")
+    parser.add_argument("--engine", choices=ENGINES, default="rvc",
+                        help="rvc (default, unchanged) or tts (SPIKE: STT→TTS; "
+                             "the RVC client is not constructed at all)")
+    parser.add_argument("--tts-model", default=DEFAULT_TTS_MODEL,
+                        help=f"--engine tts: ElevenLabs model_id (default "
+                             f"{DEFAULT_TTS_MODEL}; also eleven_multilingual_v2, "
+                             "eleven_v3)")
+    parser.add_argument("--drill-script", default=None, metavar="PATH",
+                        help="--engine tts: fixed drill script, one line per "
+                             "utterance; transcripts are scored (WER) against it")
+    parser.add_argument("--report", default=None, metavar="PATH",
+                        help="--engine tts: write the per-utterance metrics + "
+                             "latency table as JSON on shutdown")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -643,6 +820,14 @@ async def main():
         format="%(asctime)s %(levelname)-7s %(name)s — %(message)s",
         datefmt="%H:%M:%S",
     )
+    if args.engine == "tts" and args.no_vad:
+        raise SystemExit(
+            "--engine tts is incompatible with --no-vad: in tts mode the VAD gate "
+            "IS the utterance endpointer. Without it the gate never closes, no "
+            "utterance is ever emitted, and the buffer grows to the forced-cut "
+            "bound — burning STT budget on 30-second slabs."
+        )
+
     url, key, secret = load_credentials()
     token = mint_token(key, secret, args.room, args.identity)
 
@@ -661,23 +846,31 @@ async def main():
     else:
         log.info("VAD off (--no-vad)")
 
+    http = tts_engine = None
+    if args.engine == "tts":
+        http, tts_engine = await build_tts_engine(args)
+
     agent = ConvertAgent(args.room, args.identity, args.rvc_url, args.mode,
-                         capture_dir=args.capture_dir, vad=vad)
+                         capture_dir=args.capture_dir, vad=vad,
+                         engine=args.engine, tts_engine=tts_engine)
 
-    # Warm up RVC BEFORE joining the room — the stream never sees a cold model
-    try:
-        await agent.rvc.connect()
-        log.info("RVC ready (warmup %.1fs)", agent.rvc.warmup_s)
-    except Exception as exc:
-        log.warning("RVC unavailable at startup: %s", exc)
+    if args.engine == "rvc":
+        # Warm up RVC BEFORE joining the room — the stream never sees a cold model
+        try:
+            await agent.rvc.connect()
+            log.info("RVC ready (warmup %.1fs)", agent.rvc.warmup_s)
+        except Exception as exc:
+            log.warning("RVC unavailable at startup: %s", exc)
 
-    if args.mode == "convert" and agent.rvc.connected:
-        agent._set_mode("convert")
+        if args.mode == "convert" and agent.rvc.connected:
+            agent._set_mode("convert")
+        elif args.mode == "convert":
+            agent._set_mode("passthrough", "rvc_unavailable")
+            agent._ensure_rvc_retry()
+        if not agent.rvc.connected:
+            agent._ensure_rvc_retry()
     elif args.mode == "convert":
-        agent._set_mode("passthrough", "rvc_unavailable")
-        agent._ensure_rvc_retry()
-    if not agent.rvc.connected:
-        agent._ensure_rvc_retry()
+        agent._set_mode("convert")
 
     stats_task = asyncio.ensure_future(agent._stats_loop())
     try:
@@ -686,6 +879,94 @@ async def main():
     finally:
         stats_task.cancel()
         await agent.aclose()
+        if tts_engine is not None:
+            write_spike_report(tts_engine, args.report)
+        if http is not None:
+            await http.close()
+
+
+async def build_tts_engine(args):
+    """Construct the SPIKE engine: governor first, then the vendor clients.
+
+    Returns (http_session, TtsEngine). The governor is built before either
+    client exists — the caps have to be in force before anything can spend.
+    """
+    from spend_governor import SpendGovernor  # local: rvc mode never needs these
+
+    governor = SpendGovernor()
+    governor.log_startup()
+
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
+    if not api_key or not voice_id:
+        raise SystemExit(
+            "--engine tts needs ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in "
+            "secrets.env (loaded from the repo root, same as the LIVEKIT_* keys)"
+        )
+
+    drill_lines = []
+    if args.drill_script:
+        drill_lines = wer.load_script(args.drill_script)
+        log.info("drill script: %d lines from %s", len(drill_lines), args.drill_script)
+
+    http = aiohttp.ClientSession()
+    base_settings = await fetch_voice_settings(http, api_key, voice_id)
+    voice_settings = resolve_voice_settings(base_settings)
+    log.info("voice_settings in force: %s", voice_settings)
+
+    stt = SttClient(http, api_key)
+    tts = TtsClient(http, api_key, voice_id, model=args.tts_model,
+                    voice_settings=voice_settings)
+    queue = PcmQueue()
+    engine = TtsEngine(
+        stt=stt, tts=tts, governor=governor,
+        endpointer=UtteranceEndpointer(),
+        queue=queue,
+        outgate=OutputGate(queue, PRIME_SAMPLES),
+        drill_lines=drill_lines,
+    )
+    # Open the STT socket before the room join — the ~900 ms handshake would
+    # otherwise land inside the first utterance's tail_latency (same
+    # philosophy as the RVC warmup).
+    try:
+        await stt.connect()
+    except Exception as exc:
+        log.warning("STT session not ready at startup: %s — will connect on "
+                    "the first utterance", exc)
+    log.info("tts engine ready: tts=%s stt=%s voice=%s",
+             args.tts_model, stt.model, voice_id)
+    return http, engine.start()
+
+
+def write_spike_report(engine, path):
+    """Latency table + per-utterance records + final spend, to stdout and JSON."""
+    table = engine.latency_table()
+    log.info("── SPIKE RESULT ──")
+    log.info("%s", engine.governor.summary_line())
+    for model, stats in table.items():
+        log.info("%s: n=%d tail_latency p50/p95 = %s/%s ms | ttfb p50 %s | stt p50 %s",
+                 model, stats["n"],
+                 (stats["tail_latency_ms"] or {}).get("p50"),
+                 (stats["tail_latency_ms"] or {}).get("p95"),
+                 (stats["tts_ttfb_ms"] or {}).get("p50"),
+                 (stats["stt_ms"] or {}).get("p50"))
+    scored = [r.get("wer_detail") for r in engine.records if r.get("wer_detail")]
+    corpus = wer.aggregate(scored)
+    if corpus:
+        log.info("transcript fidelity: corpus WER %.4f over %d utterances",
+                 corpus["corpus_wer"], corpus["utterances"])
+    if not path:
+        return
+    payload = {
+        "latency_table": table,
+        "wer": corpus,
+        "spend": engine.governor.snapshot(),
+        "utterances": engine.records,
+        "skipped": engine.skipped,
+        "max_queue_depth": engine.max_queue_depth,
+    }
+    Path(path).write_text(json.dumps(payload, indent=2))
+    log.info("report written → %s", path)
 
 
 if __name__ == "__main__":
