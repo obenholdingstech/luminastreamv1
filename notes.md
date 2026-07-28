@@ -16,7 +16,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ---
 
-## 28 July 2026 — S3-Lite B: API Worker (admin gate + LiveKit mint), PR #14 MERGED (full record: devlog/SESSIONS.md)
+## 28 July 2026 — S3-Lite B: API Worker (admin gate + LiveKit mint), PR #14 held for CTO (full record: devlog/SESSIONS.md)
 
 - `workers/api/` Cloudflare Worker, **zero deps**: GET /api/health; POST /api/admin/verify
   (rate-limit 5/60s → constant-time SHA-256 digest compare → 12h HMAC session token);
