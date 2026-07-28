@@ -135,6 +135,14 @@ class SttError(Exception):
     pass
 
 
+class _SttConnectionLost(SttError):
+    """The socket died under us — distinct from a vendor-level refusal.
+
+    Only this class is retried: an auth_error or quota_exceeded would fail
+    identically on a fresh socket and retrying would just spend twice.
+    """
+
+
 class TtsError(Exception):
     pass
 
@@ -155,6 +163,7 @@ class SttClient:
         self._resampler = None
         self.utterances = 0
         self.reconnects = 0
+        self.stale_retries = 0
 
     @property
     def url(self):
@@ -193,11 +202,30 @@ class SttClient:
 
         Returns (text, elapsed_ms). Raises SttError; the caller drops the
         utterance and the stream survives.
+
+        Retries ONCE on connection loss. The session idles out server-side
+        during a quiet spell, and `_ensure` cannot see it: the socket still
+        reads as open, the send succeeds, and only the read discovers it is
+        dead — losing that utterance. Observed live, costing the first sentence
+        after a two-minute pause. A stale socket is not the speaker's fault, so
+        the retry is on a fresh connection with the audio already in hand.
         """
         await self._ensure()
         audio = pcm48_to_pcm16k_bytes(pcm48, self._resampler)
         if not audio:
             raise SttError("utterance too short to upload")
+        try:
+            text, ms = await self._send_and_wait(audio)
+        except _SttConnectionLost as exc:
+            self.stale_retries += 1
+            log.warning("STT session was stale (%s) — retrying once on a fresh "
+                        "socket; the utterance is not lost", exc)
+            await self.connect()
+            text, ms = await self._send_and_wait(audio)  # a second loss is fatal
+        self.utterances += 1
+        return text, ms
+
+    async def _send_and_wait(self, audio):
         per = int(STT_UPLOAD_SR * STT_CHUNK_MS / 1000) * 2
         offsets = list(range(0, len(audio), per))
         t0 = time.perf_counter()
@@ -216,8 +244,7 @@ class SttClient:
             raise
         except Exception as exc:
             await self.close()
-            raise SttError(f"socket error: {exc!r}")
-        self.utterances += 1
+            raise _SttConnectionLost(f"socket error: {exc!r}")
         return text, (time.perf_counter() - t0) * 1000
 
     async def _await_final(self):
@@ -229,8 +256,9 @@ class SttClient:
             if kind.startswith("committed_transcript"):
                 return (data.get("text") or "").strip()
             if "error" in kind:
+                # A vendor refusal (auth, quota, rate limit) — NOT retryable
                 raise SttError(f"{kind}: {data.get('error')}")
-        raise SttError("socket closed before a final transcript")
+        raise _SttConnectionLost("socket closed before a final transcript")
 
 
 class TtsClient:

@@ -141,6 +141,12 @@ class TtsEngine:
 
     def _drop(self, utt, reason, detail, notice_extra=None):
         self.skipped += 1
+        # A dropped utterance must be visible in the LOG, not only in the
+        # capture file and on the data channel: a live session showed
+        # skipped=1 in the stats with nothing in the log explaining it, which
+        # is exactly the "is it broken?" ambiguity the governor marker exists
+        # to avoid. Governor refusals additionally log their own ERROR marker.
+        log.warning("utterance %d dropped (%s): %s", utt.index, reason, detail)
         self.event("utterance_dropped", index=utt.index, reason=reason,
                    detail=detail, **(notice_extra or {}))
         payload = {"type": "tts_utterance_dropped", "index": utt.index,
@@ -187,10 +193,14 @@ class TtsEngine:
         if self.drill_lines:
             line, sc = best_match(transcript, self.drill_lines)
             if sc is not None:
-                rec["drill_line"] = line
-                rec["wer"] = sc["wer"]
-                rec["cer"] = sc["cer"]
                 rec["wer_detail"] = sc
+                if sc.get("off_script"):
+                    # Free speech, not a failed reading — recorded but not scored
+                    rec["off_script"] = True
+                else:
+                    rec["drill_line"] = line
+                    rec["wer"] = sc["wer"]
+                    rec["cer"] = sc["cer"]
 
         # 3. TTS budget — same whole-utterance rule
         chars = len(transcript)

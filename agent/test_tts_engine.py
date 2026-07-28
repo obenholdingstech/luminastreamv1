@@ -429,3 +429,39 @@ def test_latency_table_groups_by_model():
     assert table["eleven_v3"]["n"] == 3
     for key in ("p50", "p95", "min", "max"):
         assert key in table["eleven_v3"]["tail_latency_ms"]
+
+
+# ── regressions from the live session (28 Jul) ───────────────────────
+
+
+def test_off_script_speech_is_recorded_but_not_scored():
+    async def run():
+        engine, _, _ = build(
+            stt=MockStt(texts=["hey how are you doing today"]),
+            drill=["The quick brown fox jumps over the lazy dog."])
+        engine.start()
+        utter(engine)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine.records[0]
+
+    rec = asyncio.run(run())
+    assert rec["off_script"] is True
+    assert "wer" not in rec              # not scored as a failed reading
+    assert rec["transcript"]             # but the transcript is still kept
+
+
+def test_a_dropped_utterance_is_visible_in_the_log(caplog):
+    """skipped=1 with nothing in the log is the ambiguity we refuse to ship."""
+    async def run():
+        engine, _, _ = build(stt=MockStt(error=SttError("socket died")))
+        engine.start()
+        utter(engine)
+        await wait_done(engine, 1)
+        await engine.aclose()
+
+    with caplog.at_level(logging.WARNING, logger="tts-engine"):
+        asyncio.run(run())
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("dropped" in m and "stt_error" in m and "socket died" in m
+               for m in msgs), msgs

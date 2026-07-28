@@ -71,11 +71,22 @@ def score(reference, hypothesis):
     }
 
 
-def best_match(hypothesis, script_lines):
+OFF_SCRIPT_WER = 0.5
+
+
+def best_match(hypothesis, script_lines, off_script_wer=OFF_SCRIPT_WER):
     """Score against the closest drill line; returns (line, score_dict) or (None, None).
 
     Ties break toward the earlier line, which keeps repeated drill lines
     (e.g. "mic test one two" x3) attributing to a stable reference.
+
+    OFF-SCRIPT DETECTION: free conversation is not a failed drill reading. A
+    live session where the speaker just talked scored every utterance at
+    WER 0.9–1.0 against the nearest drill line and reported a corpus WER of
+    0.90 — a number that described nothing except that the words were not on
+    the script. Anything worse than `off_script_wer` is therefore marked
+    `off_script` and excluded from aggregation, so the drill measurement stays
+    a drill measurement and casual speech does not poison it.
     """
     if not script_lines:
         return None, None
@@ -86,6 +97,8 @@ def best_match(hypothesis, script_lines):
             continue
         if best is None or s["wer"] < best["wer"]:
             best_line, best = line, s
+    if best is not None and best["wer"] > off_script_wer:
+        best["off_script"] = True
     return best_line, best
 
 
@@ -103,7 +116,8 @@ def load_script(path):
 def aggregate(scores):
     """Corpus WER: total edits / total reference words — NOT a mean of per-
     utterance WERs, which would over-weight short utterances."""
-    usable = [s for s in scores if s and s.get("wer") is not None]
+    usable = [s for s in scores
+              if s and s.get("wer") is not None and not s.get("off_script")]
     if not usable:
         return None
     total_edits = sum(s["edits"] for s in usable)

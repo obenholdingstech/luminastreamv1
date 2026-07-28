@@ -89,9 +89,20 @@ function StatTile({ label, value, unit, icon: IconCmp, color }) {
   );
 }
 
+// DEV-ONLY convenience: prefill url/token from the query string so a ready-to-use
+// test link can be handed over as one click (?url=...&token=...). Same trust model
+// as the pasted-token flow this page already has — a short-lived dev token typed
+// into a dev-only page — and it is still never persisted to storage. Production
+// tokens will come from a server-side endpoint and this path goes away with it.
+function paramOr(name, fallback) {
+  if (typeof window === 'undefined') return fallback;
+  return new URLSearchParams(window.location.search).get(name) || fallback;
+}
+
 export default function LiveKitTest() {
-  const [url, setUrl] = useState(() => localStorage.getItem(URL_STORAGE_KEY) || '');
-  const [token, setToken] = useState('');
+  const [url, setUrl] = useState(
+    () => paramOr('url', localStorage.getItem(URL_STORAGE_KEY) || ''));
+  const [token, setToken] = useState(() => paramOr('token', ''));
 
   const {
     connectionState,
