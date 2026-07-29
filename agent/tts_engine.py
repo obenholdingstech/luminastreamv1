@@ -445,7 +445,8 @@ class TtsEngine:
                      "tts_ttfb_ms": rec.get("tts_ttfb_ms"),
                      "stt_ms": rec.get("stt_ms"),
                      "chars": chars, "model_id": self.tts.model,
-                     "wer": rec.get("wer")})
+                     "wer": rec.get("wer"),
+                     "spend": rec.get("spend")})   # live caps/usage for the console
         log.info("utterance %d: %.2fs speech → %r | stt %.0fms | ttfb %.0fms | "
                  "TAIL %.0fms | %d chars | wer=%s",
                  utt.index, utt.speech_duration_s, transcript[:60],

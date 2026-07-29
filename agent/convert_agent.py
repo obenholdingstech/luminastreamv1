@@ -551,6 +551,10 @@ class ConvertAgent:
             "defaults": knobs.defaults(self.engine),
             "ranges": knobs.ranges(self.engine),
             "metadata": knobs.metadata(self.engine),
+            # Governor caps + usage as READ-ONLY truth. Spend controls stay
+            # env-only by design — they do not get a slider (see PR). The
+            # console displays them so a drill can watch the caps stay green.
+            "spend": (self.tts.governor.snapshot() if self.tts is not None else None),
         }
         if adjusted:
             payload["adjusted"] = adjusted

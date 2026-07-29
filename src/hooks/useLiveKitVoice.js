@@ -170,6 +170,7 @@ export function useLiveKitVoice(url, token) {
             defaults: msg.defaults ?? null,
             ranges: msg.ranges ?? null,
             metadata: msg.metadata ?? null,
+            spend: msg.spend ?? null,
             adjusted: msg.adjusted ?? null,
             rejected: msg.rejected ?? null,
           });

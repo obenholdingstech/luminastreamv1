@@ -266,6 +266,8 @@ export default function LiveKitTest() {
     [agentConfig?.metadata],
   );
   const currentModel = agentConfig?.config?.tts_model;
+  // Governor caps + usage — freshest from an utterance, else the broadcast.
+  const latestSpend = utterances.find((u) => u.spend)?.spend ?? agentConfig?.spend ?? null;
 
   const handleExport = () => {
     const payload = buildConfigExport(agentConfig);
@@ -737,6 +739,24 @@ export default function LiveKitTest() {
             ))
           )}
 
+          {latestSpend && (
+            <div className="mt-4 pt-3 border-t border-[#1A1A2E] flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] font-mono text-[#64748B]">
+              <span className="tracking-widest uppercase">Governor · env-only · read-only</span>
+              <span
+                style={{ color: thresholdColor(latestSpend.tts_chars_used, latestSpend.tts_chars_cap * 0.8, latestSpend.tts_chars_cap) }}
+              >
+                TTS {latestSpend.tts_chars_used}/{latestSpend.tts_chars_cap} chars
+              </span>
+              <span
+                style={{ color: thresholdColor(latestSpend.stt_seconds_used, latestSpend.stt_seconds_cap * 0.8, latestSpend.stt_seconds_cap) }}
+              >
+                STT {Math.round(latestSpend.stt_seconds_used)}/{Math.round(latestSpend.stt_seconds_cap)} s
+              </span>
+              {latestSpend.refusals > 0 && (
+                <span className="text-[#EF4444]">refusals {latestSpend.refusals}</span>
+              )}
+            </div>
+          )}
           {agentConfig?.rejected && (
             <p className="mt-3 text-[9px] text-[#F59E0B]">
               rejected by agent: {Object.entries(agentConfig.rejected)
