@@ -192,6 +192,14 @@ Each is overridable and every one is logged per utterance alongside `model_id`:
 `SPIKE_TTS_STABILITY`, `SPIKE_TTS_SIMILARITY_BOOST`, `SPIKE_TTS_STYLE`,
 `SPIKE_TTS_SPEED`, `SPIKE_TTS_SPEAKER_BOOST`
 
+> **Since superseded for live tuning:** these env vars still work (highest
+> precedence), but the same voice settings + the TTS model are now live knobs in
+> the `/livekit-test` tuning console, and startup defaults come from the
+> committed `agent/tts_profile.json` (precedence CLI/env > profile > clone >
+> registry defaults). Per-model support is enforced — `eleven_v3` ignores
+> `similarity_boost` and `use_speaker_boost`, so the console disables them with
+> the reason. See `agent/README.md` → "Phase 4 — Live tuning console".
+
 > **Voice ID note:** `ELEVENLABS_VOICE_ID` in `secrets.env` resolves to a cloned
 > voice named **"Celebrity lilcrush linda"** (category `cloned`, an instant
 > clone — `fine_tuning.state` is empty, so it is IVC not PVC), not one named

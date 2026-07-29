@@ -193,11 +193,16 @@ versus the Phase 2 Session A baseline; the typing and clap read as
 protocol: gate opened only for the two spoken sections, typing+clap span
 attributed VAD-gated, 0 clipped tails, 0 dropouts.)
 
-## Phase 4 — Live tuning console
+## Phase 4 — Live tuning console (engine-aware)
 
-The convert path is garble-free (Phase 3) but speech quality needs tuning.
-The `/livekit-test` page now has a **Tuning** card whose knobs apply
-mid-session through the agent:
+The `/livekit-test` page has a **Tuning** card whose knobs apply mid-session
+through the agent. It is **engine-aware**: the knob set renders entirely from
+the agent's `agent_config` broadcast, keyed by engine — a `tts` agent shows the
+ElevenLabs knobs, an `rvc` agent shows the old set. No knob list, ranges, or
+engine assumptions are baked into the frontend; `knobs.py` is the single source
+of truth and the registry carries per-knob display metadata.
+
+**RVC engine (parked baseline):**
 
 | knob | range | default | applies |
 |---|---|---|---|
@@ -209,33 +214,80 @@ mid-session through the agent:
 | vad_threshold | 0–1 | 0.5 | agent, instant |
 | vad_hangover_ms | 0–2000 | 300 | agent, instant |
 
-Server-verified (OpenVoiceChanger backend @ `4cee7ef`,
-`backend/routers/websocket.py`): JSON text frames are accepted at any time on
-the open audio socket and merged into connection state — **RVC knobs apply
-mid-stream, no reconnect**. f0 methods offered are the ones the server
-actually runs (`rvc_processor._normalize_f0_method`); dio (aliased to pm)
-and fcpe (conditional) are deliberately not offered.
+Server-verified (OpenVoiceChanger backend @ `4cee7ef`): JSON text frames merge
+into connection state on the open socket — **RVC knobs apply mid-stream, no
+reconnect**. f0 methods are the ones the server actually runs; dio (aliased to
+pm) and fcpe (conditional) are deliberately not offered.
 
-Protocol: browser sends `{"type":"set_config","params":{...}}` over the data
-channel; the agent clamps out-of-range values, rejects garbage (never
-crashes), applies, writes a `config_change` event with the FULL applied
-snapshot into meta.jsonl (when capturing), and broadcasts
-`{"type":"agent_config","config":...,"defaults":...,"ranges":...}`. The UI
-renders confirmed badges ONLY from that broadcast — green match / amber
-mismatch / muted unknown — plus a "Revert to defaults" button. The analyzer
-draws config-change markers on the timelines so audio segments are
-attributable to configs.
+**TTS engine (`--engine tts`, verified against ElevenLabs docs 29 Jul 2026):**
 
-### Phase 4 tuning protocol (A/B method)
+| knob | kind / range | default | applies | notes |
+|---|---|---|---|---|
+| tts_model | flash_v2_5 / multilingual_v2 / v3 | flash_v2_5 | next utterance | |
+| stability | 0–1 | 0.5 | next utterance | v3 reads it as ~0 Creative / 0.5 Natural / 1 Robust |
+| similarity_boost | 0–1 | 0.75 | next utterance | slight latency cost; **not on v3** |
+| style | 0–1 | 0.0 | next utterance | ⚡ >0 adds latency + can reduce stability; v2+/v3 only |
+| use_speaker_boost | bool | on | next utterance | slight latency cost; **not on v3** |
+| speed | 0.25–4.0 | 1.0 | next utterance | usable ~0.7–1.2; all models |
+| prime_hops / vad_threshold / vad_hangover_ms | (shared) | — | instant | shared pipeline knobs |
+| min_speech_ms | 0–1000 | 200 | instant | gate-open spans with less speech are dropped as blips (no STT call) |
+| queue_wait_warn_ms | 0–5000 | 250 | instant | diagnostic only — a log threshold, not audio |
+
+Voice settings are per-request: they take effect on the **next utterance** (the
+UI labels this). Per-model support is enforced both ways — a setting a model
+doesn't support (e.g. `similarity_boost`/`use_speaker_boost` on `eleven_v3`)
+renders **disabled with the reason** and the agent **rejects** any attempt to
+set it, never silently ignored. `⚡` marks a documented latency cost.
+
+Governor spend caps are shown **read-only** — spend controls stay env-only by
+design (`SPIKE_MAX_TTS_CHARS` / `SPIKE_MAX_STT_SECONDS`), no slider.
+
+Protocol: browser sends `{"type":"set_config","params":{...}}`; the agent
+clamps out-of-range values, rejects garbage / unsupported-by-model / wrong-
+engine knobs (never crashes), applies, writes a `config_change` event with the
+FULL applied snapshot into meta.jsonl (when capturing), and broadcasts
+`{"type":"agent_config","engine":...,"app_version":...,"config":...,
+"defaults":...,"ranges":...,"metadata":...,"spend":...}`. The UI renders
+confirmed badges ONLY from that broadcast — green match / amber mismatch /
+muted unknown.
+
+### Config-as-code: `tts_profile.json` + Export
+
+Startup config resolves highest-wins: **CLI/env > `agent/tts_profile.json` >
+the clone's own fetched settings > registry defaults** (logged at startup). The
+committed profile is the lock-in mechanism: "locking in" the CEO's ear-found
+config = editing `voice_settings` in that one JSON and committing it via PR —
+reviewable, no code edit. A malformed profile is fatal (not silently reverted).
+
+The console's **Export JSON** downloads the CURRENT AGENT-CONFIRMED config
+(never raw slider state) plus metadata (timestamp, engine, model, app version)
+in exactly the shape the profile loader reads back — so export → commit → load
+round-trips.
+
+### Live transcript panel
+
+In tts mode the console shows, per utterance, **what STT heard** plus the
+timing breakdown (stt / ttfb / tail ms, chars, model, WER), streamed over the
+existing data channel. Tune VAD and voice settings **by ear against the
+transcript** — the evidence that used to live only in the VPS log.
+
+### Warm-on-join
+
+A participant joining re-fires a real one-character warmup **synthesis**
+(metered), not the keepalive GET ping — only a synthesis warms the vendor voice
+model. VPS drill: the first utterance after a long idle paid ~2220 ms TTFB vs
+~100 ms steady; the keepalive from process start does not survive hours of idle.
+
+### Tuning protocol (A/B method)
 
 1. Convert mode, capture on, mic prerequisites as in Phase 2/3.
 2. Change **ONE** knob from defaults.
-3. Speak the fixed script (fox sentence + "mic test one two" × 3).
+3. Speak the fixed script (or free-talk) and read the live transcript panel.
 4. Score it (ear + analyzer report for that config segment).
-5. **Revert to defaults** before the next knob.
+5. **Revert to defaults** before the next knob; **Export JSON** to lock a keeper in.
 
-Change one variable at a time — the capture's `config_change` events pin
-every segment to its exact config, so post-hoc attribution is automatic.
+Change one variable at a time — the capture's `config_change` events pin every
+segment to its exact config, so post-hoc attribution is automatic.
 
 ## STT→TTS engine (`--engine tts`, the DEFAULT since 28 Jul 2026)
 
