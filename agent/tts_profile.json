@@ -1,0 +1,13 @@
+{
+  "_comment": "Config-as-code startup profile for --engine tts. Startup precedence: CLI/env > this file > the clone's own fetched voice settings > registry defaults (knobs.py). 'Locking in' the CEO's ear-found config = editing voice_settings here and committing via PR — reviewable, no code edit. voice_settings is intentionally EMPTY for now so the clone's own settings remain the voice baseline until the drill fills it in; add fields (e.g. \"stability\": 0.5) to override. Eleven v3 ignores similarity_boost and use_speaker_boost. See SPIKE.md and agent/README.md.",
+  "engine": "tts",
+  "model": "eleven_flash_v2_5",
+  "voice_settings": {},
+  "pipeline": {
+    "vad_threshold": 0.5,
+    "vad_hangover_ms": 200,
+    "prime_hops": 1.5,
+    "min_speech_ms": 200,
+    "queue_wait_warn_ms": 250
+  }
+}

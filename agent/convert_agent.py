@@ -102,6 +102,48 @@ STATS_INTERVAL_S = 5
 log = logging.getLogger("convert-agent")
 
 
+def _app_version():
+    """Repo package version, for the agent_config broadcast + export metadata.
+
+    Read once at import; a missing/broken package.json is not fatal (the
+    version is metadata, not a guardrail) — it degrades to '0.0.0'."""
+    try:
+        pkg = Path(__file__).resolve().parent.parent / "package.json"
+        return json.loads(pkg.read_text()).get("version") or "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+
+APP_VERSION = _app_version()
+
+# Committed config-as-code profile (agent/tts_profile.json). Precedence at
+# startup: CLI/env > profile > clone-settings/registry defaults.
+PROFILE_PATH = Path(__file__).resolve().parent / "tts_profile.json"
+
+
+def load_profile(path):
+    """Read the committed tts profile → dict, or {} if absent.
+
+    A malformed profile is FATAL rather than silently ignored: it is
+    config-as-code committed via PR, and config that quietly reverts to
+    defaults is a rumor — same doctrine as the governor's env caps. A MISSING
+    profile is fine (registry defaults + the clone's own settings stand)."""
+    p = Path(path)
+    if not p.exists():
+        log.info("no tts profile at %s — registry defaults + clone settings stand", p)
+        return {}
+    try:
+        data = json.loads(p.read_text())
+    except (ValueError, OSError) as exc:
+        raise SystemExit(
+            f"tts profile {p} is unreadable or invalid JSON ({exc}). Fix or "
+            f"remove it — refusing to start on a broken committed profile.")
+    if not isinstance(data, dict):
+        raise SystemExit(
+            f"tts profile {p} must be a JSON object, got {type(data).__name__}.")
+    return data
+
+
 def load_credentials():
     """Read LIVEKIT_* from the repo-root secrets.env — never hardcoded."""
     repo_root = Path(__file__).resolve().parent.parent
@@ -225,6 +267,12 @@ class ConvertAgent:
             # Late joiners need to know the current mode and config immediately
             self._spawn(self._publish_mode())
             self._spawn(self._publish_config())
+            # WARM-ON-JOIN (VPS drill 29 Jul): warm the vendor voice model now so
+            # THIS participant's first utterance doesn't pay the cold-start TTFB
+            # (2220 ms observed after a long idle vs ~100 ms steady). Skipped for
+            # fellow agents (echo-*), which never speak into the room.
+            if self.tts is not None and not p.identity.startswith("echo-"):
+                self._spawn(self.tts.warm_on_join())
 
         @room.on("participant_disconnected")
         def _on_participant_gone(p):
@@ -388,12 +436,19 @@ class ConvertAgent:
             })
         else:
             # SPIKE: the tts engine's own applied truth, same contract
+            vs = dict(self.tts.tts.voice_settings)
             snap.update({
                 "engine": "tts",
-                "tts_model_id": self.tts.tts.model,
+                "tts_model": self.tts.tts.model,       # flat, matches the knob name
+                "tts_model_id": self.tts.tts.model,    # legacy key kept for records
                 "stt_model_id": self.tts.stt.model,
-                "voice_settings": dict(self.tts.tts.voice_settings),
+                "voice_settings": vs,                  # nested, for capture records
+                "min_speech_ms": self.tts.endpointer.min_speech_ms,
+                "queue_wait_warn_ms": self.tts.queue_wait_warn_ms,
             })
+            # Flatten voice settings to top-level knob keys so the console reads
+            # config[knob] uniformly for every knob (sliders + selects + toggles).
+            snap.update(vs)
         if self.vad is not None:
             snap["vad_threshold"] = self.vad.threshold
             snap["vad_hangover_ms"] = self.vad.hangover_ms
@@ -406,29 +461,59 @@ class ConvertAgent:
         and every broadcast reflects the true final state of its apply."""
         async with self._config_lock:
             applied, adjusted, rejected = knobs.clamp_params(params)
+
+            def reject(name, reason):
+                # rejected wins — a knob is never both adjusted and rejected,
+                # and a rejected value must not appear to have been applied
+                rejected[name] = reason
+                adjusted.pop(name, None)
+                applied.pop(name, None)
+
+            # Per-model validation resolves against the model this apply RESULTS
+            # in: a payload that switches to eleven_v3 AND sets similarity_boost
+            # rejects similarity_boost (v3 doesn't support it), never silently.
+            effective_model = (applied.get("tts_model", self.tts.tts.model)
+                               if self.tts is not None else None)
+
             rvc_updates = {}
-            for name, value in applied.items():
+            for name, value in list(applied.items()):
                 target = knobs.KNOBS[name]["target"]
                 if target == "rvc":
                     if self.rvc is None:
-                        rejected[name] = "no RVC engine (--engine tts)"
-                        adjusted.pop(name, None)  # rejected wins — never both
+                        reject(name, "no RVC engine (--engine tts)")
                         continue
                     rvc_updates[name] = value
+                elif target == "tts":
+                    if self.tts is None:
+                        reject(name, "no TTS engine (--engine rvc)")
+                        continue
+                    if name == "tts_model":
+                        self.tts.tts.set_model(value)
+                    else:
+                        why = knobs.model_unsupported(name, effective_model)
+                        if why:
+                            reject(name, f"{why} (model {effective_model})")
+                            continue
+                        self.tts.tts.apply_voice_setting(name, value)
                 elif name == "prime_hops":
                     self.outgate.prime_samples = knobs.prime_hops_to_samples(value)
-                elif name == "vad_threshold":
-                    if self.vad is not None:
+                elif name in ("vad_threshold", "vad_hangover_ms"):
+                    if self.vad is None:
+                        reject(name, "vad disabled (--no-vad)")
+                        continue
+                    if name == "vad_threshold":
                         self.vad.set_threshold(value)
                     else:
-                        rejected[name] = "vad disabled (--no-vad)"
-                        adjusted.pop(name, None)  # rejected wins — never report both
-                elif name == "vad_hangover_ms":
-                    if self.vad is not None:
                         self.vad.set_hangover_ms(value)
+                elif name in ("min_speech_ms", "queue_wait_warn_ms"):
+                    # tts-only pipeline knobs (endpointer + engine live only there)
+                    if self.tts is None:
+                        reject(name, "tts engine only (--engine rvc)")
+                        continue
+                    if name == "min_speech_ms":
+                        self.tts.endpointer.min_speech_ms = value
                     else:
-                        rejected[name] = "vad disabled (--no-vad)"
-                        adjusted.pop(name, None)
+                        self.tts.queue_wait_warn_ms = value
             if rvc_updates:
                 try:
                     # Mid-stream JSON settings frame on the open socket (verified
@@ -454,11 +539,18 @@ class ConvertAgent:
         so the UI renders entirely from agent truth."""
         if self.room.connection_state != rtc.ConnectionState.CONN_CONNECTED:
             return
+        # Engine-keyed: a tts agent broadcasts only tts knobs, an rvc agent the
+        # old set. The console renders entirely from this — no hardcoded engine
+        # assumptions in the frontend. `metadata` carries per-knob kind, group,
+        # timing and per-model support so the UI needs nothing baked in.
         payload = {
             "type": "agent_config",
+            "engine": self.engine,
+            "app_version": APP_VERSION,
             "config": self.config_snapshot(),
-            "defaults": knobs.defaults(),
-            "ranges": knobs.ranges(),
+            "defaults": knobs.defaults(self.engine),
+            "ranges": knobs.ranges(self.engine),
+            "metadata": knobs.metadata(self.engine),
         }
         if adjusted:
             payload["adjusted"] = adjusted
@@ -823,20 +915,21 @@ async def main():
                              "under PATH; capture is fully disabled when absent")
     parser.add_argument("--no-vad", action="store_true",
                         help="disable the Silero VAD gate (default: VAD on)")
-    parser.add_argument("--vad-threshold", type=float, default=DEFAULT_THRESHOLD,
+    parser.add_argument("--vad-threshold", type=float, default=None,
                         help=f"speech probability threshold (default {DEFAULT_THRESHOLD}, "
-                             "silero's own default)")
-    parser.add_argument("--vad-hangover-ms", type=float, default=DEFAULT_HANGOVER_MS,
+                             "silero's own default; tts mode also reads tts_profile.json — "
+                             "precedence CLI > profile > default)")
+    parser.add_argument("--vad-hangover-ms", type=float, default=None,
                         help=f"keep the gate open this long after the last speech "
                              f"(default {DEFAULT_HANGOVER_MS} ms; rounded UP to whole hops)")
     parser.add_argument("--engine", choices=ENGINES, default="tts",
                         help="tts (DEFAULT since 28 Jul 2026: STT→TTS through the "
                              "cloned voice) or rvc (the parked baseline; still "
                              "fully supported, nothing was removed)")
-    parser.add_argument("--tts-model", default=DEFAULT_TTS_MODEL,
+    parser.add_argument("--tts-model", default=None,
                         help=f"--engine tts: ElevenLabs model_id (default "
                              f"{DEFAULT_TTS_MODEL}; also eleven_multilingual_v2, "
-                             "eleven_v3)")
+                             "eleven_v3). Overrides tts_profile.json's model.")
     parser.add_argument("--drill-script", default=None, metavar="PATH",
                         help="--engine tts: fixed drill script, one line per "
                              "utterance; transcripts are scored (WER) against it")
@@ -869,18 +962,37 @@ async def main():
     url, key, secret = load_credentials()
     token = mint_token(key, secret, args.room, args.identity)
 
+    # Config-as-code precedence (tts): CLI/env > committed profile > registry
+    # defaults. The pipeline knobs (VAD pair) resolve here — the clone's own
+    # voice settings only touch the voice knobs, which build_tts_engine resolves
+    # after fetching the voice. rvc mode keeps its exact prior behavior.
+    profile_flat = cli_overrides = {}
+    if args.engine == "tts":
+        profile_flat, prof_adj, prof_rej = knobs.clamp_params(
+            knobs.flatten_profile(load_profile(PROFILE_PATH)))
+        if prof_adj:
+            log.warning("tts_profile.json clamped into range: %s", prof_adj)
+        if prof_rej:
+            log.warning("tts_profile.json rejected (ignored): %s", prof_rej)
+        cli_overrides, _cadj, cli_rej = knobs.clamp_params(_tts_cli_overrides(args))
+        if cli_rej:
+            log.warning("tts CLI overrides rejected: %s", cli_rej)
+        resolved_pipe = knobs.resolve_precedence(
+            knobs.defaults("tts"), profile_flat, cli_overrides)
+        vad_threshold = resolved_pipe["vad_threshold"]
+        vad_hangover_ms = resolved_pipe["vad_hangover_ms"]
+    else:
+        vad_threshold = (args.vad_threshold if args.vad_threshold is not None
+                         else DEFAULT_THRESHOLD)
+        vad_hangover_ms = (args.vad_hangover_ms if args.vad_hangover_ms is not None
+                           else DEFAULT_HANGOVER_MS)
+
     # VAD loads BEFORE the room join, same philosophy as the RVC warmup.
     # Load failure ⇒ fail-open (ungated), the stream still runs.
-    hangover_ms = args.vad_hangover_ms
-    if args.engine == "tts" and args.tts_hangover_ms is not None:
-        hangover_ms = args.tts_hangover_ms
-        log.info("tts-mode hangover override: %.0f ms (default %.0f)",
-                 hangover_ms, args.vad_hangover_ms)
-
     vad = None
     if not args.no_vad:
-        vad = VadGate(threshold=args.vad_threshold,
-                      hangover_ms=hangover_ms).load()
+        vad = VadGate(threshold=vad_threshold,
+                      hangover_ms=vad_hangover_ms).load()
         if vad.active:
             log.info("VAD on: threshold=%.2f hangover=%dms (%d hops of %dms)",
                      vad.threshold, vad.hangover_ms, vad.hangover_hops,
@@ -892,7 +1004,7 @@ async def main():
 
     http = tts_engine = None
     if args.engine == "tts":
-        http, tts_engine = await build_tts_engine(args)
+        http, tts_engine = await build_tts_engine(args, profile_flat, cli_overrides)
 
     agent = ConvertAgent(args.room, args.identity, args.rvc_url, args.mode,
                          capture_dir=args.capture_dir, vad=vad,
@@ -964,11 +1076,31 @@ async def wait_for_stop(run_seconds=None):
         log.info("--run-seconds %.0f elapsed — shutting down", run_seconds)
 
 
-async def build_tts_engine(args):
+def _tts_cli_overrides(args):
+    """Explicitly-set CLI flags → flat {knob: value}, the operator's top-
+    priority layer (wins over the committed profile). SPIKE_TTS_* env overrides
+    for voice settings are applied separately (resolve_voice_settings), after
+    the profile, so they also win — that is the "CLI/env > profile" rule."""
+    cli = {}
+    if args.tts_model is not None:
+        cli["tts_model"] = args.tts_model
+    if args.vad_threshold is not None:
+        cli["vad_threshold"] = args.vad_threshold
+    # --tts-hangover-ms is the tts-mode alias for --vad-hangover-ms
+    if args.tts_hangover_ms is not None:
+        cli["vad_hangover_ms"] = args.tts_hangover_ms
+    elif args.vad_hangover_ms is not None:
+        cli["vad_hangover_ms"] = args.vad_hangover_ms
+    return cli
+
+
+async def build_tts_engine(args, profile_flat, cli_overrides):
     """Construct the SPIKE engine: governor first, then the vendor clients.
 
     Returns (http_session, TtsEngine). The governor is built before either
     client exists — the caps have to be in force before anything can spend.
+    `profile_flat`/`cli_overrides` are the already-clamped config-as-code layers
+    resolved against the clone's own settings once the voice is fetched.
     """
     from spend_governor import SpendGovernor  # local: rvc mode never needs these
 
@@ -991,7 +1123,8 @@ async def build_tts_engine(args):
         connector=aiohttp.TCPConnector(keepalive_timeout=120, limit=8))
     try:
         return await _preflight_and_build(args, http, api_key, voice_id,
-                                          governor, drill_lines)
+                                          governor, drill_lines,
+                                          profile_flat, cli_overrides)
     except BaseException:
         # Close the session a failed preflight opened. Otherwise aiohttp prints
         # an "Unclosed client session" traceback on GC, burying the single
@@ -1000,22 +1133,40 @@ async def build_tts_engine(args):
         raise
 
 
-async def _preflight_and_build(args, http, api_key, voice_id, governor, drill_lines):
+async def _preflight_and_build(args, http, api_key, voice_id, governor,
+                               drill_lines, profile_flat, cli_overrides):
     voice = await fetch_voice(http, api_key, voice_id)
-    voice_settings = resolve_voice_settings(voice_settings_from(voice))
-    log.info("voice_settings in force: %s", voice_settings)
+
+    # Precedence, resolved now that the clone's own settings are in hand:
+    #   registry defaults → refined by the clone's settings → committed profile
+    #   → CLI/env overrides. The clone is the declared quality reference, so it
+    #   is the baseline the profile and overrides deviate from.
+    base = knobs.defaults("tts")
+    for field, value in voice_settings_from(voice).items():
+        if field in base:               # clone refines the voice-setting knobs
+            base[field] = value
+    resolved = knobs.resolve_precedence(base, profile_flat, cli_overrides)
+    model = resolved["tts_model"]
+    voice_settings = {k: resolved[k] for k in knobs.PROFILE_VOICE_KEYS}
+    # SPIKE_TTS_* env overrides are the final (highest) voice-setting layer
+    voice_settings = resolve_voice_settings(voice_settings)
+    log.info("resolved tts config (CLI/env > profile > clone > registry): "
+             "model=%s voice_settings=%s prime_hops=%.2f min_speech_ms=%.0f "
+             "queue_warn_ms=%.0f", model, voice_settings, resolved["prime_hops"],
+             resolved["min_speech_ms"], resolved["queue_wait_warn_ms"])
 
     stt = SttClient(http, api_key)
-    tts = TtsClient(http, api_key, voice_id, model=args.tts_model,
+    tts = TtsClient(http, api_key, voice_id, model=model,
                     voice_settings=voice_settings)
     queue = PcmQueue()
     engine = TtsEngine(
         stt=stt, tts=tts, governor=governor,
-        endpointer=UtteranceEndpointer(),
+        endpointer=UtteranceEndpointer(min_speech_ms=resolved["min_speech_ms"]),
         queue=queue,
-        outgate=OutputGate(queue, PRIME_SAMPLES),
+        outgate=OutputGate(queue, knobs.prime_hops_to_samples(resolved["prime_hops"])),
         drill_lines=drill_lines,
     )
+    engine.queue_wait_warn_ms = resolved["queue_wait_warn_ms"]
     # Warm BOTH vendors before the room join — the STT handshake (~900 ms) and
     # the TTS cold-voice penalty (993 ms vs ~376 ms steady) would otherwise land
     # inside the first utterance's tail. Same philosophy as the RVC warmup.
@@ -1029,7 +1180,7 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor, drill_li
             f"check outbound WebSocket access to {stt.url.split('?')[0]}.")
     await tts.warmup(governor)
     log.info("PREFLIGHT OK — engine=tts model=%s stt=%s voice=%r",
-             args.tts_model, stt.model, voice.get("name"))
+             model, stt.model, voice.get("name"))
     return http, engine.start()
 
 

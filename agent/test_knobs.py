@@ -222,3 +222,116 @@ def test_send_settings_while_disconnected_stores_only():
 
     recorder = run_with_server(scenario)
     assert recorder.texts[0]["index_rate"] == 0.9
+
+
+# ── tts registry: bool/enum kinds, ranges, per-model support ─────────
+
+
+def test_tts_bool_and_enum_and_range_clamping():
+    applied, adjusted, rejected = knobs.clamp_params({
+        "use_speaker_boost": False,      # bool kind
+        "tts_model": "eleven_v3",        # enum kind
+        "stability": 0.3,                # float in range
+        "speed": 9.0,                    # float above hi (4.0) → clamped
+        "style": -1,                     # float below lo (0.0) → clamped
+    })
+    assert applied["use_speaker_boost"] is False
+    assert applied["tts_model"] == "eleven_v3"
+    assert applied["stability"] == 0.3
+    assert applied["speed"] == 4.0 and adjusted["speed"]["requested"] == 9.0
+    assert applied["style"] == 0.0
+    assert rejected == {}
+
+
+def test_tts_bool_and_enum_reject_bad_types():
+    applied, _adj, rejected = knobs.clamp_params({
+        "use_speaker_boost": 1,          # int is NOT a bool here
+        "tts_model": "eleven_v9",        # unknown model
+        "speed": "fast",                 # wrong type
+    })
+    assert applied == {}
+    assert set(rejected) == {"use_speaker_boost", "tts_model", "speed"}
+
+
+def test_model_unsupported_matrix():
+    # documented v3 negatives
+    assert knobs.model_unsupported("similarity_boost", "eleven_v3")
+    assert knobs.model_unsupported("use_speaker_boost", "eleven_v3")
+    # supported everywhere else
+    assert knobs.model_unsupported("similarity_boost", "eleven_flash_v2_5") is None
+    assert knobs.model_unsupported("use_speaker_boost", "eleven_multilingual_v2") is None
+    # settings with no per-model restriction, and non-voice knobs
+    assert knobs.model_unsupported("stability", "eleven_v3") is None
+    assert knobs.model_unsupported("speed", "eleven_v3") is None
+    assert knobs.model_unsupported("style", "eleven_v3") is None
+    assert knobs.model_unsupported("vad_threshold", "eleven_v3") is None
+
+
+def test_defaults_and_ranges_are_engine_filtered():
+    tts = knobs.defaults("tts")
+    rvc = knobs.defaults("rvc")
+    # engine-specific knobs appear only for their engine
+    assert "stability" in tts and "tts_model" in tts and "index_rate" not in tts
+    assert "index_rate" in rvc and "f0_method" in rvc and "stability" not in rvc
+    # shared pipeline knobs appear for both
+    for shared in ("prime_hops", "vad_threshold", "vad_hangover_ms"):
+        assert shared in tts and shared in rvc
+    # tts-only pipeline knobs only for tts
+    assert "min_speech_ms" in tts and "min_speech_ms" not in rvc
+    # ranges track the same filtering, and every default is in range
+    assert set(knobs.ranges("tts")) == set(tts)
+    a, adj, rej = knobs.clamp_params(tts)
+    assert set(a) == set(tts) and adj == {} and rej == {}
+
+
+def test_metadata_is_ordered_and_carries_ui_facts():
+    md = knobs.metadata("tts")
+    names = [e["name"] for e in md]
+    assert names == knobs._relevant("tts")          # ordered, engine-filtered
+    by_name = {e["name"]: e for e in md}
+    # a float knob carries lo/hi/step; an enum carries choices; a bool its kind
+    assert by_name["stability"]["kind"] == "float"
+    assert {"lo", "hi", "step"} <= set(by_name["stability"])
+    assert by_name["tts_model"]["choices"] == list(knobs.TTS_MODELS)
+    assert by_name["use_speaker_boost"]["kind"] == "bool"
+    # per-model support surfaced so the UI can disable-with-reason
+    assert "eleven_v3" in by_name["similarity_boost"]["unsupported_models"]
+    assert "unsupported_models" not in by_name["stability"]
+    # every entry declares where it applies and when
+    for e in md:
+        assert e["group"] and e["timing"] and e["engines"]
+
+
+# ── config-as-code: profile flattening + precedence ─────────────────
+
+
+def test_flatten_profile_reads_nested_export_shape():
+    flat = knobs.flatten_profile({
+        "engine": "tts",
+        "model": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.4, "style": 0.2},
+        "pipeline": {"vad_hangover_ms": 200, "min_speech_ms": 150},
+        "_comment": "ignored",
+    })
+    assert flat == {
+        "tts_model": "eleven_multilingual_v2",
+        "stability": 0.4, "style": 0.2,
+        "vad_hangover_ms": 200, "min_speech_ms": 150,
+    }
+
+
+def test_flatten_profile_tolerates_garbage():
+    assert knobs.flatten_profile(None) == {}
+    assert knobs.flatten_profile({"voice_settings": "nope"}) == {}
+
+
+def test_resolve_precedence_cli_over_profile_over_base():
+    base = knobs.defaults("tts")
+    profile = {"tts_model": "eleven_multilingual_v2", "stability": 0.4,
+               "vad_hangover_ms": 200}
+    cli = {"tts_model": "eleven_v3"}          # CLI wins over the profile
+    resolved = knobs.resolve_precedence(base, profile, cli)
+    assert resolved["tts_model"] == "eleven_v3"          # cli beat profile
+    assert resolved["stability"] == 0.4                  # profile beat default
+    assert resolved["vad_hangover_ms"] == 200            # profile beat default (300)
+    assert resolved["speed"] == base["speed"]            # untouched default stands
