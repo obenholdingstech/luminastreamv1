@@ -22,6 +22,7 @@ export function knobState(requested, applied, epsilon = 1e-6) {
 /** Display text for a confirmed badge — always the APPLIED value, never the request. */
 export function knobDisplay(applied) {
   if (applied === undefined || applied === null) return '—';
+  if (typeof applied === 'boolean') return applied ? 'on' : 'off';
   if (typeof applied === 'number') {
     return Number.isInteger(applied) ? String(applied) : applied.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
   }
