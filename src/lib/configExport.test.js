@@ -90,6 +90,19 @@ test('engine-agnostic: an rvc agent exports rvc + pipeline, no voice/model', () 
   assert.deepEqual(out.pipeline, { prime_hops: 1.5, vad_threshold: 0.5 });
 });
 
+test('a locked profile pins the voice (id + name), not just its settings', () => {
+  const withVoice = {
+    ...ttsConfig,
+    config: { ...ttsConfig.config, voice: 'v_amy', voice_name: 'Amy Clone' },
+    metadata: [{ name: 'voice', target: 'tts' }, ...ttsConfig.metadata],
+  };
+  const out = buildConfigExport(withVoice, CLOCK);
+  assert.equal(out.voice, 'v_amy');
+  assert.equal(out.voice_name, 'Amy Clone');
+  // voice must NOT leak into voice_settings — it is not a synthesis setting
+  assert.ok(!('voice' in out.voice_settings));
+});
+
 test('filename encodes engine + model + timestamp, filesystem-safe', () => {
   const name = configExportFilename(ttsConfig, CLOCK);
   assert.equal(name, 'tuning-tts-eleven_flash_v2_5-2026-07-29_12-00-00.json');

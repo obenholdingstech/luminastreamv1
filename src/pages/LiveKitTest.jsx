@@ -14,6 +14,7 @@ import {
   Loader2,
   MessageSquare,
   Mic,
+  RefreshCw,
   Repeat,
   Server,
   Signal,
@@ -107,6 +108,14 @@ function fmtMs(value) {
   return value == null ? '—' : `${Math.round(value)}ms`;
 }
 
+// The terminal punctuation Scribe emitted (? ! . …) — the free prosody channel
+// that must reach synthesis untouched (ticket 3). Empty when none.
+function terminalPunctuation(text) {
+  if (!text) return '';
+  const m = String(text).trim().match(/[.?!…]+$/);
+  return m ? m[0] : '';
+}
+
 function StatTile({ label, value, unit, icon: IconCmp, color }) {
   return (
     <div className="bg-[#13131F] border border-[#1A1A2E] rounded-md p-3">
@@ -132,74 +141,79 @@ function KnobRow({ knob, applied, requested, disabled, reason, onEdit, onCommit 
   const labelId = `tuning-label-${knob.name}`;
   const hasLatencyHint = knob.hint && /latenc/i.test(knob.hint);
   const value = requested ?? applied;
+  // enum display names (voice_id → "Amy (cloned)", etc.); ids fall through
+  const label = (v) => (v != null && knob.choice_labels?.[v]) || v;
+  const appliedText = knob.kind === 'enum' && applied != null ? label(applied) : knobDisplay(applied);
   return (
-    <div className="flex items-center gap-2">
-      <span
-        id={labelId}
+    <div className="flex items-center gap-2 min-w-0">
+      <label
+        htmlFor={labelId}
         title={knob.hint || knob.name}
-        className={`w-36 shrink-0 text-[10px] tracking-wide ${disabled ? 'text-[#4A5568]' : 'text-[#94A3B8]'}`}
+        className={`w-28 sm:w-32 shrink-0 truncate text-[10px] tracking-wide ${disabled ? 'text-[#4A5568]' : 'text-[#94A3B8]'}`}
       >
         {knob.label}
         {hasLatencyHint && (
           <Zap size={9} className="inline ml-1 -mt-0.5 text-[#F59E0B]" aria-label="documented latency cost" />
         )}
-      </span>
+      </label>
 
-      {knob.kind === 'enum' ? (
-        <select
-          aria-labelledby={labelId}
-          value={value ?? knob.choices?.[0]}
-          disabled={disabled}
-          onChange={(e) => onCommit(knob.name, e.target.value)}
-          className="flex-1 bg-[#13131F] border border-[#1A1A2E] rounded-md px-2 py-1 text-[11px] font-mono text-white disabled:opacity-40"
-        >
-          {(knob.choices || []).map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-      ) : knob.kind === 'bool' ? (
-        <button
-          aria-labelledby={labelId}
-          disabled={disabled}
-          onClick={() => onCommit(knob.name, !value)}
-          className={`flex-1 flex items-center gap-1.5 text-[11px] tracking-wide rounded-md px-3 py-1 transition-colors disabled:opacity-40 ${
-            value
-              ? 'bg-[#10B981]/15 border border-[#10B981]/40 text-[#10B981]'
-              : 'border border-[#1A1A2E] text-[#64748B]'
-          }`}
-        >
-          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: value ? '#10B981' : '#4A5568' }} />
-          {value ? 'on' : 'off'}
-        </button>
-      ) : (
-        <input
-          type="range"
-          aria-labelledby={labelId}
-          min={knob.lo}
-          max={knob.hi}
-          step={knob.step}
-          value={value ?? knob.lo}
-          disabled={disabled}
-          onChange={(e) => onEdit(knob.name, Number(e.target.value))}
-          onPointerUp={(e) => onCommit(knob.name, Number(e.currentTarget.value))}
-          onKeyUp={(e) => {
-            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
-                 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
-              onCommit(knob.name, Number(e.currentTarget.value));
-            }
-          }}
-          className="flex-1 accent-[#6366F1] disabled:opacity-40"
-        />
-      )}
+      <div className="flex-1 min-w-0 flex items-center gap-2">
+        {knob.kind === 'enum' ? (
+          <select
+            id={labelId}
+            value={value ?? knob.choices?.[0] ?? ''}
+            disabled={disabled || (knob.choices || []).length === 0}
+            onChange={(e) => onCommit(knob.name, e.target.value)}
+            className="flex-1 min-w-0 bg-[#13131F] border border-[#1A1A2E] rounded-md px-2 py-1 text-[11px] font-mono text-white disabled:opacity-40"
+          >
+            {(knob.choices || []).length === 0 && <option value="">—</option>}
+            {(knob.choices || []).map((c) => (
+              <option key={c} value={c}>{label(c)}</option>
+            ))}
+          </select>
+        ) : knob.kind === 'bool' ? (
+          <button
+            id={labelId}
+            disabled={disabled}
+            onClick={() => onCommit(knob.name, !value)}
+            className={`flex-1 flex items-center gap-1.5 text-[11px] tracking-wide rounded-md px-3 py-1 transition-colors disabled:opacity-40 ${
+              value
+                ? 'bg-[#10B981]/15 border border-[#10B981]/40 text-[#10B981]'
+                : 'border border-[#1A1A2E] text-[#64748B]'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: value ? '#10B981' : '#4A5568' }} />
+            {value ? 'on' : 'off'}
+          </button>
+        ) : (
+          <>
+            <input
+              id={labelId}
+              type="range"
+              min={knob.lo}
+              max={knob.hi}
+              step={knob.step}
+              value={value ?? knob.lo}
+              disabled={disabled}
+              onChange={(e) => onEdit(knob.name, Number(e.target.value))}
+              onPointerUp={(e) => onCommit(knob.name, Number(e.currentTarget.value))}
+              onKeyUp={(e) => {
+                if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+                     'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+                  onCommit(knob.name, Number(e.currentTarget.value));
+                }
+              }}
+              className="flex-1 min-w-0 accent-[#6366F1] disabled:opacity-40"
+            />
+            <span className="w-10 shrink-0 text-right text-[10px] font-mono tabular-nums text-[#64748B]">
+              {value ?? '—'}
+            </span>
+          </>
+        )}
+      </div>
 
-      <span className="w-10 text-right text-[10px] font-mono text-[#64748B]">
-        {knob.kind === 'float' ? (value ?? '—') : ''}
-      </span>
-      {disabled ? (
-        <span
-          title={reason}
-          className="w-16 text-right text-[9px] font-mono text-[#F59E0B] truncate"
-        >
+      {disabled && reason ? (
+        <span title={reason} className="w-16 shrink-0 text-right text-[9px] font-mono text-[#F59E0B] truncate">
           n/a
         </span>
       ) : (
@@ -207,13 +221,13 @@ function KnobRow({ knob, applied, requested, disabled, reason, onEdit, onCommit 
           title={
             state === 'unknown'
               ? `${knob.name}: awaiting agent confirmation`
-              : `${knob.name}: agent applied ${knobDisplay(applied)}`
+              : `${knob.name}: agent applied ${appliedText}`
           }
-          className="w-16 text-right text-[10px] font-mono"
+          className="w-16 shrink-0 text-right text-[10px] font-mono tabular-nums truncate"
           style={{ color: KNOB_STATE_COLORS[state] }}
         >
           {state === 'mismatch' && '⚠'}
-          {knobDisplay(applied)}
+          {appliedText}
         </span>
       )}
     </div>
@@ -257,6 +271,7 @@ export default function LiveKitTest() {
     enableAudio,
     requestAgentMode,
     requestAgentConfig,
+    refreshVoices,
     setCaptureConstraint,
   } = useLiveKitVoice(url.trim(), token.trim());
 
@@ -672,10 +687,20 @@ export default function LiveKitTest() {
               </span>
             </h2>
             <div className="flex items-center gap-2">
+              {agentConfig?.engine === 'tts' && (
+                <button
+                  onClick={refreshVoices}
+                  disabled={isDisconnected}
+                  title="Ask the agent to re-list the account's voices (GET /v1/voices, agent-side — the browser never holds the key)"
+                  className="flex items-center gap-1.5 border border-[#1A1A2E] text-[#94A3B8] hover:border-[#6366F1]/50 disabled:opacity-40 text-[10px] tracking-wide rounded-md px-3 py-1.5 transition-colors"
+                >
+                  <RefreshCw size={12} /> Voices
+                </button>
+              )}
               <button
                 onClick={handleExport}
                 disabled={!agentConfig?.config}
-                title="Download the agent-confirmed config as JSON — commit it as agent/tts_profile.json to lock it in"
+                title="Download the agent-confirmed config as JSON — commit it as agent/tts_profile.json to lock it in (pins voice + settings)"
                 className="flex items-center gap-1.5 border border-[#1A1A2E] text-[#94A3B8] hover:border-[#10B981]/50 disabled:opacity-40 text-[10px] tracking-wide rounded-md px-3 py-1.5 transition-colors"
               >
                 <Download size={12} /> Export JSON
@@ -710,7 +735,7 @@ export default function LiveKitTest() {
                     applies {group.timing}
                   </span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-2.5">
                   {group.knobs.map((knob) => {
                     const applied = agentConfig?.config?.[knob.name];
                     const requested = knobEdits[knob.name] ?? applied;
@@ -741,16 +766,23 @@ export default function LiveKitTest() {
 
           {latestSpend && (
             <div className="mt-4 pt-3 border-t border-[#1A1A2E] flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] font-mono text-[#64748B]">
-              <span className="tracking-widest uppercase">Governor · env-only · read-only</span>
               <span
+                className="tracking-widest uppercase"
+                title="Spend caps are env-only by design (no sliders). Override with SPIKE_MAX_TTS_CHARS and SPIKE_MAX_STT_SECONDS in the environment."
+              >
+                Governor · env-only · read-only
+              </span>
+              <span
+                title={`SPIKE_MAX_TTS_CHARS=${latestSpend.tts_chars_cap} · ${(latestSpend.tts_chars_cap - latestSpend.tts_chars_used).toFixed(0)} left`}
                 style={{ color: thresholdColor(latestSpend.tts_chars_used, latestSpend.tts_chars_cap * 0.8, latestSpend.tts_chars_cap) }}
               >
                 TTS {latestSpend.tts_chars_used}/{latestSpend.tts_chars_cap} chars
               </span>
               <span
+                title={`SPIKE_MAX_STT_SECONDS=${latestSpend.stt_seconds_cap} · ${(latestSpend.stt_seconds_cap - latestSpend.stt_seconds_used).toFixed(1)} s left`}
                 style={{ color: thresholdColor(latestSpend.stt_seconds_used, latestSpend.stt_seconds_cap * 0.8, latestSpend.stt_seconds_cap) }}
               >
-                STT {Math.round(latestSpend.stt_seconds_used)}/{Math.round(latestSpend.stt_seconds_cap)} s
+                STT {latestSpend.stt_seconds_used.toFixed(1)}/{latestSpend.stt_seconds_cap.toFixed(0)} s
               </span>
               {latestSpend.refusals > 0 && (
                 <span className="text-[#EF4444]">refusals {latestSpend.refusals}</span>
@@ -824,6 +856,19 @@ export default function LiveKitTest() {
                           <span>{u.chars ?? '—'} chars</span>
                           <span className="text-[#4A5568]">{u.model_id}</span>
                           {typeof u.wer === 'number' && <span>wer {u.wer.toFixed(2)}</span>}
+                          {terminalPunctuation(u.transcript) && (
+                            <span
+                              className="text-[#818CF8]"
+                              title="terminal punctuation Scribe emitted — the free prosody channel into synthesis"
+                            >
+                              prosody {terminalPunctuation(u.transcript)}
+                            </span>
+                          )}
+                          {u.continuity && (
+                            <span className="text-[#10B981]" title="conditioned on the previous utterance (request stitching)">
+                              🔗 stitched
+                            </span>
+                          )}
                         </div>
                       </>
                     )}
