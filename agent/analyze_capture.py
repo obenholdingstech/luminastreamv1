@@ -213,15 +213,37 @@ def detect_tail_clips(env_in, env_out, offset_frames, utterances,
     return results
 
 
+def comfort_noise_floor(events, margin=1.5):
+    """Absolute envelope floor for the comfort-noise bed, read from the capture's
+    config snapshot (config carries comfort_noise_db). 0.0 when the bed was off
+    or absent. The bed is ~unit-RMS-normalized noise scaled by its dBFS
+    amplitude, so its RMS envelope ≈ that amplitude; `margin` covers peaks. This
+    is how the analyzer is TAUGHT the bed is intentional (ticket 2): output at
+    or below it classifies as silence, never as active output / a dropout."""
+    dbs = [cfg["comfort_noise_db"]
+           for ev in events
+           if ev.get("event") in ("session", "config_change")
+           for cfg in (ev.get("config") or {},)
+           if cfg.get("comfort_noise_db") is not None]
+    loudest = max(dbs) if dbs else None
+    if loudest is None or loudest <= -80.0:     # -80 dBFS = COMFORT_OFF_DB (vad.py)
+        return 0.0
+    return float(10.0 ** (loudest / 20.0)) * margin
+
+
 def find_silence_regions(env, hop_ms=ENV_HOP_MS, thresh_ratio=UTTER_THRESH_RATIO,
-                         min_ms=SILENCE_MIN_MS):
-    """Silent spans of an envelope → list of (start_s, end_s)."""
+                         min_ms=SILENCE_MIN_MS, noise_floor=0.0):
+    """Silent spans of an envelope → list of (start_s, end_s).
+
+    A frame is silent when below the relative gate (p95 * ratio) OR at/below
+    `noise_floor` — the intentional comfort-noise bed under gate-closed silence
+    (ticket 2), which must read as silence rather than active output."""
     if len(env) == 0:
         return []
     ref = float(np.percentile(env, 95))
     if ref <= 0:
         return [(0.0, len(env) * hop_ms / 1000.0)]
-    silent = env < ref * thresh_ratio
+    silent = (env < ref * thresh_ratio) | (env <= noise_floor)
     regions = []
     start = None
     min_len = int(round(min_ms / hop_ms))
@@ -647,8 +669,12 @@ def main(argv=None):
     offset_frames = int(round(offset_ms / ENV_HOP_MS))
     utterances = detect_utterances(env_in)
     tails = detect_tail_clips(env_in, env_out, offset_frames, utterances)
-    silences = classify_silences(find_silence_regions(env_out), env_in, offset_frames,
-                                 gated_spans=gated_spans_from_events(events))
+    # Comfort-noise bed (ticket 2) is intentional room tone under silence —
+    # tell the silence finder its level so it never reads as a dropout.
+    noise_floor = comfort_noise_floor(events)
+    silences = classify_silences(
+        find_silence_regions(env_out, noise_floor=noise_floor),
+        env_in, offset_frames, gated_spans=gated_spans_from_events(events))
 
     plot_aligned_waveforms(d / "aligned_waveforms.png", x_in, x_out, sr_in, offset_ms)
     plot_spectrograms(d / "spectrograms.png", x_in, x_out, sr_in, offset_ms)

@@ -14,6 +14,7 @@ import pytest
 from analyze_capture import (
     ENV_HOP_MS,
     classify_silences,
+    comfort_noise_floor,
     detect_tail_clips,
     detect_utterances,
     estimate_offset_ms,
@@ -297,3 +298,33 @@ def test_capture_disables_on_writer_failure(tmp_path):
         await cap.aclose()
 
     asyncio.run(run())
+
+
+# ── comfort-noise bed is intentional, not a dropout (ticket 2) ───────
+
+
+def test_comfort_noise_floor_read_from_capture_config():
+    events = [
+        {"event": "session", "config": {"comfort_noise_db": -60.0}},
+        {"event": "config_change", "config": {"comfort_noise_db": -40.0}},  # loudest
+    ]
+    floor = comfort_noise_floor(events)
+    assert floor == pytest.approx(10.0 ** (-40.0 / 20.0) * 1.5)   # loudest bed used
+    # off / absent → no floor
+    assert comfort_noise_floor([{"event": "session", "config": {}}]) == 0.0
+    assert comfort_noise_floor([{"event": "session", "config": {"comfort_noise_db": -80.0}}]) == 0.0
+
+
+def test_comfort_bed_classifies_as_silence_not_active_output():
+    """A gap filled with the comfort bed must read as silence. Without the floor
+    a near-silent capture (bed ≈ p95) would mis-flag the bed as active output."""
+    # envelope: real speech, then a long comfort-bed 'silence' at the bed level
+    bed = 10.0 ** (-40.0 / 20.0)
+    env = np.concatenate([
+        np.full(40, 0.25, dtype=np.float32),         # speech
+        np.full(60, bed, dtype=np.float32),          # comfort bed under silence
+    ])
+    floor = comfort_noise_floor([{"event": "session", "config": {"comfort_noise_db": -40.0}}])
+    sil = find_silence_regions(env, noise_floor=floor)
+    # the bed span (0.40s..1.00s) is found as ONE silent region
+    assert any(abs(s - 0.40) < 0.05 and abs(e - 1.00) < 0.05 for s, e in sil)

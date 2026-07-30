@@ -31,6 +31,7 @@ import asyncio
 import logging
 import time
 
+import knobs
 from elevenlabs_client import SttError, TtsError
 from spend_governor import GovernorRefusal
 from wer import best_match
@@ -84,6 +85,15 @@ class TtsEngine:
         # Live-tunable (Phase 4 console, "queue_wait_warn_ms" knob). Diagnostic
         # only — it moves a WARN threshold, never the audio.
         self.queue_wait_warn_ms = QUEUE_WAIT_WARN_MS
+        # Request continuity (ticket 1): condition each synthesis on the prior
+        # one via request stitching so delivery holds across a session. Toggled
+        # live; reset on session/voice/model change; skipped on models without
+        # stitching (eleven_v3).
+        self.request_continuity = True
+        self._prev_request_id = None
+        # Account voices for the selector (ticket 6); set by the agent from
+        # list_voices() at build and on a refresh request. Empty ⇒ no selector.
+        self.voices = []
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -170,10 +180,20 @@ class TtsEngine:
         self._utt_streaming = False
         self._utt_refusal = None
         self._utt_stt_reserved = 0.0
+        # Continuity is per-session: the next take must not stitch onto audio
+        # from before the toggle (ghost prosody). reset_continuity() is also
+        # called on voice/model change from the apply path.
+        self._prev_request_id = None
         self.stt.abandon_utterance()
         if drained:
             log.info("mode re-entry: dropped %d queued utterance(s) from the "
                      "previous take", drained)
+
+    def reset_continuity(self):
+        """Clear the request-stitching anchor. Called on voice/model change so
+        the next synthesis starts a fresh continuity chain rather than
+        conditioning on a different voice's or model's delivery."""
+        self._prev_request_id = None
 
     def event(self, kind, **fields):
         if self._on_event is not None:
@@ -406,12 +426,19 @@ class TtsEngine:
             return
         rec["chars"] = chars
 
-        # 4. Synthesize, streaming into the jitter buffer
+        # 4. Synthesize, streaming into the jitter buffer. Request continuity:
+        # condition on the previous utterance's request-id when enabled and the
+        # model supports stitching (not eleven_v3).
+        prev_ids = None
+        if (self.request_continuity and self._prev_request_id
+                and knobs.model_supports_stitching(self.tts.model)):
+            prev_ids = [self._prev_request_id]
+        rec["continuity"] = bool(prev_ids)
         self._synth_in_flight = True
         first_at = None
         samples = 0
         try:
-            async for pcm, ttfb_ms in self.tts.stream(transcript):
+            async for pcm, ttfb_ms in self.tts.stream(transcript, previous_request_ids=prev_ids):
                 if first_at is None:
                     first_at = time.monotonic()
                     rec["tts_ttfb_ms"] = round(ttfb_ms, 1)
@@ -435,6 +462,11 @@ class TtsEngine:
             self._drop(utt, "tts_empty", "synthesis returned no audio")
             return
 
+        # Continuity: this synthesis completed and its body was fully read, so
+        # its request-id may condition the next utterance (streaming caveat).
+        if self.request_continuity and self.tts.last_request_id:
+            self._prev_request_id = self.tts.last_request_id
+
         rec["audio_s"] = round(samples / 48000.0, 3)
         rec["spend"] = self.governor.snapshot()
         self.records.append(rec)
@@ -446,6 +478,7 @@ class TtsEngine:
                      "stt_ms": rec.get("stt_ms"),
                      "chars": chars, "model_id": self.tts.model,
                      "wer": rec.get("wer"),
+                     "continuity": rec.get("continuity"),
                      "spend": rec.get("spend")})   # live caps/usage for the console
         log.info("utterance %d: %.2fs speech → %r | stt %.0fms | ttfb %.0fms | "
                  "TAIL %.0fms | %d chars | wer=%s",

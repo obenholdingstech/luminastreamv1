@@ -183,6 +183,64 @@ def _equal_power_in(n):
     return np.sin(t) ** 2
 
 
+COMFORT_OFF_DB = -80.0            # at/below this the bed is OFF (exact zeros)
+COMFORT_GLIDE_SAMPLES = 1440     # ~30 ms crossfade at 48 kHz
+_COMFORT_LPF_A = 0.05            # 1-pole low-pass coefficient (warm, not hiss)
+
+
+class ComfortNoise:
+    """A low-level shaped-noise 'room tone' mixed under gate-closed silence so
+    conversational gaps don't feel like a dead line (CEO tuning-session finding).
+
+    Additive with a gain that GLIDES to 0 while speech plays and to 1 during
+    silence, so it crossfades at every utterance boundary rather than clicking
+    in. The bed is 1-pole low-passed white noise (warm, not bright hiss),
+    normalized to ~unit RMS and scaled by comfort_noise_db (dBFS). At/below
+    COMFORT_OFF_DB the amplitude is exactly 0 — the pre-existing digital-zero
+    behavior, so a disabled bed (and the whole RVC path) is byte-identical.
+
+    A shaped-noise generator with an operator-tuned level was chosen over
+    auto-deriving the level from recent TTS tails: auto-derive is fragile
+    (breath/room bleed) and the console's whole method is tune-by-ear (see PR).
+    """
+
+    def __init__(self, db=None, glide_samples=COMFORT_GLIDE_SAMPLES, seed=1234):
+        self._amp = 0.0
+        self.db = None                   # last-set dBFS, for the applied snapshot
+        self._gain = 0.0                 # current crossfade gain, 0..1
+        self.glide = max(1, glide_samples)
+        self._rng = np.random.default_rng(seed)
+        self._lpf_zi = np.zeros(1, dtype=np.float64)
+        # restore ~unit RMS after the 1-pole LPF attenuates white noise
+        self._norm = float(np.sqrt((2.0 - _COMFORT_LPF_A) / _COMFORT_LPF_A))
+        self.set_db(db)
+
+    def set_db(self, db):
+        self.db = db
+        self._amp = 0.0 if (db is None or db <= COMFORT_OFF_DB) else float(10.0 ** (db / 20.0))
+
+    @property
+    def enabled(self):
+        return self._amp > 0.0
+
+    def mix(self, frame, speaking):
+        """Add the bed to `frame` (in place-safe copy) and return it. `speaking`
+        True ⇒ real audio is playing this frame (gain glides toward 0)."""
+        if self._amp <= 0.0:
+            return frame                 # off — untouched, exact zeros preserved
+        n = len(frame)
+        target = 0.0 if speaking else 1.0
+        step = n / self.glide
+        new_gain = (min(target, self._gain + step) if target > self._gain
+                    else max(target, self._gain - step))
+        env = np.linspace(self._gain, new_gain, n, dtype=np.float32)
+        self._gain = new_gain
+        white = self._rng.standard_normal(n)
+        bed, self._lpf_zi = lfilter([_COMFORT_LPF_A], [1.0, -(1.0 - _COMFORT_LPF_A)],
+                                    white, zi=self._lpf_zi)
+        return frame + (bed.astype(np.float32) * self._norm * self._amp * env)
+
+
 class OutputGate:
     """Output-side gating around the SolaStitcher.
 
@@ -200,13 +258,27 @@ class OutputGate:
     With gate_open always True the behavior is identical to the pre-VAD agent.
     """
 
-    def __init__(self, stitcher, prime_samples, ramp=RAMP_SAMPLES):
+    def __init__(self, stitcher, prime_samples, ramp=RAMP_SAMPLES, comfort_noise_db=None):
         self.stitcher = stitcher
         self.prime_samples = prime_samples
         self.ramp = ramp
         self.primed = False
         self.drained = False   # one-shot flag: drain happened in the last read
         self._fade_pos = None  # sample position within an in-progress fade-in
+        # Comfort-noise bed (tts only). None ⇒ off ⇒ exact digital zero, so the
+        # RVC path (which never sets it) is byte-identical to before.
+        self.comfort = ComfortNoise(comfort_noise_db) if comfort_noise_db is not None else None
+
+    def set_comfort_noise_db(self, db):
+        """Live retune of the comfort-noise bed (Phase 4 console)."""
+        if self.comfort is None:
+            self.comfort = ComfortNoise(db)
+        else:
+            self.comfort.set_db(db)
+
+    def _bed(self, samples, speaking):
+        """Mix the comfort-noise bed under `samples` (no-op when off/None)."""
+        return samples if self.comfort is None else self.comfort.mix(samples, speaking)
 
     def reset(self):
         self.primed = False
@@ -243,11 +315,14 @@ class OutputGate:
                 self.primed = True
                 self._fade_pos = 0  # ramp in the fresh audio
             else:
-                return np.zeros(n, dtype=np.float32)
+                # pre-roll / between-utterance silence — the bed's home
+                return self._bed(np.zeros(n, dtype=np.float32), speaking=False)
         if self.stitcher.available >= n:
-            return self._apply_fade_in(self.stitcher.read(n))
+            return self._bed(self._apply_fade_in(self.stitcher.read(n)), speaking=True)
         if gate_open:
-            return self.stitcher.read(n)  # true underrun — counted by the stitcher
+            # true underrun (buffer starved mid-speech) — counted by the stitcher;
+            # speaking context, so the bed stays faded out
+            return self._bed(self.stitcher.read(n), speaking=True)
         # Gate closed and the tail is shorter than a frame: intentional drain
         tail = self.stitcher.drain(n)
         out = np.zeros(n, dtype=np.float32)
@@ -257,4 +332,5 @@ class OutputGate:
             out[len(tail) - ramp:len(tail)] *= _equal_power_in(ramp)[::-1]
         self.primed = False
         self.drained = True
-        return out
+        # utterance ended — bed glides in under the fading tail (crossfade)
+        return self._bed(out, speaking=False)
