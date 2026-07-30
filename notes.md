@@ -2,6 +2,16 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 29 July 2026 — TTS TUNING CONSOLE retooled for --engine tts (PR pending, HOLD FOR CTO)
+
+- **Retooled the Phase 4 console for tts by EXTENDING the existing path** (registry → set_config under the FIFO lock → clamp → apply → config_change capture → agent_config broadcast → applied-truth badges) — no parallel system. RVC knobs stay (parked engine).
+- **Verified voice_settings against live ElevenLabs docs.** Added the 5th param the brief omitted (`speed`) + a `bool` kind (`use_speaker_boost`) + `tts_model` select. Per-model validation: `eleven_v3` has NO `similarity_boost`/`use_speaker_boost` (quoted from docs) → UI disables with reason, agent rejects the set. Audit picks: `min_speech_ms` (real), `queue_wait_warn_ms` (diagnostic).
+- **Config-as-code:** committed `agent/tts_profile.json`; precedence CLI/env > profile > clone settings > registry defaults, logged at startup. Frontend **Export JSON** downloads agent-confirmed config (never slider state) in the shape the loader reads back — round-trips. Governor caps shown read-only (stay env-only by design).
+- **Addendum both done:** Live Transcript panel (consumes the existing `tts_utterance` messages — stt/ttfb/tail/chars/model/wer); warm-on-join fires a real 1-char warmup **synthesis** on participant_connected (flagged: the drill said "ping" but a GET ping can't move TTFB; only a synthesis warms the voice model).
+- **Deviations flagged in PR:** ping→synth; profile keeps clone-settings as an intermediate layer; flash+style left enabled (docs contradictory).
+- Verified: 155 py (+15) / 25 node (+6) / lint clean / typecheck +0 over baseline / build green. RVC suite untouched.
+- **Next:** open PR → CodeRabbit → evidence replies → **CTO presses merge**. Live E2E (drill + free-talk, 3 models, watch transcript + governor line) is the acceptance run.
+
 ## 28 July 2026 — FRONTEND DEPLOY AUTOMATED: Pages recovered, deploy is now a property of the merge (PR pending, HOLD FOR CTO)
 
 - **The frontend exists again.** Created Pages project `luminastream-studio` (prod branch `main`) and ran the first deploy from `fix/pages-deploy-automation`. Live now at **https://luminastream-studio.pages.dev** — `/` and `/livekit-test` both serve the app HTML shell (`#root`), not JSON. Bundle has `VITE_API_BASE=https://luminastream-api.obenholdingsltd.workers.dev` baked in.

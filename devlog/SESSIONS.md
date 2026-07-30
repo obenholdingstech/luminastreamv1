@@ -4,6 +4,132 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 29 July 2026 — 16:28 PDT — TTS TUNING CONSOLE: retooled the Phase 4 instrument for the promoted engine (PR pending, HOLD FOR CTO)
+
+### Task (verbatim)
+
+> TTS TUNING CONSOLE — retool the Phase 4 instrument for the promoted engine
+> (branch: feat/tts-tuning-console)
+>
+> CONTEXT: The tuning console (knobs.py registry → data-channel set_config under
+> the FIFO lock → clamp → apply → config_change capture snapshot → agent_config
+> broadcast → applied-truth badges in LiveKitTest.jsx) was built for RVC and
+> survived the engine pivot intact. Retool it for --engine tts. This is a
+> registry extension plus a UI swap — REUSE the existing apply path, broadcast,
+> and capture integration; do not build a parallel system.
+>
+> YOU OWN THE GAPS — this brief is a floor, not a ceiling: [verify ElevenLabs
+> params/ranges/per-model/latency vs live docs; audit tts_engine/endpointer/
+> queue for unnamed tunables; flag any brief-vs-reality deviations].
+> KNOBS: A. ElevenLabs voice settings + model select, per-model validation,
+> latency hints. B. Pipeline knobs (keep vad_threshold/hangover; add audit
+> picks; governor caps read-only unless a runtime-mutation case is argued).
+> C. Engine-aware UI rendered from the broadcast, no hardcoded engine
+> assumptions; RVC knobs stay. EXPORT-TO-CONFIG: Export JSON of the agent-
+> confirmed config + metadata; agent loads defaults from a committed
+> agent/tts_profile.json with precedence CLI > profile > registry defaults.
+> DISCIPLINE: config_change on every apply; broadcast = applied truth; clamp-
+> never-crash; governor green; RVC suite untouched; tests for parsing/clamping,
+> per-model validation, profile precedence.
+> ADDENDUM (VPS drill, 29 Jul): 1. LIVE TRANSCRIPT PANEL (per-utterance STT
+> transcript + stt/ttfb/tail/chars/model over the data channel). 2. WARM-ON-
+> JOIN (re-fire the vendor warmup on participant-join; idle first-utterance paid
+> 2220ms TTFB vs 81–129ms steady).
+
+### What I did
+
+Extended the existing instrument — no parallel system.
+
+- **Doc verification (mandated first).** Pulled live ElevenLabs docs (their own
+  `elevenlabs/skills` repo, the models page, the create-speech schema, the v3
+  guidance). Findings that corrected the brief: (a) there is a **fifth** voice
+  setting, `speed` (0.25–4.0), which the engine already carried via
+  `SPIKE_TTS_SPEED` but the brief's KNOBS-A list omitted — added it. (b) The
+  crisp per-model negatives are on **eleven_v3**: it does NOT support
+  `similarity_boost` ("Similarity is not available for the Eleven v3 model") or
+  `use_speaker_boost` ("Speaker Boost is not available…"); stability on v3 is
+  the Creative/Natural/Robust axis. `style` is "v2+/v3 only" and >0 adds latency
+  + reduces stability. `speed` is "all voices and all models". Flash "ignores
+  some voice settings for speed" but the docs don't name which, so I did NOT
+  guess a flash+style disable — left it supported-with-a-hint and flagged it.
+- **Registry (`knobs.py`).** Added the six tts knobs (incl. a new `bool` kind
+  for `use_speaker_boost` and an enum `tts_model`), a per-model support matrix +
+  pure `model_unsupported()`, engine/target/group/timing/hint metadata,
+  engine-filtered `defaults()/ranges()/metadata()`, and pure config-as-code
+  helpers `flatten_profile()` + `resolve_precedence()`. RVC specs untouched.
+- **Audit picks the CEO didn't name:** `min_speech_ms` (endpointer blip floor —
+  a real behavior knob) and `queue_wait_warn_ms` (honestly labelled
+  diagnostic-only, a log threshold). Made both live-tunable.
+- **Apply path (`convert_agent._apply_config`).** Reused verbatim; added a
+  `tts` target branch (voice settings + model on the TtsClient) with per-model
+  validation against the model the payload RESULTS in, plus the tts-only
+  pipeline knobs. RVC branch and the `_config_lock`/capture/broadcast plumbing
+  unchanged. `config_snapshot` flattens voice settings to top-level knob keys.
+- **Broadcast** now carries `engine`, `app_version`, per-knob `metadata`, and a
+  read-only governor `spend` snapshot.
+- **Warm-on-join.** Fires on `participant_connected` — a real 1-char warmup
+  **synthesis** (metered), not the GET ping (see deviations).
+- **Config-as-code.** `agent/tts_profile.json` committed; startup precedence
+  CLI/env > profile > clone settings > registry defaults, resolved config
+  logged. Malformed profile is fatal.
+- **Frontend.** Deleted the hardcoded `TUNING_KNOBS` engine list; the console
+  now renders entirely from the broadcast metadata, grouped + keyed by engine,
+  with float/enum/bool controls, per-model disable-with-reason, ⚡ latency
+  markers, **Export JSON**, a **Live Transcript** panel (consumes the existing
+  `tts_utterance`/`_dropped` messages), and the read-only governor line.
+
+### Key findings / surprises / deviations flagged
+
+- **The transcript panel was mostly already built server-side.** The
+  `tts_utterance` data-channel notice already carried transcript + stt/ttfb/
+  tail/chars/model/wer; the frontend just never consumed it. Addendum item 1
+  was a frontend-consumer job, not a new pipeline.
+- **Warm-on-join "ping" → synthesis (deviation, flagged).** A GET ping is
+  already fired every 10 s by the keepalive and cannot move TTFB; only an actual
+  synthesis warms the vendor voice model. Implemented the drill's *intent* (kill
+  the cold first-utterance) with a metered 1-char warmup instead of the literal
+  "ping".
+- **Governor caps stay env-only (decision).** No slider for spend controls;
+  added the requested read-only display instead (live via the utterance notice).
+- **Profile precedence refined (flagged).** The brief's "CLI > profile >
+  registry defaults" is implemented with the clone's own fetched settings kept
+  as an intermediate layer (CLI/env > profile > clone > registry), since the
+  clone is the declared quality reference. The committed profile ships the
+  optimization sprint's recommended pipeline (hangover 200) and an empty
+  `voice_settings` so current voice behavior is preserved until the CEO's drill.
+- **Flash+style ambiguity (flagged).** Docs are contradictory; left style
+  enabled on flash with a latency hint rather than guess a disable.
+
+### Files changed
+
+- Agent: `knobs.py`, `elevenlabs_client.py`, `tts_engine.py`, `convert_agent.py`,
+  `tts_profile.json` (new), `test_knobs.py`, `test_tts_engine.py`.
+- Frontend: `src/hooks/useLiveKitVoice.js`, `src/lib/knobState.js`,
+  `src/lib/configExport.js` (new) + `configExport.test.js` (new),
+  `src/lib/knobState.test.js`, `src/pages/LiveKitTest.jsx`.
+- Docs: `agent/README.md`, `SPIKE.md`, this log, `notes.md`.
+
+### Verification
+
+- **155 py tests pass** (was 140; +15: tts clamp incl. bool/enum, per-model
+  validation, engine-filtered accessors, metadata shape, profile flatten/
+  precedence, warm-on-join skip/meter/fail-open, effective-voice-settings, agent
+  tts apply + per-model reject + rvc-knob-in-tts reject). RVC suite untouched.
+- **25 node tests pass** (was 19; +6 config-export round-trip / reads-agent-
+  truth / engine-agnostic / filename / bool display).
+- Lint clean; typecheck at main baseline (60 errors, all pre-existing in
+  Register/ResetPassword, none in changed files); build green.
+- Offline smoke: committed profile resolves hangover 200 (from profile, not the
+  300 registry default); broadcast payload JSON-serializes for both engines.
+
+### Next
+
+Open PR via gh → CodeRabbit → evidence replies → **HOLD MERGE for CTO**. Live
+E2E against real ElevenLabs (drill + free-talk, all three models, watch the
+transcript panel + governor line) is the acceptance run once someone connects.
+
+---
+
 ## 28 July 2026 — 16:15 PDT — FRONTEND DEPLOYMENT AUTOMATION: Pages deploy recovered + made a property of the merge (PR pending, HOLD FOR CTO)
 
 ### Task (verbatim)

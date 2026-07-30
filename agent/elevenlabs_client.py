@@ -45,6 +45,7 @@ import time
 import aiohttp
 import numpy as np
 
+import knobs
 from vad import Resampler48to16
 
 log = logging.getLogger("11labs")
@@ -439,6 +440,27 @@ class TtsClient:
         return (f"https://{API_HOST}/v1/text-to-speech/{self.voice_id}/stream"
                 f"?output_format={TTS_OUTPUT_FORMAT}")
 
+    # ── live tuning (Phase 4 console; applies to the NEXT utterance) ──
+    #
+    # stream() captures the body at call time, so mutating either of these
+    # mid-synthesis never corrupts an in-flight request — it lands on the next
+    # utterance, which is exactly the per-request semantics the console labels.
+
+    def set_model(self, model_id):
+        self.model = model_id
+
+    def apply_voice_setting(self, field, value):
+        self.voice_settings[field] = value
+
+    def effective_voice_settings(self):
+        """voice_settings with fields the CURRENT model does not support removed.
+
+        Defensive honesty rather than trusting the vendor to ignore them
+        silently: Eleven v3, for instance, drops similarity_boost and
+        use_speaker_boost (per the ElevenLabs docs — see knobs.py)."""
+        return {k: v for k, v in self.voice_settings.items()
+                if knobs.model_unsupported(k, self.model) is None}
+
     async def ping(self):
         """Free GET that keeps the pooled TLS connection to the API alive.
 
@@ -502,7 +524,7 @@ class TtsClient:
         Raises TtsError; the caller drops the utterance and keeps streaming.
         """
         body = {"text": text, "model_id": self.model,
-                "voice_settings": self.voice_settings}
+                "voice_settings": self.effective_voice_settings()}
         t0 = time.perf_counter()
         ttfb = None
         tail = b""

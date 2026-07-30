@@ -77,6 +77,7 @@ class MockTts:
         self.error = error
         self.chunks = chunks
         self.calls = []          # one entry per stream() — the text it got
+        self.warmups = 0         # one per warm_on_join / preflight warmup
 
     async def stream(self, text):
         self.calls.append(text)
@@ -86,6 +87,21 @@ class MockTts:
                       if self.chunks is not None
                       else [np.full(2400, 0.3, dtype=np.float32)] * 2):
             yield chunk, 7.5
+
+    # Phase 4 console contract (mirrors TtsClient)
+    def set_model(self, model_id):
+        self.model = model_id
+
+    def apply_voice_setting(self, field, value):
+        self.voice_settings[field] = value
+
+    async def warmup(self, governor=None):
+        self.warmups += 1
+        if governor is not None:
+            governor.reserve_tts(1)      # metered exactly like the real warmup
+        if self.error:
+            raise self.error
+        return 42.0
 
 
 def build(stt=None, tts=None, max_tts_chars=10_000, max_stt_seconds=1000,
@@ -727,3 +743,157 @@ def test_queue_wait_is_measured_not_inferred_from_depth():
     rec = asyncio.run(run())
     assert "queue_wait_ms" in rec
     assert rec["queue_wait_ms"] >= 0
+
+
+# ── Phase 4 console: warm-on-join, live tuning, per-model filtering ──
+
+
+def test_warm_on_join_fires_a_metered_synthesis():
+    """VPS-drill fix: a participant joining re-warms the vendor voice model so
+    their first utterance doesn't pay the cold-start TTFB. It is a real 1-char
+    synthesis (metered), not the free keepalive GET ping — a ping cannot move
+    TTFB (see TtsEngine.warm_on_join)."""
+    async def run():
+        engine, _, _ = build()
+        before = engine.governor.tts_chars_used
+        await engine.warm_on_join()
+        return engine, before
+
+    engine, before = asyncio.run(run())
+    assert engine.tts.warmups == 1
+    assert engine.governor.tts_chars_used == before + 1   # metered exactly 1 char
+
+
+def test_warm_on_join_skipped_while_synthesis_in_flight():
+    """Skipped when a synthesis is already running (the model is warm) and when
+    another warm is in flight — idempotent under rapid joins, never concurrent."""
+    async def run():
+        engine, _, _ = build()
+        engine._synth_in_flight = True
+        await engine.warm_on_join()
+        assert engine.tts.warmups == 0        # in flight → skipped
+        engine._synth_in_flight = False
+        engine._warming = True
+        await engine.warm_on_join()
+        assert engine.tts.warmups == 0        # already warming → skipped
+
+    asyncio.run(run())
+
+
+def test_warm_on_join_never_raises_on_vendor_error():
+    """Fail-open: a warm that errors (or a governor refusal) is logged, never
+    raised — a cold first utterance is a latency cost, not a crash."""
+    async def run():
+        engine, _, _ = build(tts=MockTts(error=TtsError("boom")))
+        await engine.warm_on_join()           # must not raise
+        engine2, _, _ = build(max_tts_chars=0)  # governor refuses the 1 char
+        await engine2.warm_on_join()           # must not raise
+        return engine
+
+    engine = asyncio.run(run())
+    assert engine._warming is False           # flag always released
+
+
+def test_effective_voice_settings_filters_unsupported_by_model():
+    """TtsClient sends only the settings the CURRENT model supports — Eleven v3
+    drops similarity_boost and use_speaker_boost (ElevenLabs docs). Pure dict
+    work, no network."""
+    from elevenlabs_client import TtsClient
+    vs = {"stability": 0.5, "similarity_boost": 0.9,
+          "style": 0.2, "use_speaker_boost": True, "speed": 1.0}
+    flash = TtsClient(None, "k", "v", model="eleven_flash_v2_5", voice_settings=dict(vs))
+    assert flash.effective_voice_settings() == vs          # flash keeps everything
+    v3 = TtsClient(None, "k", "v", model="eleven_v3", voice_settings=dict(vs))
+    eff = v3.effective_voice_settings()
+    assert "similarity_boost" not in eff and "use_speaker_boost" not in eff
+    assert eff == {"stability": 0.5, "style": 0.2, "speed": 1.0}
+
+
+def _tts_agent():
+    """A disconnected ConvertAgent wrapping a mock tts engine — _publish_config
+    no-ops while disconnected, so _apply_config runs fully offline."""
+    from convert_agent import ConvertAgent
+    from vad import VadGate
+    engine, events, notices = build()
+    vad = VadGate(prob_fn=lambda c: 0.0)
+    agent = ConvertAgent("room", "echo-test", "ws://127.0.0.1:9", "convert",
+                         vad=vad, engine="tts", tts_engine=engine)
+    return agent, engine, events
+
+
+def test_agent_applies_tts_voice_settings_and_model():
+    """set_config in tts mode: voice settings + model land on the TtsClient and
+    the snapshot renders APPLIED truth (flat knob keys the console reads)."""
+    async def run():
+        agent, engine, _ = _tts_agent()
+        await agent._apply_config({
+            "tts_model": "eleven_multilingual_v2",
+            "stability": 0.3,
+            "style": 0.9,
+            "speed": 1.1,
+            "use_speaker_boost": False,
+            "min_speech_ms": 150,
+            "queue_wait_warn_ms": 400,
+            "vad_threshold": 0.8,
+        }, "test")
+        return agent, engine
+
+    agent, engine = asyncio.run(run())
+    assert engine.tts.model == "eleven_multilingual_v2"
+    assert engine.tts.voice_settings["stability"] == 0.3
+    assert engine.tts.voice_settings["style"] == 0.9
+    assert engine.tts.voice_settings["use_speaker_boost"] is False
+    assert engine.endpointer.min_speech_ms == 150
+    assert engine.queue_wait_warn_ms == 400
+    snap = agent.config_snapshot()
+    assert snap["tts_model"] == "eleven_multilingual_v2"   # flat key for the UI
+    assert snap["stability"] == 0.3                        # voice settings flattened
+    assert snap["speed"] == 1.1
+    assert snap["min_speech_ms"] == 150
+    assert snap["vad_threshold"] == 0.8
+
+
+def test_agent_rejects_setting_unsupported_by_target_model():
+    """Switching to eleven_v3 AND setting similarity_boost in one payload:
+    the model change wins, similarity_boost is REJECTED with the reason (never
+    silently ignored), and the stored value is untouched."""
+    async def run():
+        agent, engine, _ = _tts_agent()
+        engine.tts.voice_settings["similarity_boost"] = 0.91
+        captured = {}
+
+        async def cap(adjusted=None, rejected=None):
+            captured["rejected"] = rejected
+
+        agent._publish_config = cap
+        await agent._apply_config(
+            {"tts_model": "eleven_v3", "similarity_boost": 0.4,
+             "use_speaker_boost": True, "stability": 0.6}, "test")
+        return agent, engine, captured
+
+    agent, engine, captured = asyncio.run(run())
+    assert engine.tts.model == "eleven_v3"                 # model change applied
+    assert engine.tts.voice_settings["stability"] == 0.6   # supported → applied
+    assert engine.tts.voice_settings["similarity_boost"] == 0.91  # untouched
+    rej = captured["rejected"]
+    assert "similarity_boost" in rej and "use_speaker_boost" in rej
+    assert "v3" in rej["similarity_boost"]                 # reason carries the model
+
+
+def test_agent_rejects_rvc_only_knob_in_tts_mode():
+    """An rvc knob sent to a tts agent is rejected with a clear reason, not
+    silently dropped or applied to a non-existent RVC engine."""
+    async def run():
+        agent, _, _ = _tts_agent()
+        captured = {}
+
+        async def cap(adjusted=None, rejected=None):
+            captured["rejected"] = rejected
+
+        agent._publish_config = cap
+        await agent._apply_config({"index_rate": 0.5, "f0_method": "harvest"}, "t")
+        return captured
+
+    captured = asyncio.run(run())
+    assert set(captured["rejected"]) == {"index_rate", "f0_method"}
+    assert "no RVC engine" in captured["rejected"]["index_rate"]

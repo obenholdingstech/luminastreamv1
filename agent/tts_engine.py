@@ -80,6 +80,10 @@ class TtsEngine:
         self._utt_refusal = None       # governor refusal that ended it early
         self._utt_stt_reserved = 0.0   # STT seconds already metered for it
         self.generation = 0            # bumped on mode re-entry; see reset()
+        self._warming = False          # a warm-on-join synthesis is in flight
+        # Live-tunable (Phase 4 console, "queue_wait_warn_ms" knob). Diagnostic
+        # only — it moves a WARN threshold, never the audio.
+        self.queue_wait_warn_ms = QUEUE_WAIT_WARN_MS
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -100,6 +104,33 @@ class TtsEngine:
             await asyncio.sleep(KEEPALIVE_INTERVAL_S)
             if not self._synth_in_flight:
                 await self.tts.ping()
+
+    async def warm_on_join(self):
+        """Re-fire the vendor warmup when a participant joins the room.
+
+        VPS drill (29 Jul): the first utterance after a long idle paid ~2220 ms
+        TTFB versus 81–129 ms steady. The 10 s keepalive above keeps the pooled
+        TLS connection alive but does NOT keep the vendor's voice model warm —
+        only an actual synthesis does — so this fires a real one-character
+        warmup (metered through the governor), NOT the GET ping. That is a
+        deliberate reading of the drill note "re-fire the warmup ping": a ping
+        is already fired every 10 s and cannot move TTFB; a synthesis can.
+
+        Fail-open and idempotent: skipped while a synthesis is in flight or
+        another warm is running, and any error (including a governor refusal
+        surfaced as PreflightError) is logged, never raised — a cold first
+        utterance is a latency cost, not a crash."""
+        if self._synth_in_flight or self._warming:
+            return
+        self._warming = True
+        try:
+            ttfb = await self.tts.warmup(self.governor)
+            log.info("warm-on-join: voice warmed (TTFB %.0f ms)", ttfb)
+        except Exception as exc:
+            log.warning("warm-on-join failed (%s) — the first utterance may pay "
+                        "the cold-voice penalty; the stream is unaffected", exc)
+        finally:
+            self._warming = False
 
     async def aclose(self):
         if self._keepalive_task is not None:
@@ -278,7 +309,7 @@ class TtsEngine:
 
     async def _process(self, utt):
         queue_wait_ms = (time.monotonic() - getattr(utt, "t_enqueued", time.monotonic())) * 1000.0
-        if queue_wait_ms > QUEUE_WAIT_WARN_MS:
+        if queue_wait_ms > self.queue_wait_warn_ms:
             log.warning("utterance %d waited %.0f ms behind the pipeline — the "
                         "speaker is ahead of it (latency budget exceeded, not an "
                         "error)", utt.index, queue_wait_ms)
@@ -414,7 +445,8 @@ class TtsEngine:
                      "tts_ttfb_ms": rec.get("tts_ttfb_ms"),
                      "stt_ms": rec.get("stt_ms"),
                      "chars": chars, "model_id": self.tts.model,
-                     "wer": rec.get("wer")})
+                     "wer": rec.get("wer"),
+                     "spend": rec.get("spend")})   # live caps/usage for the console
         log.info("utterance %d: %.2fs speech → %r | stt %.0fms | ttfb %.0fms | "
                  "TAIL %.0fms | %d chars | wer=%s",
                  utt.index, utt.speech_duration_s, transcript[:60],

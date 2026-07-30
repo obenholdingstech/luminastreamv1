@@ -43,9 +43,16 @@ export function useLiveKitVoice(url, token) {
   // the UI readout must render this, never the requested state. null = no live mic.
   const [appliedConstraints, setAppliedConstraints] = useState(null);
   // Phase 4 tuning: the agent's agent_config broadcast — the ONLY source the
-  // Tuning card renders applied values from. {config, defaults, ranges,
-  // adjusted?, rejected?} or null before the first broadcast.
+  // Tuning card renders applied values from. {engine, app_version, config,
+  // defaults, ranges, metadata, adjusted?, rejected?} or null before the first
+  // broadcast. `metadata` (per-knob kind/group/timing/support) lets the console
+  // render knob groups keyed by engine with no hardcoded engine assumptions.
   const [agentConfig, setAgentConfig] = useState(null);
+  // Live transcript panel (VPS-drill addendum): the last utterances the agent
+  // reported over the data channel — STT transcript + timing (stt/ttfb/tail ms,
+  // chars, model). Newest first, bounded. The CEO tunes VAD + voice settings by
+  // ear AGAINST what STT actually heard; this is that evidence, live.
+  const [utterances, setUtterances] = useState([]);
 
   const roomRef = useRef(null);
   // Latest constraints for connect()/toggle without re-creating callbacks
@@ -97,6 +104,7 @@ export function useLiveKitVoice(url, token) {
     setAgentModeReason(null);
     setAppliedConstraints(null);
     setAgentConfig(null);
+    setUtterances([]);
     setRoom(null);
     setConnectionQuality(ConnectionQuality.Unknown);
     setStats(EMPTY_STATS);
@@ -156,12 +164,23 @@ export function useLiveKitVoice(url, token) {
           setAgentModeReason(msg.reason ?? null);
         } else if (msg?.type === 'agent_config' && msg.config) {
           setAgentConfig({
+            engine: msg.engine ?? msg.config.engine ?? null,
+            appVersion: msg.app_version ?? null,
             config: msg.config,
             defaults: msg.defaults ?? null,
             ranges: msg.ranges ?? null,
+            metadata: msg.metadata ?? null,
+            spend: msg.spend ?? null,
             adjusted: msg.adjusted ?? null,
             rejected: msg.rejected ?? null,
           });
+        } else if (msg?.type === 'tts_utterance') {
+          // agent-confirmed utterance result — applied-truth, same rules
+          setUtterances((prev) =>
+            [{ ...msg, dropped: false }, ...prev].slice(0, 50));
+        } else if (msg?.type === 'tts_utterance_dropped') {
+          setUtterances((prev) =>
+            [{ ...msg, dropped: true }, ...prev].slice(0, 50));
         }
       } catch (_e) {
         // non-JSON data from some other publisher — not ours
@@ -406,6 +425,7 @@ export function useLiveKitVoice(url, token) {
     captureConstraints,
     appliedConstraints,
     agentConfig,
+    utterances,
     connect,
     disconnect,
     enableAudio,

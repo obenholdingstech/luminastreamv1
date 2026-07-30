@@ -33,3 +33,10 @@ test('display renders the applied value, formatted', () => {
   assert.equal(knobDisplay(300), '300');
   assert.equal(knobDisplay('rmvpe'), 'rmvpe');
 });
+
+test('display renders booleans as on/off (the new bool knob)', () => {
+  assert.equal(knobDisplay(true), 'on');
+  assert.equal(knobDisplay(false), 'off');
+  assert.equal(knobState(true, true), 'match');
+  assert.equal(knobState(true, false), 'mismatch');
+});
