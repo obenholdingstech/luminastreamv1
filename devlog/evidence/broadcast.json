@@ -1,0 +1,360 @@
+{
+  "type": "agent_config",
+  "engine": "tts",
+  "app_version": "0.0.0",
+  "config": {
+    "tts_model": "eleven_multilingual_v2",
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.0,
+    "use_speaker_boost": true,
+    "speed": 1.0,
+    "request_continuity": true,
+    "prime_hops": 1.5,
+    "vad_threshold": 0.5,
+    "vad_hangover_ms": 300.0,
+    "min_speech_ms": 200.0,
+    "queue_wait_warn_ms": 250.0,
+    "comfort_noise_db": -60.0,
+    "loudness_normalize": true,
+    "loudness_target_db": -20.0,
+    "engine": "tts",
+    "voice": "kG0YavHsOC38yeSB7O1t",
+    "voice_name": "Celebrity lilcrush linda",
+    "tts_chars": 5000,
+    "stt_seconds": 300.0
+  },
+  "defaults": {
+    "tts_model": "eleven_flash_v2_5",
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.0,
+    "use_speaker_boost": true,
+    "speed": 1.0,
+    "request_continuity": true,
+    "prime_hops": 1.5,
+    "vad_threshold": 0.5,
+    "vad_hangover_ms": 300.0,
+    "min_speech_ms": 200.0,
+    "queue_wait_warn_ms": 250.0,
+    "comfort_noise_db": -60.0,
+    "loudness_normalize": true,
+    "loudness_target_db": -20.0
+  },
+  "metadata": [
+    {
+      "name": "voice",
+      "kind": "enum",
+      "label": "Voice",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": null,
+      "choices": [
+        "kG0YavHsOC38yeSB7O1t",
+        "21m00Tcm4TlvDq8ikWAM",
+        "AZnzlk1XvdvUeBnXmlld"
+      ],
+      "choice_labels": {
+        "kG0YavHsOC38yeSB7O1t": "Celebrity lilcrush linda (cloned)",
+        "21m00Tcm4TlvDq8ikWAM": "Rachel (premade)",
+        "AZnzlk1XvdvUeBnXmlld": "Domi (premade)"
+      },
+      "dynamic": true,
+      "hint": "account voices (clones + premade); switching resets continuity and loads the voice's own settings"
+    },
+    {
+      "name": "tts_model",
+      "kind": "enum",
+      "label": "TTS Model",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": "eleven_flash_v2_5",
+      "choices": [
+        "eleven_flash_v2_5",
+        "eleven_multilingual_v2",
+        "eleven_v3"
+      ],
+      "hint": "flash v2.5 fastest \u00b7 multilingual v2 quality ref \u00b7 v3 most expressive"
+    },
+    {
+      "name": "stability",
+      "kind": "float",
+      "label": "Stability",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": 0.5,
+      "lo": 0.0,
+      "hi": 1.0,
+      "step": 0.05,
+      "hint": "low = more emotional range \u00b7 high = more monotone (v3: ~0 Creative / 0.5 Natural / 1 Robust)"
+    },
+    {
+      "name": "similarity_boost",
+      "kind": "float",
+      "label": "Similarity Boost",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": 0.75,
+      "lo": 0.0,
+      "hi": 1.0,
+      "step": 0.05,
+      "hint": "higher adheres to the clone \u00b7 slight latency cost",
+      "unsupported_models": {
+        "eleven_v3": "not available on Eleven v3"
+      }
+    },
+    {
+      "name": "style",
+      "kind": "float",
+      "label": "Style",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": 0.0,
+      "lo": 0.0,
+      "hi": 1.0,
+      "step": 0.05,
+      "hint": "0 = off \u00b7 >0 exaggerates style but ADDS LATENCY and can reduce stability"
+    },
+    {
+      "name": "use_speaker_boost",
+      "kind": "bool",
+      "label": "Speaker Boost",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": true,
+      "hint": "clarity/similarity boost \u00b7 slight latency cost",
+      "unsupported_models": {
+        "eleven_v3": "not available on Eleven v3"
+      }
+    },
+    {
+      "name": "speed",
+      "kind": "float",
+      "label": "Speed",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": 1.0,
+      "lo": 0.25,
+      "hi": 4.0,
+      "step": 0.05,
+      "hint": "1.0 = natural \u00b7 usable range ~0.7\u20131.2 \u00b7 REST allows 0.25\u20134.0"
+    },
+    {
+      "name": "request_continuity",
+      "kind": "bool",
+      "label": "Request Continuity",
+      "group": "ElevenLabs voice",
+      "target": "tts",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": true,
+      "hint": "condition each utterance on the previous (request stitching) so delivery holds across a session \u00b7 not on v3",
+      "unsupported_models": {
+        "eleven_v3": "request stitching not available on Eleven v3"
+      }
+    },
+    {
+      "name": "prime_hops",
+      "kind": "float",
+      "label": "Prime Depth (hops)",
+      "group": "Pipeline",
+      "target": "agent",
+      "engines": [
+        "rvc",
+        "tts"
+      ],
+      "timing": "instant",
+      "default": 1.5,
+      "lo": 0.5,
+      "hi": 4.0,
+      "step": 0.1,
+      "hint": "jitter-buffer priming depth \u00b7 lower = less delay, less underrun margin"
+    },
+    {
+      "name": "vad_threshold",
+      "kind": "float",
+      "label": "VAD Threshold",
+      "group": "Pipeline",
+      "target": "agent",
+      "engines": [
+        "rvc",
+        "tts"
+      ],
+      "timing": "instant",
+      "default": 0.5,
+      "lo": 0.0,
+      "hi": 1.0,
+      "step": 0.05,
+      "hint": "speech probability needed to open the gate"
+    },
+    {
+      "name": "vad_hangover_ms",
+      "kind": "float",
+      "label": "VAD Hangover (ms)",
+      "group": "Pipeline",
+      "target": "agent",
+      "engines": [
+        "rvc",
+        "tts"
+      ],
+      "timing": "instant",
+      "default": 300.0,
+      "lo": 0.0,
+      "hi": 2000.0,
+      "step": 50.0,
+      "hint": "gate stays open this long after speech \u00b7 in tts mode it sits directly in tail latency"
+    },
+    {
+      "name": "min_speech_ms",
+      "kind": "float",
+      "label": "Min Speech (ms)",
+      "group": "Pipeline",
+      "target": "agent",
+      "engines": [
+        "tts"
+      ],
+      "timing": "instant",
+      "default": 200.0,
+      "lo": 0.0,
+      "hi": 1000.0,
+      "step": 50.0,
+      "hint": "gate-open spans with less speech than this are dropped as blips \u2014 no STT call, no spend"
+    },
+    {
+      "name": "queue_wait_warn_ms",
+      "kind": "float",
+      "label": "Queue Warn (ms)",
+      "group": "Pipeline",
+      "target": "agent",
+      "engines": [
+        "tts"
+      ],
+      "timing": "instant",
+      "default": 250.0,
+      "lo": 0.0,
+      "hi": 5000.0,
+      "step": 50.0,
+      "hint": "diagnostic only \u2014 logs when an utterance waited behind the pipeline; does not change audio"
+    },
+    {
+      "name": "comfort_noise_db",
+      "kind": "float",
+      "label": "Comfort Noise (dBFS)",
+      "group": "Pipeline",
+      "target": "agent",
+      "engines": [
+        "tts"
+      ],
+      "timing": "instant",
+      "default": -60.0,
+      "lo": -80.0,
+      "hi": -40.0,
+      "step": 1.0,
+      "hint": "low-level room-tone bed under gate-closed silence so gaps don't feel dead \u00b7 -80 = off, -40 = loudest"
+    },
+    {
+      "name": "loudness_normalize",
+      "kind": "bool",
+      "label": "Loudness Normalize",
+      "group": "Loudness",
+      "target": "agent",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": true,
+      "hint": "level every utterance to the target so volume holds across a session \u00b7 RMS + soft limiter, never clips \u00b7 off = the raw synthesis"
+    },
+    {
+      "name": "loudness_target_db",
+      "kind": "float",
+      "label": "Loudness Target (dBFS)",
+      "group": "Loudness",
+      "target": "agent",
+      "engines": [
+        "tts"
+      ],
+      "timing": "next utterance",
+      "default": -20.0,
+      "lo": -40.0,
+      "hi": -12.0,
+      "step": 0.5,
+      "hint": "RMS target \u00b7 ~-20 dBFS is a natural speech level \u00b7 higher = louder, the limiter guards the peaks"
+    },
+    {
+      "name": "tts_chars",
+      "kind": "float",
+      "label": "TTS Char Cap",
+      "group": "Spend",
+      "target": "governor",
+      "engines": [
+        "tts"
+      ],
+      "timing": "instant",
+      "default": null,
+      "lo": 0.0,
+      "hi": 5000,
+      "step": 100.0,
+      "dynamic": true,
+      "hint": "session synthesis budget \u00b7 walled by SPIKE_MAX_TTS_CHARS_CEILING (env-only)"
+    },
+    {
+      "name": "stt_seconds",
+      "kind": "float",
+      "label": "STT Second Cap",
+      "group": "Spend",
+      "target": "governor",
+      "engines": [
+        "tts"
+      ],
+      "timing": "instant",
+      "default": null,
+      "lo": 0.0,
+      "hi": 300.0,
+      "step": 10.0,
+      "dynamic": true,
+      "hint": "session transcription budget \u00b7 walled by SPIKE_MAX_STT_SECONDS_CEILING (env-only)"
+    }
+  ],
+  "spend": {
+    "tts_chars_used": 1840,
+    "tts_chars_cap": 5000,
+    "tts_chars_ceiling": 5000,
+    "stt_seconds_used": 92.5,
+    "stt_seconds_cap": 300.0,
+    "stt_seconds_ceiling": 300.0,
+    "tts_calls": 12,
+    "stt_calls": 12,
+    "refusals": 0
+  }
+}

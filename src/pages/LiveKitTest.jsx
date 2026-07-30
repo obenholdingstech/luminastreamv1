@@ -356,7 +356,12 @@ export default function LiveKitTest() {
 
   return (
     <div className="min-h-screen bg-[#080810] text-white">
-      <div className="max-w-2xl mx-auto px-6 py-10">
+      {/* Dev instrument: max-w-4xl (not 2xl) so the two-column knob grid has
+          real room. The grid splits at lg (viewport ≥1024px) while the old
+          672px container stayed narrow, cramming two knobs — and their
+          non-shrinking range inputs — into ~320px each and colliding at the
+          CEO's width (ticket 4). 896px gives each 2-col cell ~432px. */}
+      <div className="max-w-4xl mx-auto px-6 py-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
