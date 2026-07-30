@@ -1,13 +1,22 @@
 {
-  "_comment": "Config-as-code startup profile for --engine tts. Startup precedence: CLI/env > this file > the clone's own fetched voice settings > registry defaults (knobs.py). 'Locking in' the CEO's ear-found config = editing this file and committing via PR — reviewable, no code edit. voice_settings is intentionally EMPTY so the clone's own settings remain the voice baseline until the drill fills it in; add fields (e.g. \"stability\": 0.5) to override. 'voice' is OMITTED so ELEVENLABS_VOICE_ID (secrets.env) is the startup voice; set it to a voice_id to pin a different one. Eleven v3 ignores similarity_boost, use_speaker_boost, and request_continuity. See agent/README.md.",
+  "exported_at": "2026-07-30T10:58:45.339Z",
+  "app_version": "0.0.0",
   "engine": "tts",
-  "model": "eleven_flash_v2_5",
-  "request_continuity": true,
-  "voice_settings": {},
+  "voice": "kG0YavHsOC38yeSB7O1t",
+  "voice_name": "Celebrity lilcrush linda",
+  "model": "eleven_multilingual_v2",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0,
+    "use_speaker_boost": true,
+    "speed": 1,
+    "request_continuity": true
+  },
   "pipeline": {
-    "vad_threshold": 0.5,
-    "vad_hangover_ms": 200,
     "prime_hops": 1.5,
+    "vad_threshold": 0.5,
+    "vad_hangover_ms": 300,
     "min_speech_ms": 200,
     "queue_wait_warn_ms": 250,
     "comfort_noise_db": -60
