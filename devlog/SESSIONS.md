@@ -4,6 +4,80 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 30 July 2026 — 04:22 PDT — LOCK IN the tuning-session profile (agent/tts_profile.json, PR pending, HOLD FOR CTO)
+
+### Task (verbatim)
+
+> I have the final JSON config file from our tuning session. Create a file at
+> agent/tts_profile.json, paste the JSON contents I will provide below into it,
+> and open a PR to lock this profile in. [export JSON followed]
+
+### What I did
+
+- **Verified the export IS the profile format before overwriting.** The pasted
+  file is the console's *export* shape (`exported_at`/`app_version`/`voice_name`
+  metadata; `request_continuity` + `speed` nested inside `voice_settings`), which
+  is not visually identical to the previous committed profile. Rather than trust
+  that it "should" load, I traced the real loader:
+  - `load_profile()` (convert_agent.py) validates only *is-JSON / is-a-dict* — no
+    per-key schema — so the three metadata keys are read and then ignored.
+  - `flatten_profile()` (knobs.py) hoists every key out of `voice_settings` and
+    `pipeline` into a flat dict, so `request_continuity` (nested) lands top-level;
+    maps `model`→`tts_model`; picks up top-level `voice`. `speed` is a real
+    registered knob. Metadata keys match no knob and drop out.
+  - `clamp_params()` range/type-checks every knob and only *logs* anything off —
+    never crashes.
+- **Ran the real path as a round-trip proof** (not an assertion): loaded the file
+  through `flatten_profile → clamp_params → resolve_precedence`. Result: **zero
+  rejected, zero clamped**; 14 knobs resolve; `startup_voice` pins to the CEO's
+  voice; `request_continuity=True` sits on `eleven_multilingual_v2`, which
+  **supports stitching** (would be gated on v3) — so continuity is genuinely live,
+  not a silent no-op.
+- Wrote the export **verbatim** as `agent/tts_profile.json` (the instruction, and
+  the artifact is self-describing), branched `chore/lock-tts-profile` off main
+  (both #18 and #19 are merged, so the voice/comfort/continuity knobs exist on the
+  base), committed, opened the PR.
+
+### Key findings / surprises
+
+- **My initial worry was unfounded but worth checking.** `request_continuity`
+  being nested inside `voice_settings` in the export looked like it would miss the
+  top-level `request_continuity` knob — but `flatten_profile` merges all
+  `voice_settings` keys up, so it lands correctly. Confirmed by running it.
+- **Semantic deltas from the previous committed profile** (all deliberate, all the
+  CEO's ear-found choices): `model` flash_v2_5 → **multilingual_v2** (quality ref,
+  higher TTFB); `voice` now **pinned** to `kG0YavHsOC38yeSB7O1t`
+  ("Celebrity lilcrush linda") — previously unset so `ELEVENLABS_VOICE_ID` stood;
+  `voice_settings` `{}` → explicit values (which happen to equal the registry
+  defaults, so runtime voice-setting behavior is unchanged, but they are now
+  *pinned* rather than deferred to the clone's account settings); `vad_hangover_ms`
+  200 → **300**.
+- **The `_comment` doc block is dropped** — the exported artifact doesn't carry it,
+  and it was partly stale for the new content (it said "voice_settings intentionally
+  EMPTY", no longer true). The precedence/format is documented in
+  `src/lib/configExport.js`, `agent/knobs.py`, and `agent/README.md`.
+- **No secrets involved.** `voice_id` is an account voice identifier, already
+  committed in the profile itself — not a credential. `ELEVENLABS_*` keys stay in
+  secrets.env and are never referenced.
+
+### Files changed
+
+- `agent/tts_profile.json` — replaced with the tuning-session export (+15/−6).
+- `devlog/SESSIONS.md`, `notes.md` — this log.
+
+### Verification
+
+- Round-trip through the real loader: **0 rejected, 0 clamped**; resolved config
+  matches the file (voice pinned, model multilingual_v2, continuity live on a
+  stitching-capable model, hangover 300, comfort −60).
+- No code changed — only the committed config artifact + logs. RVC/tts suites
+  unaffected (not re-run; no code delta).
+- **Next:** CodeRabbit → evidence replies → **CTO presses merge**. Live acceptance
+  = connect, confirm the CEO's voice + multilingual_v2 come up at startup and the
+  resolved-config startup log matches the file.
+
+---
+
 ## 30 July 2026 — 02:25 PDT — CONSOLE POLISH + VOICE CONTINUITY: the CEO's tuning-session findings (PR pending, HOLD FOR CTO)
 
 ### Task (verbatim)

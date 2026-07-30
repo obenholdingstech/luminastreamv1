@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 30 July 2026 — LOCK IN the tuning-session profile (branch chore/lock-tts-profile, PR pending, HOLD FOR CTO)
+
+- Replaced `agent/tts_profile.json` with the CEO's tuning-session **export** (verbatim) and opened a lock-in PR off main (#18+#19 both merged, so the voice/comfort/continuity knobs exist on base).
+- **Verified before overwriting:** the export shape (metadata keys; `request_continuity`/`speed` nested in `voice_settings`) round-trips through the real loader — `load_profile` (dict-only check) → `flatten_profile` (hoists nested keys, `model`→`tts_model`, picks up top-level `voice`) → `clamp_params`. Ran it: **0 rejected, 0 clamped**; continuity is live because multilingual_v2 supports stitching (not v3).
+- **Deltas locked in** (all CEO ear-found): model flash_v2_5 → **multilingual_v2**; `voice` pinned to `kG0YavHsOC38yeSB7O1t` ("Celebrity lilcrush linda", was unset→ELEVENLABS_VOICE_ID); `voice_settings` `{}`→explicit (=registry defaults, now pinned not deferred); `vad_hangover_ms` 200→300. `_comment` block dropped (export doesn't carry it; was partly stale).
+- No code change, no secrets (`voice_id` is not a credential).
+- **Next:** CodeRabbit → **CTO presses merge**. Acceptance = connect and confirm the CEO's voice + multilingual_v2 resolve at startup (check the resolved-config log line).
+
 ## 30 July 2026 — CONSOLE POLISH + VOICE CONTINUITY: CEO tuning-session findings (PR pending, HOLD FOR CTO)
 
 - Branch feat/tts-continuity-comfort off main (PR #18 merged first). Six tickets, one PR.
