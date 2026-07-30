@@ -57,7 +57,8 @@ def test_enum_case_insensitive():
 
 def test_registry_defaults_are_in_range():
     applied, adjusted, rejected = knobs.clamp_params(knobs.defaults())
-    assert set(applied) == set(knobs.KNOBS)
+    # dynamic knobs (voice) are runtime-populated and excluded from defaults()
+    assert set(applied) == {n for n, s in knobs.KNOBS.items() if not s.get("dynamic")}
     assert adjusted == {} and rejected == {}
 
 
@@ -335,3 +336,52 @@ def test_resolve_precedence_cli_over_profile_over_base():
     assert resolved["stability"] == 0.4                  # profile beat default
     assert resolved["vad_hangover_ms"] == 200            # profile beat default (300)
     assert resolved["speed"] == base["speed"]            # untouched default stands
+
+
+# ── voice selector (dynamic enum) + continuity + comfort knobs ───────
+
+
+def test_dynamic_voice_knob_clamp_and_metadata():
+    # dynamic enum: clamp accepts an arbitrary, case-PRESERVED voice_id string
+    a, _adj, rej = knobs.clamp_params({"voice": "T7QGPtToiqH4S8VlIkMJ"})
+    assert a == {"voice": "T7QGPtToiqH4S8VlIkMJ"} and rej == {}
+    assert "voice" in knobs.clamp_params({"voice": "   "})[2]     # blank rejected
+    assert "voice" in knobs.clamp_params({"voice": 123})[2]       # non-string rejected
+    # runtime-populated ⇒ excluded from the static defaults()/ranges()
+    assert "voice" not in knobs.defaults("tts")
+    assert "voice" not in knobs.ranges("tts")
+    # metadata injects the account voices as choices + display labels
+    voices = [{"id": "v1", "name": "Amy", "category": "cloned"},
+              {"id": "v2", "name": "Rachel", "category": "premade"}]
+    md = {e["name"]: e for e in knobs.metadata("tts", voice_choices=voices)}
+    assert md["voice"]["choices"] == ["v1", "v2"]
+    assert md["voice"]["choice_labels"]["v1"] == "Amy (cloned)"
+    assert md["voice"]["dynamic"] is True
+    assert md["voice"]["group"] == "ElevenLabs voice"
+    # no voice_choices ⇒ still renders (empty choices), never crashes
+    md2 = {e["name"]: e for e in knobs.metadata("tts")}
+    assert md2["voice"]["choices"] == []
+
+
+def test_model_supports_stitching():
+    assert knobs.model_supports_stitching("eleven_flash_v2_5") is True
+    assert knobs.model_supports_stitching("eleven_multilingual_v2") is True
+    assert knobs.model_supports_stitching("eleven_v3") is False
+    # request_continuity carries the v3 disable reason (UI + apply path)
+    assert knobs.model_unsupported("request_continuity", "eleven_v3")
+    md = {e["name"]: e for e in knobs.metadata("tts")}
+    assert "eleven_v3" in md["request_continuity"]["unsupported_models"]
+
+
+def test_continuity_and_comfort_knobs_clamp():
+    a, _adj, rej = knobs.clamp_params({
+        "request_continuity": False,       # new bool kind
+        "comfort_noise_db": -55.0,         # float in range
+    })
+    assert a["request_continuity"] is False
+    assert a["comfort_noise_db"] == -55.0 and rej == {}
+    # comfort clamps within [-80, -40]
+    assert knobs.clamp_params({"comfort_noise_db": -100})[0]["comfort_noise_db"] == -80.0
+    assert knobs.clamp_params({"comfort_noise_db": 0})[0]["comfort_noise_db"] == -40.0
+    # request_continuity is a bool: a number is rejected, not coerced
+    assert "request_continuity" in knobs.clamp_params({"request_continuity": 1})[2]

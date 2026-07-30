@@ -73,24 +73,37 @@ class MockStt:
 class MockTts:
     def __init__(self, model="mock_tts", error=None, chunks=None):
         self.model = model
+        self.voice_id = "mock_voice_id"
+        self.session = None      # _switch_voice reaches for these; fetch is mocked
+        self.api_key = "mock"
         self.voice_settings = {"stability": 0.71, "similarity_boost": 0.91}
         self.error = error
         self.chunks = chunks
         self.calls = []          # one entry per stream() — the text it got
+        self.prev_ids = []       # previous_request_ids seen per stream() call
+        self.last_request_id = None
         self.warmups = 0         # one per warm_on_join / preflight warmup
 
-    async def stream(self, text):
+    async def stream(self, text, previous_request_ids=None):
         self.calls.append(text)
+        self.prev_ids.append(previous_request_ids)
         if self.error:
             raise self.error
         for chunk in (self.chunks
                       if self.chunks is not None
                       else [np.full(2400, 0.3, dtype=np.float32)] * 2):
             yield chunk, 7.5
+        # body fully read → request-id available to condition the next call
+        self.last_request_id = f"req-{len(self.calls)}"
 
     # Phase 4 console contract (mirrors TtsClient)
     def set_model(self, model_id):
         self.model = model_id
+
+    def set_voice(self, voice_id, voice_settings=None):
+        self.voice_id = voice_id
+        if voice_settings is not None:
+            self.voice_settings = dict(voice_settings)
 
     def apply_voice_setting(self, field, value):
         self.voice_settings[field] = value
@@ -897,3 +910,172 @@ def test_agent_rejects_rvc_only_knob_in_tts_mode():
     captured = asyncio.run(run())
     assert set(captured["rejected"]) == {"index_rate", "f0_method"}
     assert "no RVC engine" in captured["rejected"]["index_rate"]
+
+
+# ── Ticket 1: request continuity (stitching) ─────────────────────────
+
+
+def test_continuity_conditions_each_utterance_on_the_previous():
+    """Request stitching: the 2nd utterance conditions on the 1st's request-id,
+    so a session holds one delivery. The 1st has no predecessor."""
+    tts = MockTts()
+
+    async def run():
+        engine, _, _ = build(tts=tts)
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 2)
+        await engine.aclose()
+
+    asyncio.run(run())
+    assert tts.prev_ids == [None, ["req-1"]]     # 1st unconditioned, 2nd stitched
+
+
+def test_continuity_off_sends_no_previous_ids():
+    tts = MockTts()
+
+    async def run():
+        engine, _, _ = build(tts=tts)
+        engine.request_continuity = False
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 2)
+        await engine.aclose()
+
+    asyncio.run(run())
+    assert tts.prev_ids == [None, None]          # toggle off → never conditioned
+
+
+def test_continuity_not_sent_to_v3_even_when_enabled():
+    """eleven_v3 has no request stitching — the engine must not send it a field
+    the model rejects, regardless of the toggle."""
+    tts = MockTts(model="eleven_v3")
+
+    async def run():
+        engine, _, _ = build(tts=tts)
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 2)
+        await engine.aclose()
+
+    asyncio.run(run())
+    assert tts.prev_ids == [None, None]
+
+
+def test_continuity_resets_on_mode_reentry():
+    """reset() (mode re-entry / session end) clears the stitching anchor so the
+    next take doesn't stitch onto audio from before the toggle."""
+    tts = MockTts()
+
+    async def run():
+        engine, _, _ = build(tts=tts)
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        engine.reset()                            # session boundary
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)                # records reset by generation bump? no — count kept
+        await engine.aclose()
+        return engine
+
+    asyncio.run(run())
+    assert tts.prev_ids == [None, None]           # 2nd started a fresh chain
+
+
+def test_reset_continuity_clears_the_anchor():
+    async def run():
+        engine, _, _ = build()
+        engine._prev_request_id = "req-9"
+        engine.reset_continuity()
+        assert engine._prev_request_id is None
+
+    asyncio.run(run())
+
+
+# ── Ticket 6: voice selector ─────────────────────────────────────────
+
+
+def test_agent_voice_switch_validates_loads_settings_and_resets_continuity(monkeypatch):
+    """A valid voice switch: loads the NEW voice's own settings (applied truth),
+    resets continuity, and the snapshot shows the new voice — no stale sliders."""
+    import convert_agent
+
+    async def fake_fetch_voice(session, api_key, voice_id):
+        return {"name": "Bright Clone", "category": "cloned",
+                "settings": {"stability": 0.2, "similarity_boost": 0.5, "style": 0.4}}
+    monkeypatch.setattr(convert_agent, "fetch_voice", fake_fetch_voice)
+
+    async def run():
+        agent, engine, _ = _tts_agent()
+        engine.voices = [{"voice_id": "v_new", "name": "Bright Clone", "category": "cloned"}]
+        engine._prev_request_id = "req-5"
+        await agent._apply_config({"voice": "v_new"}, "test")
+        return agent, engine
+
+    agent, engine = asyncio.run(run())
+    assert engine.tts.voice_id == "v_new"
+    assert engine.tts.voice_settings["stability"] == 0.2      # new voice's own settings
+    assert engine._prev_request_id is None                    # continuity reset
+    snap = agent.config_snapshot()
+    assert snap["voice"] == "v_new" and snap["voice_name"] == "Bright Clone"
+
+
+def test_agent_rejects_unknown_voice(monkeypatch):
+    import convert_agent
+
+    async def run():
+        agent, engine, _ = _tts_agent()
+        engine.voices = [{"voice_id": "v_ok", "name": "OK", "category": "cloned"}]
+        captured = {}
+
+        async def cap(adjusted=None, rejected=None):
+            captured["rejected"] = rejected
+
+        agent._publish_config = cap
+        await agent._apply_config({"voice": "v_ghost"}, "test")
+        return engine, captured
+
+    engine, captured = asyncio.run(run())
+    assert engine.tts.voice_id == "mock_voice_id"             # unchanged
+    assert "voice" in captured["rejected"]
+    assert "unknown voice_id" in captured["rejected"]["voice"]
+
+
+# ── Ticket 2: comfort noise applied truth ────────────────────────────
+
+
+def test_agent_applies_comfort_noise_db():
+    async def run():
+        agent, engine, _ = _tts_agent()
+        await agent._apply_config({"comfort_noise_db": -45.0}, "test")
+        return agent, engine
+
+    agent, engine = asyncio.run(run())
+    assert engine.outgate.comfort is not None
+    assert engine.outgate.comfort.db == -45.0
+    assert agent.config_snapshot()["comfort_noise_db"] == -45.0
+
+
+# ── Ticket 3: STT punctuation reaches synthesis untouched ────────────
+
+
+def test_transcript_punctuation_reaches_synthesis_untouched():
+    """Punctuation is the free prosody channel — Scribe emits ? ! …, and the
+    pipeline must hand it to TTS verbatim (only whitespace is trimmed)."""
+    tts = MockTts()
+
+    async def run():
+        engine, _, _ = build(stt=MockStt(texts=["Really?! Wait… no."]), tts=tts)
+        engine.start()
+        await utter(engine, n_speech=4)
+        await wait_done(engine, 1)
+        await engine.aclose()
+
+    asyncio.run(run())
+    assert tts.calls == ["Really?! Wait… no."]   # exact — no punctuation stripped

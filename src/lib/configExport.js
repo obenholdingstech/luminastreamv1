@@ -37,6 +37,12 @@ export function buildConfigExport(agentConfig, now = new Date()) {
       out.model = value; // the model select maps to the profile's `model`
       continue;
     }
+    if (knob.name === 'voice') {
+      // A locked profile pins the VOICE, not just its settings (ticket 6).
+      out.voice = value; // voice_id — round-trips to the agent's profile loader
+      if (config.voice_name) out.voice_name = config.voice_name; // human-readable
+      continue;
+    }
     if (knob.target === 'tts') voice_settings[knob.name] = value;
     else if (knob.target === 'agent') pipeline[knob.name] = value;
     else if (knob.target === 'rvc') rvc[knob.name] = value;

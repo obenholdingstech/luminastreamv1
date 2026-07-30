@@ -14,9 +14,11 @@ import pytest
 
 from bridge import HOP, WINDOW, SolaStitcher, WindowAssembler
 from vad import (
+    COMFORT_OFF_DB,
     DEFAULT_THRESHOLD,
     RAMP_SAMPLES,
     VAD_CHUNK,
+    ComfortNoise,
     Resampler48to16,
     OutputGate,
     VadGate,
@@ -299,3 +301,62 @@ def test_outputgate_matches_legacy_when_gate_always_open():
     fade_end = int(np.argmax(np.abs(old) > 0)) + RAMP_SAMPLES
     assert np.array_equal(new[fade_end:], old[fade_end:])
     assert legacy_stitcher.underrun_events == stitcher.underrun_events
+
+
+# ── Comfort noise bed (ticket 2) ─────────────────────────────────────
+
+
+def _rms(x):
+    return float(np.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)))
+
+
+def test_comfort_noise_off_is_exact_digital_zero():
+    """No comfort bed configured (the RVC path, and a disabled bed) → silence is
+    byte-identical zeros. This is what keeps the RVC suite untouched."""
+    from bridge import SolaStitcher
+    og = OutputGate(SolaStitcher(), prime_samples=480)          # no comfort arg
+    assert og.comfort is None
+    out = og.read_frame(480, gate_open=False)
+    assert np.array_equal(out, np.zeros(480, dtype=np.float32))
+
+
+def test_comfort_noise_fills_silence_at_a_low_level():
+    from bridge import SolaStitcher
+    og = OutputGate(SolaStitcher(), prime_samples=480, comfort_noise_db=-40.0)
+    # a run of gate-closed silence frames — the bed glides in
+    frames = [og.read_frame(480, gate_open=False) for _ in range(8)]
+    steady = frames[-1]
+    assert _rms(steady) > 0.0                                    # not dead silence
+    assert _rms(steady) < 0.05                                   # but low-level (~-40 dBFS)
+
+
+def test_comfort_noise_off_db_is_silent():
+    from bridge import SolaStitcher
+    og = OutputGate(SolaStitcher(), prime_samples=480, comfort_noise_db=COMFORT_OFF_DB)
+    outs = [og.read_frame(480, gate_open=False) for _ in range(4)]
+    assert all(np.array_equal(o, np.zeros(480, dtype=np.float32)) for o in outs)
+
+
+def test_comfort_noise_crossfades_by_speaking_flag():
+    """Gain glides toward 0 while speech plays and toward 1 during silence, so
+    the bed crossfades at boundaries instead of clicking in/out."""
+    cn = ComfortNoise(db=-40.0)
+    frame = np.zeros(480, dtype=np.float32)
+    # silence: bed ramps up over several frames
+    for _ in range(8):
+        s = cn.mix(frame.copy(), speaking=False)
+    assert _rms(s) > 0.0
+    up_gain = cn._gain
+    # now speech: gain ramps back down toward 0
+    for _ in range(8):
+        a = cn.mix(np.full(480, 0.3, dtype=np.float32), speaking=True)
+    assert cn._gain < up_gain                                   # faded back out
+
+
+def test_comfort_noise_live_retune():
+    from bridge import SolaStitcher
+    og = OutputGate(SolaStitcher(), prime_samples=480)
+    og.set_comfort_noise_db(-45.0)
+    assert og.comfort is not None and og.comfort.db == -45.0
+    og.set_comfort_noise_db(COMFORT_OFF_DB)
+    assert not og.comfort.enabled

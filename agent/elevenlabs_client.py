@@ -148,6 +148,37 @@ async def fetch_voice(session, api_key, voice_id):
             "Check outbound network/DNS on this host.")
 
 
+async def list_voices(session, api_key):
+    """GET /v1/voices — the account's voices (cloned + ElevenLabs premade).
+
+    A free GET (no synthesis), so it is NOT metered by the governor. Returns
+    [{voice_id, name, category}]; an empty list on any failure — the selector is
+    a convenience and a listing failure must never take the agent down. The
+    shared community Voice Library is a SEPARATE surface (/v1/shared-voices plus
+    an add step) and is deliberately out of scope here (see PR)."""
+    try:
+        async with session.get(f"https://{API_HOST}/v1/voices",
+                               headers={"xi-api-key": api_key}) as r:
+            if r.status != 200:
+                log.warning("voice listing failed (HTTP %d) — selector stays empty",
+                            r.status)
+                return []
+            data = json.loads(await r.text())
+    except Exception as exc:
+        log.warning("could not list voices (%r) — selector stays empty", exc)
+        return []
+    out = []
+    for v in data.get("voices", []):
+        vid = v.get("voice_id")
+        if not vid:
+            continue
+        out.append({"voice_id": vid,
+                    "name": v.get("name") or vid,
+                    "category": v.get("category") or "voice"})
+    log.info("listed %d account voices", len(out))
+    return out
+
+
 def voice_settings_from(voice):
     """The clone's own settings, so env overrides deviate from ITS baseline."""
     settings = voice.get("settings") or {}
@@ -432,6 +463,10 @@ class TtsClient:
         self.voice_settings = dict(voice_settings or FALLBACK_VOICE_SETTINGS)
         self.timeout_s = timeout_s
         self.syntheses = 0
+        # Request stitching (continuity): the "request-id" response header of the
+        # last FULLY-READ synthesis, used to condition the next one. Verified
+        # header name + streaming caveat against the ElevenLabs docs (29 Jul).
+        self.last_request_id = None
 
     @property
     def url(self):
@@ -448,6 +483,15 @@ class TtsClient:
 
     def set_model(self, model_id):
         self.model = model_id
+
+    def set_voice(self, voice_id, voice_settings=None):
+        """Switch voice (used by url/ping/warmup and the next synthesis). When
+        the new voice's own settings are supplied they replace the current ones
+        — each voice carries its own defaults, so the applied-truth broadcast
+        shows the values in effect for the NEW voice, not stale ones."""
+        self.voice_id = voice_id
+        if voice_settings is not None:
+            self.voice_settings = dict(voice_settings)
 
     def apply_voice_setting(self, field, value):
         self.voice_settings[field] = value
@@ -518,13 +562,17 @@ class TtsClient:
                  ttfb, self.model, self.voice_id)
         return ttfb
 
-    async def stream(self, text):
+    async def stream(self, text, previous_request_ids=None):
         """Yield (float32 chunk @48k, ttfb_ms) — ttfb_ms set on the first chunk only.
 
+        `previous_request_ids` (request stitching) conditions this synthesis on
+        prior ones so delivery holds across a session; the docs cap it at 3 ids.
         Raises TtsError; the caller drops the utterance and keeps streaming.
         """
         body = {"text": text, "model_id": self.model,
                 "voice_settings": self.effective_voice_settings()}
+        if previous_request_ids:
+            body["previous_request_ids"] = list(previous_request_ids)[:3]
         t0 = time.perf_counter()
         ttfb = None
         tail = b""
@@ -548,6 +596,10 @@ class TtsClient:
                                .astype(np.float32) / 32768.0)
                         yield pcm, ttfb
                         ttfb = None
+                # Body fully read → per the request-stitching docs its request-id
+                # may now condition the NEXT synthesis (streaming requires the
+                # complete read first). Header name verified as "request-id".
+                self.last_request_id = resp.headers.get("request-id")
         except TtsError:
             raise
         except asyncio.TimeoutError:

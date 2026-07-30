@@ -77,6 +77,7 @@ from elevenlabs_client import (
     TtsClient,
     check_credentials,
     fetch_voice,
+    list_voices,
     resolve_voice_settings,
     voice_settings_from,
 )
@@ -326,6 +327,11 @@ class ConvertAgent:
             # set_config messages must not drop a running task's only reference
             self._spawn(self._apply_config(msg.get("params"), who))
             return
+        if msg.get("type") == "refresh_voices":
+            log.info("refresh_voices from %s", who)
+            if self.tts is not None:
+                self._spawn(self._refresh_voices(who))
+            return
         if msg.get("type") != "set_mode":
             return
         mode = msg.get("mode")
@@ -437,14 +443,22 @@ class ConvertAgent:
         else:
             # SPIKE: the tts engine's own applied truth, same contract
             vs = dict(self.tts.tts.voice_settings)
+            voice_id = self.tts.tts.voice_id
+            voice_name = next((v["name"] for v in self.tts.voices
+                               if v["voice_id"] == voice_id), None)
+            comfort = self.outgate.comfort
             snap.update({
                 "engine": "tts",
+                "voice": voice_id,                     # flat knob key (dynamic enum)
+                "voice_name": voice_name,              # display name / export metadata
                 "tts_model": self.tts.tts.model,       # flat, matches the knob name
                 "tts_model_id": self.tts.tts.model,    # legacy key kept for records
                 "stt_model_id": self.tts.stt.model,
                 "voice_settings": vs,                  # nested, for capture records
+                "request_continuity": self.tts.request_continuity,
                 "min_speech_ms": self.tts.endpointer.min_speech_ms,
                 "queue_wait_warn_ms": self.tts.queue_wait_warn_ms,
+                "comfort_noise_db": (comfort.db if comfort is not None else None),
             })
             # Flatten voice settings to top-level knob keys so the console reads
             # config[knob] uniformly for every knob (sliders + selects + toggles).
@@ -489,6 +503,18 @@ class ConvertAgent:
                         continue
                     if name == "tts_model":
                         self.tts.tts.set_model(value)
+                        # model change → fresh continuity chain (v3 has no stitching)
+                        self.tts.reset_continuity()
+                    elif name == "voice":
+                        await self._switch_voice(value, reject)
+                    elif name == "request_continuity":
+                        # stitching is unsupported on some models — same
+                        # disable-with-reason contract as the voice settings
+                        why = knobs.model_unsupported(name, effective_model)
+                        if why:
+                            reject(name, f"{why} (model {effective_model})")
+                            continue
+                        self.tts.request_continuity = value
                     else:
                         why = knobs.model_unsupported(name, effective_model)
                         if why:
@@ -505,15 +531,18 @@ class ConvertAgent:
                         self.vad.set_threshold(value)
                     else:
                         self.vad.set_hangover_ms(value)
-                elif name in ("min_speech_ms", "queue_wait_warn_ms"):
-                    # tts-only pipeline knobs (endpointer + engine live only there)
+                elif name in ("min_speech_ms", "queue_wait_warn_ms", "comfort_noise_db"):
+                    # tts-only pipeline knobs (endpointer + engine + output bed
+                    # live only there)
                     if self.tts is None:
                         reject(name, "tts engine only (--engine rvc)")
                         continue
                     if name == "min_speech_ms":
                         self.tts.endpointer.min_speech_ms = value
-                    else:
+                    elif name == "queue_wait_warn_ms":
                         self.tts.queue_wait_warn_ms = value
+                    else:
+                        self.outgate.set_comfort_noise_db(value)
             if rvc_updates:
                 try:
                     # Mid-stream JSON settings frame on the open socket (verified
@@ -534,6 +563,34 @@ class ConvertAgent:
                                    adjusted=adjusted or None, rejected=rejected or None)
             await self._publish_config(adjusted=adjusted, rejected=rejected)
 
+    async def _switch_voice(self, voice_id, reject):
+        """Apply a voice selection (ticket 6). Validates against the account
+        list, loads the NEW voice's own default settings so the applied-truth
+        broadcast shows what is in effect for it (never stale sliders), and
+        resets request continuity so delivery doesn't stitch across voices."""
+        match = next((v for v in self.tts.voices if v["voice_id"] == voice_id), None)
+        if match is None:
+            reject("voice", "unknown voice_id (not on this account)")
+            return
+        new_settings = None
+        try:
+            newvoice = await fetch_voice(self.tts.tts.session, self.tts.tts.api_key, voice_id)
+            new_settings = voice_settings_from(newvoice)
+        except Exception as exc:
+            log.warning("could not load settings for voice %s (%s) — keeping current",
+                        voice_id, exc)
+        self.tts.tts.set_voice(voice_id, voice_settings=new_settings)
+        self.tts.reset_continuity()
+        log.info("voice → %r (%s)", match.get("name"), voice_id)
+
+    async def _refresh_voices(self, who):
+        """Re-list the account's voices (free GET) and re-broadcast the config
+        so the selector picks up voices added since startup."""
+        self.tts.voices = await list_voices(self.tts.tts.session, self.tts.tts.api_key)
+        log.info("voice list refreshed to %d voices (requested by %s)",
+                 len(self.tts.voices), who)
+        await self._publish_config()
+
     async def _publish_config(self, adjusted=None, rejected=None):
         """Broadcast the applied config + registry metadata (defaults/ranges)
         so the UI renders entirely from agent truth."""
@@ -542,7 +599,12 @@ class ConvertAgent:
         # Engine-keyed: a tts agent broadcasts only tts knobs, an rvc agent the
         # old set. The console renders entirely from this — no hardcoded engine
         # assumptions in the frontend. `metadata` carries per-knob kind, group,
-        # timing and per-model support so the UI needs nothing baked in.
+        # timing and per-model support so the UI needs nothing baked in. The
+        # voice knob's choices are the account's live voices, injected here.
+        voice_choices = None
+        if self.tts is not None:
+            voice_choices = [{"id": v["voice_id"], "name": v["name"],
+                              "category": v.get("category")} for v in self.tts.voices]
         payload = {
             "type": "agent_config",
             "engine": self.engine,
@@ -550,7 +612,7 @@ class ConvertAgent:
             "config": self.config_snapshot(),
             "defaults": knobs.defaults(self.engine),
             "ranges": knobs.ranges(self.engine),
-            "metadata": knobs.metadata(self.engine),
+            "metadata": knobs.metadata(self.engine, voice_choices=voice_choices),
             # Governor caps + usage as READ-ONLY truth. Spend controls stay
             # env-only by design — they do not get a slider (see PR). The
             # console displays them so a drill can watch the caps stay green.
@@ -1139,7 +1201,11 @@ async def build_tts_engine(args, profile_flat, cli_overrides):
 
 async def _preflight_and_build(args, http, api_key, voice_id, governor,
                                drill_lines, profile_flat, cli_overrides):
-    voice = await fetch_voice(http, api_key, voice_id)
+    # ELEVENLABS_VOICE_ID is the startup default; a committed profile MAY pin a
+    # different voice (config-as-code). The selector overrides per-session and
+    # never writes back to secrets.env.
+    startup_voice = profile_flat.get("voice") or voice_id
+    voice = await fetch_voice(http, api_key, startup_voice)
 
     # Precedence, resolved now that the clone's own settings are in hand:
     #   registry defaults → refined by the clone's settings → committed profile
@@ -1155,22 +1221,28 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor,
     # SPIKE_TTS_* env overrides are the final (highest) voice-setting layer
     voice_settings = resolve_voice_settings(voice_settings)
     log.info("resolved tts config (CLI/env > profile > clone > registry): "
-             "model=%s voice_settings=%s prime_hops=%.2f min_speech_ms=%.0f "
-             "queue_warn_ms=%.0f", model, voice_settings, resolved["prime_hops"],
-             resolved["min_speech_ms"], resolved["queue_wait_warn_ms"])
+             "voice=%r model=%s voice_settings=%s prime_hops=%.2f min_speech_ms=%.0f "
+             "queue_warn_ms=%.0f comfort_noise_db=%.0f continuity=%s",
+             voice.get("name"), model, voice_settings, resolved["prime_hops"],
+             resolved["min_speech_ms"], resolved["queue_wait_warn_ms"],
+             resolved["comfort_noise_db"], resolved.get("request_continuity", True))
 
     stt = SttClient(http, api_key)
-    tts = TtsClient(http, api_key, voice_id, model=model,
+    tts = TtsClient(http, api_key, startup_voice, model=model,
                     voice_settings=voice_settings)
     queue = PcmQueue()
     engine = TtsEngine(
         stt=stt, tts=tts, governor=governor,
         endpointer=UtteranceEndpointer(min_speech_ms=resolved["min_speech_ms"]),
         queue=queue,
-        outgate=OutputGate(queue, knobs.prime_hops_to_samples(resolved["prime_hops"])),
+        outgate=OutputGate(queue, knobs.prime_hops_to_samples(resolved["prime_hops"]),
+                           comfort_noise_db=resolved["comfort_noise_db"]),
         drill_lines=drill_lines,
     )
     engine.queue_wait_warn_ms = resolved["queue_wait_warn_ms"]
+    engine.request_continuity = bool(resolved.get("request_continuity", True))
+    # Account voices for the selector — a free GET, so it's not metered.
+    engine.voices = await list_voices(http, api_key)
     # Warm BOTH vendors before the room join — the STT handshake (~900 ms) and
     # the TTS cold-voice penalty (993 ms vs ~376 ms steady) would otherwise land
     # inside the first utterance's tail. Same philosophy as the RVC warmup.
@@ -1183,8 +1255,8 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor,
             f"key and voice were accepted, so this is the realtime endpoint — "
             f"check outbound WebSocket access to {stt.url.split('?')[0]}.")
     await tts.warmup(governor)
-    log.info("PREFLIGHT OK — engine=tts model=%s stt=%s voice=%r",
-             model, stt.model, voice.get("name"))
+    log.info("PREFLIGHT OK — engine=tts model=%s stt=%s voice=%r (%d account voices)",
+             model, stt.model, voice.get("name"), len(engine.voices))
     return http, engine.start()
 
 

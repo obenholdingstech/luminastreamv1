@@ -4,6 +4,109 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 30 July 2026 — 02:25 PDT — CONSOLE POLISH + VOICE CONTINUITY: the CEO's tuning-session findings (PR pending, HOLD FOR CTO)
+
+### Task (verbatim)
+
+> CONSOLE POLISH + VOICE CONTINUITY (branch: feat/tts-continuity-comfort)
+> Five tickets, one PR — the CEO's first tuning session's findings:
+> 1. REQUEST CONTINUITY (the tone-drift fix): verify vs live docs the mechanism
+>    for conditioning consecutive syntheses; wire it (condition on predecessor,
+>    reset on session/voice/model change); console toggle default on; add the
+>    "same sentence 3x" check to the README drill.
+> 2. COMFORT NOISE BED: during gate-closed output emit a low-level noise bed
+>    instead of digital zero, level-matched, crossfaded, not bleeding into
+>    captures' silence classification; knob comfort_noise_db (off→-40dB), pipeline.
+> 3. STT PUNCTUATION AUDIT: verify what punctuation STT emits and that it reaches
+>    synthesis untouched; log per-utterance in the panel.
+> 4. GOVERNOR TUNING ERGONOMICS: env override names in the governor tooltip +
+>    README preset values; one-decimal remaining budget; caps stay env-only.
+> 5. UI LAYOUT PASS: the knob grid overlaps (labels colliding) — responsive grid,
+>    readable value alignment, transcript breathing room; no new framework.
+> 6. VOICE SELECTOR: expose voice as a knob (target tts, next utterance),
+>    populated AGENT-SIDE (browser never holds the key); GET /v1/voices with
+>    display names + voice_ids; refresh over the data channel; if the shared
+>    Library needs separate machinery, stop at account voices and note it. On
+>    switch: reset continuity + re-resolve the clone-settings layer. Export
+>    includes voice_id + name. ELEVENLABS_VOICE_ID stays startup default.
+> DISCIPLINE: every knob agent-confirmed, config_change captures, governor green,
+> RVC suite untouched, tests for continuity reset + comfort-noise classification.
+> PR → CodeRabbit → HOLD for CTO. Small commits; session log.
+
+### What I did (built on PR #18, which merged to main first, so this branches off main)
+
+- **Docs verification (mandated).** Request stitching: `previous_request_ids`
+  (max 3), conditioned via the **`request-id`** response header; for streaming
+  the body must be **read completely first** (our stream() does); **NOT
+  available on eleven_v3** ("Request stitching is not available for the
+  eleven_v3 model"); `previous_text` is ignored when ids are present. Voices:
+  `GET /v1/voices` returns account voices (premade + cloned) with
+  voice_id/name/category — a free GET. STT: Scribe v2 Realtime has punctuation
+  prediction (emits ? ! …).
+- **T1 continuity.** TtsClient.stream() captures `request-id` after the full
+  body read and accepts previous_request_ids; TtsEngine conditions each
+  utterance on the prior id when the toggle is on AND the model supports
+  stitching; resets on session/mode re-entry and on voice/model change
+  (reset_continuity). New bool knob request_continuity (default on), v3-gated
+  both in the engine and via the disable-with-reason UI path.
+- **T2 comfort noise.** ComfortNoise (vad.py): 1-pole-LPF white noise,
+  ~unit-RMS normalized, scaled by comfort_noise_db; gain glides to 0 under
+  speech and 1 under silence → crossfade at boundaries. OutputGate mixes it;
+  default None ⇒ exact zeros so RVC is byte-identical. analyze_capture taught
+  the bed (comfort_noise_floor from the capture config → find_silence_regions
+  floor) so it reads as silence, not a dropout.
+- **T6 voice selector.** list_voices() GET /v1/voices; dynamic `voice` enum
+  (clamp accepts any voice_id, metadata injects live choices + display names,
+  excluded from defaults/ranges); apply validates against the account list,
+  loads the new voice's own settings, resets continuity; refresh_voices data-
+  channel message; startup voice = profile voice or ELEVENLABS_VOICE_ID; export
+  pins voice_id + name.
+- **T3 punctuation.** Confirmed the transcript reaches synthesis verbatim (only
+  whitespace trimmed) — test pins ? ! … round-tripping; panel shows the terminal
+  punctuation as the "prosody" channel.
+- **T4 governor.** Env override names in the tooltip; remaining budget to one
+  decimal; caps stay env-only; README tuning-session preset.
+- **T5 layout.** Knob rows no longer collide: single-column until `lg`, each row
+  a min-w-0 flex with a truncating label + tabular-nums value/badge; slider value
+  sits beside the control instead of overflowing.
+
+### Deviations / decisions flagged (for the PR)
+
+- **Shared Voice Library out of scope.** `/v1/shared-voices` + a POST add step is
+  separate machinery, not "trivially accessible via the same surface" — stopped
+  at account voices (clones + premade) per the brief's own escape hatch.
+- **Comfort noise: shaped-noise generator with an operator-tuned dB level**,
+  chosen over auto-deriving the level from recent TTS tails (fragile;
+  breath/room bleed) — the console's method is tune-by-ear.
+- **Continuity conditions via `previous_request_ids`** (the stronger signal),
+  not `previous_text`; the docs say previous_text is ignored when ids are present.
+
+### Files changed
+
+- Agent: knobs.py, elevenlabs_client.py, tts_engine.py, vad.py, convert_agent.py,
+  analyze_capture.py, tts_profile.json; tests test_knobs/test_tts_engine/
+  test_vad/test_analyze.
+- Frontend: src/hooks/useLiveKitVoice.js, src/lib/configExport.js (+test),
+  src/pages/LiveKitTest.jsx.
+- Docs: agent/README.md, this log, notes.md.
+
+### Verification
+
+- **174 py tests pass** (+19: continuity condition/off/v3/reset, comfort DSP
+  off=zeros/on/crossfade/retune, analyzer comfort classification, voice apply/
+  reject, dynamic enum clamp, stitching gate, punctuation round-trip). RVC/VAD
+  suite untouched and green (comfort off = byte-identical).
+- **26 node tests pass** (+2: voice pin round-trip, bool display). Lint clean;
+  typecheck at main baseline (60, none in changed files); build green.
+- Live E2E (drill + free-talk, watch the stitched/prosody markers, comfort bed
+  by ear, voice switching) is the acceptance run once someone connects.
+
+### Next
+
+Open PR via gh → CodeRabbit → evidence replies → **HOLD MERGE for CTO**.
+
+---
+
 ## 29 July 2026 — 16:28 PDT — TTS TUNING CONSOLE: retooled the Phase 4 instrument for the promoted engine (PR pending, HOLD FOR CTO)
 
 ### Task (verbatim)

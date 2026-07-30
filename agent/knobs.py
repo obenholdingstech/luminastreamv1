@@ -53,17 +53,19 @@ F0_METHODS = ("rmvpe", "harvest", "crepe", "pm")
 TTS_MODELS = ("eleven_flash_v2_5", "eleven_multilingual_v2", "eleven_v3")
 DEFAULT_TTS_MODEL = "eleven_flash_v2_5"
 
-# Per-model voice-setting support. ONLY documented negatives are encoded — the
-# frontend disables these with the reason, and the apply path rejects attempts
-# to set them, so a model that ignores a setting never does so silently. The
-# flash+style question is deliberately NOT encoded as a disable (see module
-# docstring / PR): docs say style is "v2+ and v3 only" (would include flash
-# v2.5) yet also that "Flash models ignore some voice settings for speed"
-# without naming them — left supported-with-a-latency-hint and flagged for the
-# ear drill rather than guessed.
-VOICE_SETTING_UNSUPPORTED = {
+# Per-model knob support. ONLY documented negatives are encoded — the frontend
+# disables these with the reason, and the apply path rejects attempts to set
+# them, so a model that ignores a knob never does so silently. The flash+style
+# question is deliberately NOT encoded as a disable (see module docstring / PR):
+# docs say style is "v2+ and v3 only" (would include flash v2.5) yet also that
+# "Flash models ignore some voice settings for speed" without naming them —
+# left supported-with-a-latency-hint and flagged for the ear drill rather than
+# guessed. request_continuity (request stitching) is documented as unavailable
+# on eleven_v3 ("Request stitching is not available for the eleven_v3 model").
+MODEL_UNSUPPORTED = {
     "similarity_boost": {"eleven_v3": "not available on Eleven v3"},
     "use_speaker_boost": {"eleven_v3": "not available on Eleven v3"},
+    "request_continuity": {"eleven_v3": "request stitching not available on Eleven v3"},
 }
 
 # name → spec. Order is the console's render order within each group.
@@ -89,6 +91,14 @@ KNOBS = {
                         "timing": "mid-stream", "label": "F0 Method"},
 
     # ── ElevenLabs voice (tts engine; applies to next utterance) ──────
+    # `voice` choices are DYNAMIC — the account's voices (GET /v1/voices) are
+    # injected at broadcast time; clamp accepts any voice_id string and the apply
+    # path validates it against the live list. Default None ⇒ the agent supplies
+    # the startup voice (ELEVENLABS_VOICE_ID). Excluded from defaults()/ranges().
+    "voice":           {"kind": "enum", "choices": (), "default": None, "dynamic": True,
+                        "target": "tts", "engines": ("tts",), "group": "ElevenLabs voice",
+                        "timing": "next utterance", "label": "Voice",
+                        "hint": "account voices (clones + premade); switching resets continuity and loads the voice's own settings"},
     "tts_model":       {"kind": "enum", "choices": TTS_MODELS, "default": DEFAULT_TTS_MODEL,
                         "target": "tts", "engines": ("tts",), "group": "ElevenLabs voice",
                         "timing": "next utterance", "label": "TTS Model",
@@ -113,6 +123,10 @@ KNOBS = {
                         "target": "tts", "engines": ("tts",), "group": "ElevenLabs voice",
                         "timing": "next utterance", "label": "Speed",
                         "hint": "1.0 = natural · usable range ~0.7–1.2 · REST allows 0.25–4.0"},
+    "request_continuity": {"kind": "bool", "default": True,
+                        "target": "tts", "engines": ("tts",), "group": "ElevenLabs voice",
+                        "timing": "next utterance", "label": "Request Continuity",
+                        "hint": "condition each utterance on the previous (request stitching) so delivery holds across a session · not on v3"},
 
     # ── Pipeline (in-process, instant) ────────────────────────────────
     "prime_hops":      {"kind": "float", "lo": 0.5, "hi": 4.0, "default": 1.5, "step": 0.1,
@@ -136,6 +150,10 @@ KNOBS = {
                         "target": "agent", "engines": ("tts",), "group": "Pipeline",
                         "timing": "instant", "label": "Queue Warn (ms)",
                         "hint": "diagnostic only — logs when an utterance waited behind the pipeline; does not change audio"},
+    "comfort_noise_db": {"kind": "float", "lo": -80.0, "hi": -40.0, "default": -60.0, "step": 1.0,
+                        "target": "agent", "engines": ("tts",), "group": "Pipeline",
+                        "timing": "instant", "label": "Comfort Noise (dBFS)",
+                        "hint": "low-level room-tone bed under gate-closed silence so gaps don't feel dead · -80 = off, -40 = loudest"},
 }
 
 
@@ -147,8 +165,13 @@ def _relevant(engine):
 
 
 def defaults(engine=None):
-    """{name: default} for `engine` (None ⇒ every knob)."""
-    return {name: KNOBS[name]["default"] for name in _relevant(engine)}
+    """{name: default} for `engine` (None ⇒ every knob).
+
+    Dynamic knobs (e.g. `voice`, whose choices/default are runtime-populated)
+    are excluded — they have no meaningful static default; the agent supplies
+    the live default in the broadcast."""
+    return {name: KNOBS[name]["default"] for name in _relevant(engine)
+            if not KNOBS[name].get("dynamic")}
 
 
 def ranges(engine=None):
@@ -156,6 +179,8 @@ def ranges(engine=None):
     out = {}
     for name in _relevant(engine):
         spec = KNOBS[name]
+        if spec.get("dynamic"):
+            continue                       # runtime-populated; see metadata()
         if spec["kind"] == "enum":
             out[name] = {"choices": list(spec["choices"])}
         elif spec["kind"] == "bool":
@@ -165,11 +190,16 @@ def ranges(engine=None):
     return out
 
 
-def metadata(engine=None):
+def metadata(engine=None, voice_choices=None):
     """Full per-knob display metadata as an ORDERED list so the console can
     render knob groups with zero hardcoded engine assumptions. Includes the
-    per-model support map (`unsupported_models`) so the UI disables a setting
-    the current model ignores and shows why."""
+    per-model support map (`unsupported_models`) so the UI disables a knob the
+    current model ignores and shows why.
+
+    `voice_choices` (list of {"id","name","category"?}) is injected into the
+    dynamic `voice` knob as its choices + `choice_labels` (display names) — the
+    account's live voices, which do not live in the static registry."""
+    voice_choices = voice_choices or []
     out = []
     for name in _relevant(engine):
         spec = KNOBS[name]
@@ -184,15 +214,24 @@ def metadata(engine=None):
             "default": spec["default"],
         }
         if spec["kind"] == "enum":
-            entry["choices"] = list(spec["choices"])
+            if spec.get("dynamic") and name == "voice":
+                entry["choices"] = [v["id"] for v in voice_choices]
+                entry["choice_labels"] = {
+                    v["id"]: (f"{v['name']} ({v['category']})" if v.get("category")
+                              else v.get("name") or v["id"])
+                    for v in voice_choices
+                }
+                entry["dynamic"] = True
+            else:
+                entry["choices"] = list(spec["choices"])
         elif spec["kind"] == "float":
             entry["lo"] = spec["lo"]
             entry["hi"] = spec["hi"]
             entry["step"] = spec["step"]
         if "hint" in spec:
             entry["hint"] = spec["hint"]
-        if name in VOICE_SETTING_UNSUPPORTED:
-            entry["unsupported_models"] = dict(VOICE_SETTING_UNSUPPORTED[name])
+        if name in MODEL_UNSUPPORTED:
+            entry["unsupported_models"] = dict(MODEL_UNSUPPORTED[name])
         out.append(entry)
     return out
 
@@ -202,7 +241,15 @@ def model_unsupported(knob_name, model_id):
 
     Pure predicate for the per-model validation the apply path runs once it
     knows the live/target model (clamp_params stays model-agnostic)."""
-    return VOICE_SETTING_UNSUPPORTED.get(knob_name, {}).get(model_id)
+    return MODEL_UNSUPPORTED.get(knob_name, {}).get(model_id)
+
+
+def model_supports_stitching(model_id):
+    """True if `model_id` supports request stitching (previous_request_ids).
+
+    False for eleven_v3 — the engine skips continuity conditioning on it rather
+    than sending a field the model rejects."""
+    return model_unsupported("request_continuity", model_id) is None
 
 
 def clamp_params(params):
@@ -226,6 +273,15 @@ def clamp_params(params):
             rejected[name] = "unknown knob"
             continue
         if spec["kind"] == "enum":
+            if spec.get("dynamic"):
+                # Runtime-populated choices (e.g. account voices). Accept any
+                # non-empty string, case-preserved (voice_ids are case-
+                # sensitive); the apply path validates it against the live list.
+                if isinstance(raw, str) and raw.strip():
+                    applied[name] = raw
+                else:
+                    rejected[name] = "must be a non-empty string"
+                continue
             if isinstance(raw, str) and raw.lower() in spec["choices"]:
                 applied[name] = raw.lower()
             else:

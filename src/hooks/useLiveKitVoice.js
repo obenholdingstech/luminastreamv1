@@ -319,6 +319,22 @@ export function useLiveKitVoice(url, token) {
     }
   }, []);
 
+  // Ask the agent to re-list the account's voices (ticket 6). Free GET agent-
+  // side; the browser never holds the vendor key. The selector updates when the
+  // agent re-broadcasts agent_config with the fresh voice choices.
+  const refreshVoices = useCallback(async () => {
+    const activeRoom = roomRef.current;
+    if (!activeRoom) return;
+    try {
+      await activeRoom.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify({ type: 'refresh_voices' })),
+        { reliable: true },
+      );
+    } catch (_e) {
+      // transient — the user can click refresh again
+    }
+  }, []);
+
   // Browsers may block autoplay until a user gesture — LiveKit surfaces that
   // via AudioPlaybackStatusChanged; calling startAudio() from a click fixes it
   const enableAudio = useCallback(async () => {
@@ -431,6 +447,7 @@ export function useLiveKitVoice(url, token) {
     enableAudio,
     requestAgentMode,
     requestAgentConfig,
+    refreshVoices,
     setCaptureConstraint,
   };
 }

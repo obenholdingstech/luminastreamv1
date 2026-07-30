@@ -223,24 +223,57 @@ pm) and fcpe (conditional) are deliberately not offered.
 
 | knob | kind / range | default | applies | notes |
 |---|---|---|---|---|
+| voice | account voices (dynamic) | ELEVENLABS_VOICE_ID | next utterance | clones + premade; switching resets continuity + loads the voice's own settings |
 | tts_model | flash_v2_5 / multilingual_v2 / v3 | flash_v2_5 | next utterance | |
 | stability | 0–1 | 0.5 | next utterance | v3 reads it as ~0 Creative / 0.5 Natural / 1 Robust |
 | similarity_boost | 0–1 | 0.75 | next utterance | slight latency cost; **not on v3** |
 | style | 0–1 | 0.0 | next utterance | ⚡ >0 adds latency + can reduce stability; v2+/v3 only |
 | use_speaker_boost | bool | on | next utterance | slight latency cost; **not on v3** |
 | speed | 0.25–4.0 | 1.0 | next utterance | usable ~0.7–1.2; all models |
+| request_continuity | bool | on | next utterance | request stitching (previous_request_ids) so delivery holds across a session; **not on v3** |
 | prime_hops / vad_threshold / vad_hangover_ms | (shared) | — | instant | shared pipeline knobs |
 | min_speech_ms | 0–1000 | 200 | instant | gate-open spans with less speech are dropped as blips (no STT call) |
 | queue_wait_warn_ms | 0–5000 | 250 | instant | diagnostic only — a log threshold, not audio |
+| comfort_noise_db | -80…-40 dBFS | -60 | instant | low-level room-tone bed under gate-closed silence so gaps don't feel dead; -80 = off |
 
 Voice settings are per-request: they take effect on the **next utterance** (the
-UI labels this). Per-model support is enforced both ways — a setting a model
-doesn't support (e.g. `similarity_boost`/`use_speaker_boost` on `eleven_v3`)
-renders **disabled with the reason** and the agent **rejects** any attempt to
-set it, never silently ignored. `⚡` marks a documented latency cost.
+UI labels this). Per-model support is enforced both ways — a knob a model
+doesn't support (`similarity_boost` / `use_speaker_boost` / `request_continuity`
+on `eleven_v3`) renders **disabled with the reason** and the agent **rejects**
+any attempt to set it, never silently ignored. `⚡` marks a documented latency
+cost.
+
+**Request continuity (ticket 1):** each utterance conditions on the previous
+one's `request-id` (request stitching, verified against the ElevenLabs docs) so
+a session holds one delivery instead of drifting in tone. It resets on session
+end and on any voice/model change, and is skipped on `eleven_v3` (which the docs
+say has no stitching). The live-transcript panel marks a stitched utterance.
+
+**Voice selector (ticket 6):** the account's voices (`GET /v1/voices` — clones +
+premade) are fetched agent-side (a free GET, never metered) and broadcast as the
+`voice` knob's choices with display names; the browser never holds the vendor
+key. Switching resets continuity and loads the NEW voice's own default settings
+(the applied-truth broadcast shows what's in effect for it). The **Voices**
+button refreshes the list. `ELEVENLABS_VOICE_ID` stays the startup default; the
+selector overrides per-session and never writes back to secrets. Export pins the
+voice_id + name. (The shared community Voice Library is a separate surface —
+`/v1/shared-voices` + an add step — and is out of scope here.)
+
+**Comfort noise (ticket 2):** a low-level shaped-noise bed under gate-closed
+silence so conversational gaps don't feel like a dead line. It crossfades at
+utterance boundaries and, at -80 dBFS, is exactly digital zero (off). The
+analyzer is told the bed level (from the capture config) so it classifies the
+bed as intentional silence, never a dropout.
 
 Governor spend caps are shown **read-only** — spend controls stay env-only by
-design (`SPIKE_MAX_TTS_CHARS` / `SPIKE_MAX_STT_SECONDS`), no slider.
+design (`SPIKE_MAX_TTS_CHARS` / `SPIKE_MAX_STT_SECONDS`), no slider. For a
+**tuning session**, a generous preset keeps the caps from binding mid-drill
+while still guarding an unattended loop:
+
+```bash
+export SPIKE_MAX_TTS_CHARS=50000      # ~50 min of speech; default 5000
+export SPIKE_MAX_STT_SECONDS=3000     # 50 min of audio;    default 300
+```
 
 Protocol: browser sends `{"type":"set_config","params":{...}}`; the agent
 clamps out-of-range values, rejects garbage / unsupported-by-model / wrong-
@@ -288,6 +321,14 @@ model. VPS drill: the first utterance after a long idle paid ~2220 ms TTFB vs
 
 Change one variable at a time — the capture's `config_change` events pin every
 segment to its exact config, so post-hoc attribution is automatic.
+
+**Continuity check (ticket 1):** to hear whether request continuity is holding,
+speak the **same sentence three times** with a pause between each so the gate
+closes and each is endpointed separately. With continuity **on**, the three
+readings should hold **one delivery** (the panel marks the 2nd and 3rd
+"stitched"); with it **off**, tone can drift between them. It is the direct A/B
+for the tone-drift the CEO's session found — and it is inert on `eleven_v3`,
+which has no stitching.
 
 ## STT→TTS engine (`--engine tts`, the DEFAULT since 28 Jul 2026)
 
