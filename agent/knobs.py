@@ -154,6 +154,19 @@ KNOBS = {
                         "target": "agent", "engines": ("tts",), "group": "Pipeline",
                         "timing": "instant", "label": "Comfort Noise (dBFS)",
                         "hint": "low-level room-tone bed under gate-closed silence so gaps don't feel dead · -80 = off, -40 = loudest"},
+
+    # ── Loudness (tts; levels each utterance before enqueue) ──────────
+    # Fixes the CEO's "volume sags across consecutive utterances": each
+    # synthesized utterance is measured (RMS) and leveled to the target with a
+    # soft limiter (never clips). See loudness.py for the RMS-vs-LUFS decision.
+    "loudness_normalize": {"kind": "bool", "default": True,
+                        "target": "agent", "engines": ("tts",), "group": "Loudness",
+                        "timing": "next utterance", "label": "Loudness Normalize",
+                        "hint": "level every utterance to the target so volume holds across a session · RMS + soft limiter, never clips · off = the raw synthesis"},
+    "loudness_target_db": {"kind": "float", "lo": -40.0, "hi": -12.0, "default": -20.0, "step": 0.5,
+                        "target": "agent", "engines": ("tts",), "group": "Loudness",
+                        "timing": "next utterance", "label": "Loudness Target (dBFS)",
+                        "hint": "RMS target · ~-20 dBFS is a natural speech level · higher = louder, the limiter guards the peaks"},
 }
 
 

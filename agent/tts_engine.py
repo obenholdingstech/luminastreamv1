@@ -16,6 +16,13 @@ ENQUEUED on the jitter buffer. Enqueued, not audible — the priming depth that
 follows is an existing, separately-tunable property of the output path
 (prime_hops), and folding it in here would measure the jitter buffer twice.
 
+With loudness normalization ON (the default), the whole short utterance is
+buffered so its RMS can be measured exactly before enqueue, so "enqueued" is
+the whole-utterance enqueue rather than the first streamed chunk — the extra
+wait is reported per utterance as `enqueue_delay_ms`, never hidden, and
+`tts_ttfb_ms` still measures the vendor's first-chunk responsiveness unchanged.
+Turning it off restores the chunk-streaming enqueue byte-for-byte.
+
 Utterances are processed strictly one at a time by a single worker. Overlapping
 them would interleave two syntheses into one FIFO and produce audio in the
 wrong order; a queue depth >1 is reported instead, because "the speaker got
@@ -33,6 +40,7 @@ import time
 
 import knobs
 from elevenlabs_client import SttError, TtsError
+from loudness import LoudnessNormalizer
 from spend_governor import GovernorRefusal
 from wer import best_match
 
@@ -94,6 +102,10 @@ class TtsEngine:
         # Account voices for the selector (ticket 6); set by the agent from
         # list_voices() at build and on a refresh request. Empty ⇒ no selector.
         self.voices = []
+        # Per-utterance loudness normalization (post-Stage-1 ticket 1). Levels
+        # each synthesized utterance to a target RMS before enqueue, with a soft
+        # limiter. Live-tunable; disabled ⇒ exact pass-through (streaming path).
+        self.normalizer = LoudnessNormalizer()
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -434,15 +446,24 @@ class TtsEngine:
                 and knobs.model_supports_stitching(self.tts.model)):
             prev_ids = [self._prev_request_id]
         rec["continuity"] = bool(prev_ids)
+        # Loudness normalization needs the whole (short) utterance to measure its
+        # RMS, so when it is ON the streamed chunks are buffered and enqueued as
+        # one normalized block; when OFF the original chunk-by-chunk streaming is
+        # byte-identical to before. tts_ttfb_ms is measured at the first RAW
+        # chunk either way (vendor responsiveness); tail_latency is measured at
+        # the actual enqueue, so normalization's cost shows up honestly.
+        normalize = self.normalizer is not None and self.normalizer.enabled
         self._synth_in_flight = True
         first_at = None
         samples = 0
+        chunks = [] if normalize else None
         try:
             async for pcm, ttfb_ms in self.tts.stream(transcript, previous_request_ids=prev_ids):
                 if first_at is None:
                     first_at = time.monotonic()
                     rec["tts_ttfb_ms"] = round(ttfb_ms, 1)
-                    rec["tail_latency_ms"] = round(utt.tail_latency_ms(first_at), 1)
+                    if not normalize:
+                        rec["tail_latency_ms"] = round(utt.tail_latency_ms(first_at), 1)
                 if utt.generation != self.generation:
                     # The mode was re-entered mid-synthesis: this audio is from
                     # the previous take and must not reach the room.
@@ -450,8 +471,22 @@ class TtsEngine:
                              "(mode re-entered mid-stream)", utt.index)
                     self._drop(utt, "stale_generation", "mode re-entered mid-synthesis")
                     return
-                self.queue.push(pcm)
+                if normalize:
+                    chunks.append(pcm)
+                else:
+                    self.queue.push(pcm)
                 samples += len(pcm)
+            if normalize and first_at is not None:
+                # Re-entry could land in the gap between the last chunk and here;
+                # drop rather than enqueue audio from the previous take.
+                if utt.generation != self.generation:
+                    self._drop(utt, "stale_generation", "mode re-entered mid-synthesis")
+                    return
+                out, rec["loudness"] = self.normalizer.process(chunks)
+                self.queue.push(out)
+                enqueued_at = time.monotonic()
+                rec["tail_latency_ms"] = round(utt.tail_latency_ms(enqueued_at), 1)
+                rec["enqueue_delay_ms"] = round((enqueued_at - first_at) * 1000.0, 1)
         except TtsError as exc:
             self._drop(utt, "tts_error", str(exc))
             return
@@ -479,6 +514,7 @@ class TtsEngine:
                      "chars": chars, "model_id": self.tts.model,
                      "wer": rec.get("wer"),
                      "continuity": rec.get("continuity"),
+                     "loudness": rec.get("loudness"),   # per-utterance leveling evidence
                      "spend": rec.get("spend")})   # live caps/usage for the console
         log.info("utterance %d: %.2fs speech → %r | stt %.0fms | ttfb %.0fms | "
                  "TAIL %.0fms | %d chars | wer=%s",

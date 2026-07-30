@@ -9,6 +9,7 @@ import asyncio
 import logging
 
 import numpy as np
+import pytest
 
 from bridge import HOP, SR
 from elevenlabs_client import SttError, TtsError
@@ -606,6 +607,60 @@ def test_an_abandoned_utterance_produces_no_audio_at_all():
     assert tts.calls == []
     assert engine.governor.tts_chars_used == 0
     assert engine.queue.available == 0
+
+
+# ── loudness normalization (post-Stage-1 ticket 1) ────────────────────
+
+
+def test_loudness_normalization_levels_the_utterance_and_records_it():
+    """Default ON: the whole utterance is buffered, measured, and enqueued as one
+    normalized block at the target RMS — and the leveling is recorded + notified."""
+    tts = MockTts(chunks=[np.full(2400, 0.3, dtype=np.float32)] * 2)  # -10.5 dBFS
+
+    async def run():
+        engine, _, notices = build(tts=tts)
+        engine.normalizer.set_target_db(-20.0)          # target RMS 0.1
+        engine.start()
+        await utter(engine, n_speech=5)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine, notices
+
+    engine, notices = asyncio.run(run())
+    rec = engine.records[0]
+    assert rec["loudness"]["applied"] is True
+    assert rec["loudness"]["out_db"] == pytest.approx(-20.0, abs=0.3)
+    assert "enqueue_delay_ms" in rec                    # the buffering cost is reported
+    # one normalized block, leveled to ~0.1 (the target), never clipped
+    assert engine.queue.chunks_pushed == 1
+    peak = float(np.max(np.abs(engine.queue._buf)))
+    assert peak < 1.0
+    assert peak == pytest.approx(0.1, abs=0.02)
+    # the console panel gets the leveling evidence too
+    utt_notice = next(n for n in notices if n.get("type") == "tts_utterance")
+    assert utt_notice["loudness"]["out_db"] == pytest.approx(-20.0, abs=0.3)
+
+
+def test_loudness_off_streams_raw_chunks_byte_identical():
+    """Disabled ⇒ the original chunk-by-chunk streaming, untouched: each chunk is
+    pushed as it arrives and the samples are exactly what the vendor sent."""
+    raw = [np.full(2400, 0.3, dtype=np.float32),
+           np.full(1600, 0.42, dtype=np.float32)]
+    tts = MockTts(chunks=[c.copy() for c in raw])
+
+    async def run():
+        engine, _, _ = build(tts=tts)
+        engine.normalizer.set_enabled(False)
+        engine.start()
+        await utter(engine, n_speech=5)
+        await wait_done(engine, 1)
+        await engine.aclose()
+        return engine
+
+    engine = asyncio.run(run())
+    assert engine.queue.chunks_pushed == 2              # streamed, not merged into one
+    np.testing.assert_array_equal(engine.queue._buf, np.concatenate(raw))
+    assert "loudness" not in engine.records[0]          # nothing measured or applied
 
 
 def test_a_lost_streamed_transcript_is_recovered_from_the_buffer():

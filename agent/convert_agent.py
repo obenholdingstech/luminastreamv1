@@ -459,6 +459,8 @@ class ConvertAgent:
                 "min_speech_ms": self.tts.endpointer.min_speech_ms,
                 "queue_wait_warn_ms": self.tts.queue_wait_warn_ms,
                 "comfort_noise_db": (comfort.db if comfort is not None else None),
+                "loudness_normalize": self.tts.normalizer.enabled,
+                "loudness_target_db": self.tts.normalizer.target_db,
             })
             # Flatten voice settings to top-level knob keys so the console reads
             # config[knob] uniformly for every knob (sliders + selects + toggles).
@@ -531,9 +533,10 @@ class ConvertAgent:
                         self.vad.set_threshold(value)
                     else:
                         self.vad.set_hangover_ms(value)
-                elif name in ("min_speech_ms", "queue_wait_warn_ms", "comfort_noise_db"):
-                    # tts-only pipeline knobs (endpointer + engine + output bed
-                    # live only there)
+                elif name in ("min_speech_ms", "queue_wait_warn_ms", "comfort_noise_db",
+                              "loudness_normalize", "loudness_target_db"):
+                    # tts-only pipeline knobs (endpointer + engine + output bed +
+                    # loudness normalizer live only there)
                     if self.tts is None:
                         reject(name, "tts engine only (--engine rvc)")
                         continue
@@ -541,8 +544,12 @@ class ConvertAgent:
                         self.tts.endpointer.min_speech_ms = value
                     elif name == "queue_wait_warn_ms":
                         self.tts.queue_wait_warn_ms = value
-                    else:
+                    elif name == "comfort_noise_db":
                         self.outgate.set_comfort_noise_db(value)
+                    elif name == "loudness_normalize":
+                        self.tts.normalizer.set_enabled(value)
+                    else:
+                        self.tts.normalizer.set_target_db(value)
             if rvc_updates:
                 try:
                     # Mid-stream JSON settings frame on the open socket (verified
@@ -973,7 +980,12 @@ async def main():
     parser = argparse.ArgumentParser(description="LuminaStream RVC convert agent")
     parser.add_argument("--mode", choices=MODES, default="passthrough",
                         help="startup mode (default: passthrough)")
-    parser.add_argument("--room", default=DEFAULT_ROOM)
+    parser.add_argument("--room", default=os.environ.get("LIVEKIT_ROOM", DEFAULT_ROOM),
+                        metavar="NAME",
+                        help="LiveKit room to join (env: LIVEKIT_ROOM, default: "
+                             f"{DEFAULT_ROOM!r}). A first-class flag so two agent "
+                             "processes with different --room serve two rooms "
+                             "concurrently — the manual two-session test.")
     parser.add_argument("--identity", default=DEFAULT_IDENTITY)
     parser.add_argument("--rvc-url", default=os.environ.get("RVC_WS_URL", DEFAULT_RVC_WS_URL))
     parser.add_argument("--capture-dir", default=None, metavar="PATH",
@@ -1024,6 +1036,12 @@ async def main():
             "utterance is ever emitted, and the buffer grows to the forced-cut "
             "bound — burning STT budget on 30-second slabs."
         )
+
+    # Room is a first-class flag/env (LIVEKIT_ROOM). Logged prominently at the
+    # very top so that when two agents run side by side (the two-session test)
+    # which-process-serves-which-room is unambiguous from the first line.
+    log.info("══════ convert agent · engine=%s · ROOM=%r · identity=%r ══════",
+             args.engine, args.room, args.identity)
 
     url, key, secret = load_credentials()
     token = mint_token(key, secret, args.room, args.identity)
@@ -1222,10 +1240,13 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor,
     voice_settings = resolve_voice_settings(voice_settings)
     log.info("resolved tts config (CLI/env > profile > clone > registry): "
              "voice=%r model=%s voice_settings=%s prime_hops=%.2f min_speech_ms=%.0f "
-             "queue_warn_ms=%.0f comfort_noise_db=%.0f continuity=%s",
+             "queue_warn_ms=%.0f comfort_noise_db=%.0f continuity=%s "
+             "loudness=%s@%.1fdBFS",
              voice.get("name"), model, voice_settings, resolved["prime_hops"],
              resolved["min_speech_ms"], resolved["queue_wait_warn_ms"],
-             resolved["comfort_noise_db"], resolved.get("request_continuity", True))
+             resolved["comfort_noise_db"], resolved.get("request_continuity", True),
+             "on" if resolved["loudness_normalize"] else "off",
+             resolved["loudness_target_db"])
 
     stt = SttClient(http, api_key)
     tts = TtsClient(http, api_key, startup_voice, model=model,
@@ -1241,6 +1262,8 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor,
     )
     engine.queue_wait_warn_ms = resolved["queue_wait_warn_ms"]
     engine.request_continuity = bool(resolved.get("request_continuity", True))
+    engine.normalizer.set_enabled(resolved["loudness_normalize"])
+    engine.normalizer.set_target_db(resolved["loudness_target_db"])
     # Account voices for the selector — a free GET, so it's not metered.
     engine.voices = await list_voices(http, api_key)
     # Warm BOTH vendors before the room join — the STT handshake (~900 ms) and
