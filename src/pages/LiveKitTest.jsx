@@ -880,6 +880,16 @@ export default function LiveKitTest() {
                               🔗 stitched
                             </span>
                           )}
+                          {u.loudness?.applied && (
+                            <span
+                              style={{ color: u.loudness.limited ? '#F59E0B' : '#64748B' }}
+                              title={`loudness: in ${u.loudness.in_db} → out ${u.loudness.out_db} dBFS `
+                                + `(gain ${u.loudness.gain_db >= 0 ? '+' : ''}${u.loudness.gain_db} dB)`
+                                + `${u.loudness.limited ? ' · soft limiter engaged on peaks' : ''}`}
+                            >
+                              lvl {u.loudness.out_db}dBFS
+                            </span>
+                          )}
                         </div>
                       </>
                     )}
