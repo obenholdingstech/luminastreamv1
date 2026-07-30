@@ -167,7 +167,29 @@ KNOBS = {
                         "target": "agent", "engines": ("tts",), "group": "Loudness",
                         "timing": "next utterance", "label": "Loudness Target (dBFS)",
                         "hint": "RMS target · ~-20 dBFS is a natural speech level · higher = louder, the limiter guards the peaks"},
+
+    # ── Spend (tts; governor caps, walled by env-only ceilings) ───────
+    # The session caps became console knobs (ticket 2 — this REVERSES the #19
+    # "no sliders" ruling), but each is DYNAMIC: its upper bound is the env-only
+    # ceiling (SPIKE_MAX_*_CEILING), injected at broadcast time, and the apply
+    # path clamps to it and reports the three-way disposition. Excluded from
+    # defaults()/ranges(); the agent supplies the live value + ceiling. The
+    # ceiling is the wall the client can never breach (see spend_governor.py).
+    "tts_chars": {"kind": "float", "dynamic": True, "default": None, "step": 100.0,
+                        "target": "governor", "engines": ("tts",), "group": "Spend",
+                        "timing": "instant", "label": "TTS Char Cap",
+                        "hint": "session synthesis budget · walled by SPIKE_MAX_TTS_CHARS_CEILING (env-only)"},
+    "stt_seconds": {"kind": "float", "dynamic": True, "default": None, "step": 10.0,
+                        "target": "governor", "engines": ("tts",), "group": "Spend",
+                        "timing": "instant", "label": "STT Second Cap",
+                        "hint": "session transcription budget · walled by SPIKE_MAX_STT_SECONDS_CEILING (env-only)"},
 }
+
+# Fallback slider bounds for the dynamic governor knobs when no live ceiling is
+# supplied to metadata() (mirrors spend_governor's DEFAULT_MAX_* — the broadcast
+# always passes the real ceiling; this is only for a metadata() call without it).
+_CAP_CEILING_KEY = {"tts_chars": "tts_chars_ceiling", "stt_seconds": "stt_seconds_ceiling"}
+_CAP_CEILING_FALLBACK = {"tts_chars": 5000.0, "stt_seconds": 300.0}
 
 
 def _relevant(engine):
@@ -175,6 +197,15 @@ def _relevant(engine):
     if engine is None:
         return list(KNOBS)
     return [name for name, spec in KNOBS.items() if engine in spec["engines"]]
+
+
+def _cap_ceiling(name, spend):
+    """Live env ceiling for a dynamic governor cap knob (its slider max = the
+    wall). Read from the governor snapshot; falls back to the registry default
+    when no snapshot is supplied (metadata() called without a live governor)."""
+    if spend and _CAP_CEILING_KEY.get(name) in (spend or {}):
+        return spend[_CAP_CEILING_KEY[name]]
+    return _CAP_CEILING_FALLBACK.get(name)
 
 
 def defaults(engine=None):
@@ -203,15 +234,16 @@ def ranges(engine=None):
     return out
 
 
-def metadata(engine=None, voice_choices=None):
+def metadata(engine=None, voice_choices=None, spend=None):
     """Full per-knob display metadata as an ORDERED list so the console can
     render knob groups with zero hardcoded engine assumptions. Includes the
     per-model support map (`unsupported_models`) so the UI disables a knob the
     current model ignores and shows why.
 
     `voice_choices` (list of {"id","name","category"?}) is injected into the
-    dynamic `voice` knob as its choices + `choice_labels` (display names) — the
-    account's live voices, which do not live in the static registry."""
+    dynamic `voice` knob as its choices + `choice_labels` (display names).
+    `spend` (the governor snapshot) supplies the live upper bound (env ceiling)
+    for the dynamic governor cap knobs — the wall the slider maxes out at."""
     voice_choices = voice_choices or []
     out = []
     for name in _relevant(engine):
@@ -238,9 +270,16 @@ def metadata(engine=None, voice_choices=None):
             else:
                 entry["choices"] = list(spec["choices"])
         elif spec["kind"] == "float":
-            entry["lo"] = spec["lo"]
-            entry["hi"] = spec["hi"]
-            entry["step"] = spec["step"]
+            if spec.get("dynamic"):
+                # governor caps: lo=0, hi=the live env ceiling (the wall)
+                entry["lo"] = 0.0
+                entry["hi"] = _cap_ceiling(name, spend)
+                entry["step"] = spec["step"]
+                entry["dynamic"] = True
+            else:
+                entry["lo"] = spec["lo"]
+                entry["hi"] = spec["hi"]
+                entry["step"] = spec["step"]
         if "hint" in spec:
             entry["hint"] = spec["hint"]
         if name in MODEL_UNSUPPORTED:
@@ -315,6 +354,16 @@ def clamp_params(params):
         value = float(raw)
         if value != value or value in (float("inf"), float("-inf")):
             rejected[name] = "must be finite"
+            continue
+        if spec.get("dynamic"):
+            # Runtime-bounded (governor caps: the upper bound is an env ceiling
+            # this pure function can't see). Accept any finite value >= 0; the
+            # apply path clamps it to the live ceiling and reports the
+            # disposition (adjusted when it hits the wall).
+            if value < 0:
+                rejected[name] = "must be >= 0"
+            else:
+                applied[name] = value
             continue
         clamped = min(spec["hi"], max(spec["lo"], value))
         applied[name] = clamped

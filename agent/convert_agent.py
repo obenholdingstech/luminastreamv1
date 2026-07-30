@@ -461,6 +461,9 @@ class ConvertAgent:
                 "comfort_noise_db": (comfort.db if comfort is not None else None),
                 "loudness_normalize": self.tts.normalizer.enabled,
                 "loudness_target_db": self.tts.normalizer.target_db,
+                # governor caps as flat knob keys (dynamic — walled by env ceilings)
+                "tts_chars": self.tts.governor.max_tts_chars,
+                "stt_seconds": self.tts.governor.max_stt_seconds,
             })
             # Flatten voice settings to top-level knob keys so the console reads
             # config[knob] uniformly for every knob (sliders + selects + toggles).
@@ -523,6 +526,18 @@ class ConvertAgent:
                             reject(name, f"{why} (model {effective_model})")
                             continue
                         self.tts.tts.apply_voice_setting(name, value)
+                elif target == "governor":
+                    # Session cap knob (ticket 2). The governor clamps to the
+                    # env-only ceiling (the wall) and reports the same three-way
+                    # disposition as every knob: applied, or adjusted when it hit
+                    # the wall. clamp_params already ensured value is finite >= 0.
+                    if self.tts is None:
+                        reject(name, "no governor (--engine rvc)")
+                        continue
+                    applied_value, adj = self.tts.governor.set_cap(name, value)
+                    applied[name] = applied_value
+                    if adj is not None:
+                        adjusted[name] = adj
                 elif name == "prime_hops":
                     self.outgate.prime_samples = knobs.prime_hops_to_samples(value)
                 elif name in ("vad_threshold", "vad_hangover_ms"):
@@ -612,6 +627,7 @@ class ConvertAgent:
         if self.tts is not None:
             voice_choices = [{"id": v["voice_id"], "name": v["name"],
                               "category": v.get("category")} for v in self.tts.voices]
+        spend = self.tts.governor.snapshot() if self.tts is not None else None
         payload = {
             "type": "agent_config",
             "engine": self.engine,
@@ -619,11 +635,12 @@ class ConvertAgent:
             "config": self.config_snapshot(),
             "defaults": knobs.defaults(self.engine),
             "ranges": knobs.ranges(self.engine),
-            "metadata": knobs.metadata(self.engine, voice_choices=voice_choices),
-            # Governor caps + usage as READ-ONLY truth. Spend controls stay
-            # env-only by design — they do not get a slider (see PR). The
-            # console displays them so a drill can watch the caps stay green.
-            "spend": (self.tts.governor.snapshot() if self.tts is not None else None),
+            "metadata": knobs.metadata(self.engine, voice_choices=voice_choices,
+                                       spend=spend),
+            # Governor caps are console knobs now (ticket 2), walled by env-only
+            # ceilings. `spend` carries live usage + the cap + the ceiling so the
+            # console renders the cap sliders (max = ceiling) and the usage line.
+            "spend": spend,
         }
         if adjusted:
             payload["adjusted"] = adjusted

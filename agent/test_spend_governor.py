@@ -12,7 +12,9 @@ from spend_governor import (
     DEFAULT_MAX_STT_SECONDS,
     DEFAULT_MAX_TTS_CHARS,
     ENV_MAX_STT_SECONDS,
+    ENV_MAX_STT_SECONDS_CEILING,
     ENV_MAX_TTS_CHARS,
+    ENV_MAX_TTS_CHARS_CEILING,
     SKIP_MARKER,
     GovernorRefusal,
     SpendGovernor,
@@ -176,7 +178,76 @@ def test_snapshot_shape():
     g.reserve_tts(30)
     g.reserve_stt(2.25)
     assert g.snapshot() == {
-        "tts_chars_used": 30, "tts_chars_cap": 100,
-        "stt_seconds_used": 2.25, "stt_seconds_cap": 10.0,
+        "tts_chars_used": 30, "tts_chars_cap": 100, "tts_chars_ceiling": 100,
+        "stt_seconds_used": 2.25, "stt_seconds_cap": 10.0, "stt_seconds_ceiling": 10.0,
         "tts_calls": 1, "stt_calls": 1, "refusals": 0,
     }
+
+
+# ── two-layer caps: console knob, walled by an env-only ceiling ───────
+
+
+def test_ceiling_defaults_to_the_starting_cap():
+    # Without a ceiling override the wall sits AT the starting cap, so the
+    # console can only ever LOWER spend — the guardrail is never widened.
+    g = SpendGovernor(max_tts_chars=5000, max_stt_seconds=300)
+    assert g.tts_chars_ceiling == 5000 and g.stt_seconds_ceiling == 300
+
+
+def test_set_cap_lowers_freely_below_the_ceiling():
+    g = SpendGovernor(max_tts_chars=5000, max_tts_chars_ceiling=5000)
+    applied, adjusted = g.set_cap("tts_chars", 1200)
+    assert applied == 1200 and adjusted is None
+    assert g.max_tts_chars == 1200          # the live reservation limit moved
+
+
+def test_set_cap_above_the_ceiling_clamps_and_reports():
+    g = SpendGovernor(max_tts_chars=5000, max_tts_chars_ceiling=5000)
+    applied, adjusted = g.set_cap("tts_chars", 999999)
+    assert applied == 5000                  # the wall — client can never breach it
+    assert adjusted == {"requested": 999999, "applied": 5000}
+    assert g.max_tts_chars == 5000
+
+
+def test_a_raised_env_ceiling_lets_the_console_go_higher():
+    g = SpendGovernor(max_tts_chars=5000, max_tts_chars_ceiling=20000)
+    applied, adjusted = g.set_cap("tts_chars", 12000)
+    assert applied == 12000 and adjusted is None    # under the raised wall
+    applied2, adjusted2 = g.set_cap("tts_chars", 25000)
+    assert applied2 == 20000 and adjusted2["applied"] == 20000  # still walled
+
+
+def test_set_cap_below_current_usage_is_allowed():
+    # Clamping the budget below what is already spent is a valid "stop now"; the
+    # cap moves and the next reservation refuses — no special-casing.
+    g = SpendGovernor(max_tts_chars=5000, max_tts_chars_ceiling=5000)
+    g.reserve_tts(4000)
+    applied, adjusted = g.set_cap("tts_chars", 1000)
+    assert applied == 1000 and adjusted is None
+    with pytest.raises(GovernorRefusal):
+        g.reserve_tts(1)                    # 4000 used already exceeds the new cap
+
+
+def test_stt_cap_is_ceiling_walled_too():
+    g = SpendGovernor(max_stt_seconds=300, max_stt_seconds_ceiling=300)
+    applied, adjusted = g.set_cap("stt_seconds", 5000)
+    assert applied == 300.0 and adjusted == {"requested": 5000.0, "applied": 300.0}
+
+
+def test_a_starting_cap_above_its_ceiling_is_clamped_to_the_wall(caplog):
+    # A misconfig (cap env > ceiling env) must NEVER widen the guardrail.
+    g = SpendGovernor(max_tts_chars=9000, max_tts_chars_ceiling=3000)
+    assert g.max_tts_chars == 3000 and g.tts_chars_ceiling == 3000
+
+
+def test_ceiling_env_override(monkeypatch):
+    monkeypatch.setenv(ENV_MAX_TTS_CHARS_CEILING, "20000")
+    monkeypatch.setenv(ENV_MAX_STT_SECONDS_CEILING, "600")
+    g = SpendGovernor(max_tts_chars=5000, max_stt_seconds=300)
+    assert g.tts_chars_ceiling == 20000 and g.stt_seconds_ceiling == 600
+
+
+def test_malformed_ceiling_env_is_fatal(monkeypatch):
+    monkeypatch.setenv(ENV_MAX_TTS_CHARS_CEILING, "banana")
+    with pytest.raises(SystemExit):
+        SpendGovernor(max_tts_chars=5000)

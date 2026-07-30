@@ -768,21 +768,27 @@ export default function LiveKitTest() {
             <div className="mt-4 pt-3 border-t border-[#1A1A2E] flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] font-mono text-[#64748B]">
               <span
                 className="tracking-widest uppercase"
-                title="Spend caps are env-only by design (no sliders). Override with SPIKE_MAX_TTS_CHARS and SPIKE_MAX_STT_SECONDS in the environment."
+                title="The session caps are the sliders in the Spend group above. Each is clamped server-side to an env-only CEILING (SPIKE_MAX_TTS_CHARS_CEILING / SPIKE_MAX_STT_SECONDS_CEILING) — the wall the client can never breach. This line is live usage."
               >
-                Governor · env-only · read-only
+                Governor · usage
               </span>
               <span
-                title={`SPIKE_MAX_TTS_CHARS=${latestSpend.tts_chars_cap} · ${(latestSpend.tts_chars_cap - latestSpend.tts_chars_used).toFixed(0)} left`}
+                title={`cap ${latestSpend.tts_chars_cap}${latestSpend.tts_chars_ceiling != null ? ` · ceiling ${latestSpend.tts_chars_ceiling} (env wall)` : ''} · ${(latestSpend.tts_chars_cap - latestSpend.tts_chars_used).toFixed(0)} left`}
                 style={{ color: thresholdColor(latestSpend.tts_chars_used, latestSpend.tts_chars_cap * 0.8, latestSpend.tts_chars_cap) }}
               >
                 TTS {latestSpend.tts_chars_used}/{latestSpend.tts_chars_cap} chars
+                {latestSpend.tts_chars_ceiling != null && (
+                  <span className="text-[#4A5568]"> ≤ {latestSpend.tts_chars_ceiling}</span>
+                )}
               </span>
               <span
-                title={`SPIKE_MAX_STT_SECONDS=${latestSpend.stt_seconds_cap} · ${(latestSpend.stt_seconds_cap - latestSpend.stt_seconds_used).toFixed(1)} s left`}
+                title={`cap ${latestSpend.stt_seconds_cap} s${latestSpend.stt_seconds_ceiling != null ? ` · ceiling ${latestSpend.stt_seconds_ceiling} s (env wall)` : ''} · ${(latestSpend.stt_seconds_cap - latestSpend.stt_seconds_used).toFixed(1)} s left`}
                 style={{ color: thresholdColor(latestSpend.stt_seconds_used, latestSpend.stt_seconds_cap * 0.8, latestSpend.stt_seconds_cap) }}
               >
                 STT {latestSpend.stt_seconds_used.toFixed(1)}/{latestSpend.stt_seconds_cap.toFixed(0)} s
+                {latestSpend.stt_seconds_ceiling != null && (
+                  <span className="text-[#4A5568]"> ≤ {latestSpend.stt_seconds_ceiling.toFixed(0)}</span>
+                )}
               </span>
               {latestSpend.refusals > 0 && (
                 <span className="text-[#EF4444]">refusals {latestSpend.refusals}</span>
