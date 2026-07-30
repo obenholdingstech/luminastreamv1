@@ -356,7 +356,12 @@ export default function LiveKitTest() {
 
   return (
     <div className="min-h-screen bg-[#080810] text-white">
-      <div className="max-w-2xl mx-auto px-6 py-10">
+      {/* Dev instrument: max-w-4xl (not 2xl) so the two-column knob grid has
+          real room. The grid splits at lg (viewport ≥1024px) while the old
+          672px container stayed narrow, cramming two knobs — and their
+          non-shrinking range inputs — into ~320px each and colliding at the
+          CEO's width (ticket 4). 896px gives each 2-col cell ~432px. */}
+      <div className="max-w-4xl mx-auto px-6 py-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -768,21 +773,27 @@ export default function LiveKitTest() {
             <div className="mt-4 pt-3 border-t border-[#1A1A2E] flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] font-mono text-[#64748B]">
               <span
                 className="tracking-widest uppercase"
-                title="Spend caps are env-only by design (no sliders). Override with SPIKE_MAX_TTS_CHARS and SPIKE_MAX_STT_SECONDS in the environment."
+                title="The session caps are the sliders in the Spend group above. Each is clamped server-side to an env-only CEILING (SPIKE_MAX_TTS_CHARS_CEILING / SPIKE_MAX_STT_SECONDS_CEILING) — the wall the client can never breach. This line is live usage."
               >
-                Governor · env-only · read-only
+                Governor · usage
               </span>
               <span
-                title={`SPIKE_MAX_TTS_CHARS=${latestSpend.tts_chars_cap} · ${(latestSpend.tts_chars_cap - latestSpend.tts_chars_used).toFixed(0)} left`}
+                title={`cap ${latestSpend.tts_chars_cap}${latestSpend.tts_chars_ceiling != null ? ` · ceiling ${latestSpend.tts_chars_ceiling} (env wall)` : ''} · ${(latestSpend.tts_chars_cap - latestSpend.tts_chars_used).toFixed(0)} left`}
                 style={{ color: thresholdColor(latestSpend.tts_chars_used, latestSpend.tts_chars_cap * 0.8, latestSpend.tts_chars_cap) }}
               >
                 TTS {latestSpend.tts_chars_used}/{latestSpend.tts_chars_cap} chars
+                {latestSpend.tts_chars_ceiling != null && (
+                  <span className="text-[#4A5568]"> ≤ {latestSpend.tts_chars_ceiling}</span>
+                )}
               </span>
               <span
-                title={`SPIKE_MAX_STT_SECONDS=${latestSpend.stt_seconds_cap} · ${(latestSpend.stt_seconds_cap - latestSpend.stt_seconds_used).toFixed(1)} s left`}
+                title={`cap ${latestSpend.stt_seconds_cap} s${latestSpend.stt_seconds_ceiling != null ? ` · ceiling ${latestSpend.stt_seconds_ceiling} s (env wall)` : ''} · ${(latestSpend.stt_seconds_cap - latestSpend.stt_seconds_used).toFixed(1)} s left`}
                 style={{ color: thresholdColor(latestSpend.stt_seconds_used, latestSpend.stt_seconds_cap * 0.8, latestSpend.stt_seconds_cap) }}
               >
                 STT {latestSpend.stt_seconds_used.toFixed(1)}/{latestSpend.stt_seconds_cap.toFixed(0)} s
+                {latestSpend.stt_seconds_ceiling != null && (
+                  <span className="text-[#4A5568]"> ≤ {latestSpend.stt_seconds_ceiling.toFixed(0)}</span>
+                )}
               </span>
               {latestSpend.refusals > 0 && (
                 <span className="text-[#EF4444]">refusals {latestSpend.refusals}</span>
@@ -867,6 +878,16 @@ export default function LiveKitTest() {
                           {u.continuity && (
                             <span className="text-[#10B981]" title="conditioned on the previous utterance (request stitching)">
                               🔗 stitched
+                            </span>
+                          )}
+                          {u.loudness?.applied && (
+                            <span
+                              style={{ color: u.loudness.limited ? '#F59E0B' : '#64748B' }}
+                              title={`loudness: in ${u.loudness.in_db} → out ${u.loudness.out_db} dBFS `
+                                + `(gain ${u.loudness.gain_db >= 0 ? '+' : ''}${u.loudness.gain_db} dB)`
+                                + `${u.loudness.limited ? ' · soft limiter engaged on peaks' : ''}`}
+                            >
+                              lvl {u.loudness.out_db}dBFS
                             </span>
                           )}
                         </div>

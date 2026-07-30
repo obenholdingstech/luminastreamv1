@@ -235,6 +235,10 @@ pm) and fcpe (conditional) are deliberately not offered.
 | min_speech_ms | 0–1000 | 200 | instant | gate-open spans with less speech are dropped as blips (no STT call) |
 | queue_wait_warn_ms | 0–5000 | 250 | instant | diagnostic only — a log threshold, not audio |
 | comfort_noise_db | -80…-40 dBFS | -60 | instant | low-level room-tone bed under gate-closed silence so gaps don't feel dead; -80 = off |
+| loudness_normalize | bool | on | next utterance | level each utterance to the target (RMS + soft limiter, never clips); off = raw synthesis |
+| loudness_target_db | -40…-12 dBFS | -20 | next utterance | RMS target; ~-20 dBFS is a natural speech level |
+| tts_chars | 0…ceiling (dynamic) | `SPIKE_MAX_TTS_CHARS` | instant | session synthesis cap; slider max = the env-only ceiling (the wall) |
+| stt_seconds | 0…ceiling (dynamic) | `SPIKE_MAX_STT_SECONDS` | instant | session transcription cap; slider max = the env-only ceiling |
 
 Voice settings are per-request: they take effect on the **next utterance** (the
 UI labels this). Per-model support is enforced both ways — a knob a model
@@ -259,20 +263,47 @@ selector overrides per-session and never writes back to secrets. Export pins the
 voice_id + name. (The shared community Voice Library is a separate surface —
 `/v1/shared-voices` + an add step — and is out of scope here.)
 
-**Comfort noise (ticket 2):** a low-level shaped-noise bed under gate-closed
-silence so conversational gaps don't feel like a dead line. It crossfades at
-utterance boundaries and, at -80 dBFS, is exactly digital zero (off). The
-analyzer is told the bed level (from the capture config) so it classifies the
-bed as intentional silence, never a dropout.
+**Comfort noise:** a low-level shaped-noise bed under gate-closed silence so
+conversational gaps don't feel like a dead line. It crossfades at utterance
+boundaries and, at -80 dBFS, is exactly digital zero (off). The analyzer is told
+the bed level (from the capture config) so it classifies the bed as intentional
+silence, never a dropout.
 
-Governor spend caps are shown **read-only** — spend controls stay env-only by
-design (`SPIKE_MAX_TTS_CHARS` / `SPIKE_MAX_STT_SECONDS`), no slider. For a
-**tuning session**, a generous preset keeps the caps from binding mid-drill
-while still guarding an unattended loop:
+**Loudness normalization (post-Stage-1 ticket 1):** each utterance is measured
+and leveled to `loudness_target_db` (RMS) before it is enqueued, with a soft
+limiter that can never clip — fixing the volume sag between consecutive
+utterances (request continuity holds tone, but Speaker Boost is not a level
+control). **RMS, not integrated LUFS:** BS.1770/EBU R128 integrated loudness is
+defined for program-length material — its 400 ms gating blocks and -10 LU
+relative gate go unstable on short utterances — and the problem is the relative
+level of ONE stationary voice, which RMS tracks directly (K-weighting earns its
+keep across DIFFERENT spectra, not here). The whole short utterance is buffered
+so its RMS is exact; `tts_ttfb_ms` still marks the vendor's first chunk and the
+added enqueue wait is reported per utterance as `enqueue_delay_ms`. Off ⇒ the
+original chunk streaming, byte-identical. See `loudness.py`.
+
+**Governor caps → console knobs, walled by an env-only ceiling (post-Stage-1
+ticket 2 — this REVERSES the earlier "caps stay env-only, no sliders" ruling):**
+the session caps are now the `tts_chars` / `stt_seconds` sliders, so the budget
+can be retuned mid-drill without a restart. The financial guardrail is preserved
+by a two-layer design:
+
+| layer | source | mutable? | role |
+|---|---|---|---|
+| cap | `SPIKE_MAX_TTS_CHARS` | console knob | the live session budget |
+| **ceiling** | `SPIKE_MAX_TTS_CHARS_CEILING` | **env-only** | the wall — clamped server-side, client can never breach |
+
+The ceiling **defaults to the starting cap**, so without a deliberate override
+the console can only ever *lower* spend — an unattended run still cannot spend
+more than today. Any set above the ceiling is clamped and reported with the same
+three-way disposition as every knob. To open headroom for a long **tuning
+session**, raise the wall (env-only) and, optionally, the starting cap:
 
 ```bash
-export SPIKE_MAX_TTS_CHARS=50000      # ~50 min of speech; default 5000
-export SPIKE_MAX_STT_SECONDS=3000     # 50 min of audio;    default 300
+export SPIKE_MAX_TTS_CHARS_CEILING=50000   # the wall (env-only); default = the cap
+export SPIKE_MAX_STT_SECONDS_CEILING=3000
+export SPIKE_MAX_TTS_CHARS=50000           # starting cap ≤ ceiling; default 5000
+export SPIKE_MAX_STT_SECONDS=3000
 ```
 
 Protocol: browser sends `{"type":"set_config","params":{...}}`; the agent
@@ -330,6 +361,13 @@ readings should hold **one delivery** (the panel marks the 2nd and 3rd
 for the tone-drift the CEO's session found — and it is inert on `eleven_v3`,
 which has no stitching.
 
+**Loudness check (ticket 1):** speak several utterances of visibly different
+length/energy (a long sentence, then "yes.", then a medium one). With
+`loudness_normalize` **on**, they should land at a consistent level; **off**,
+the shorter/quieter ones sag. The per-utterance leveling (in → gain → out dBFS)
+rides the transcript panel as `lvl`; the small buffering cost normalization
+trades for exact level is recorded as `enqueue_delay_ms` in the capture.
+
 ## STT→TTS engine (`--engine tts`, the DEFAULT since 28 Jul 2026)
 
 Instead of converting frames, it transcribes each utterance (ElevenLabs
@@ -348,6 +386,16 @@ room (see the deploy section below).
 
 # scripted E2E: publish a WAV into the room as a real-time participant
 ./.venv/bin/python publish_wav.py drill_48k.wav --room luminastream-spike
+```
+
+**Two rooms at once (post-Stage-1 ticket 3):** `--room` is a first-class flag
+(env `LIVEKIT_ROOM`) and is logged in a banner at startup, so two agent
+processes can serve two rooms concurrently — the manual two-session test:
+
+```bash
+LIVEKIT_ROOM=room-A ./.venv/bin/python convert_agent.py &   # terminal 1
+LIVEKIT_ROOM=room-B ./.venv/bin/python convert_agent.py &   # terminal 2
+#   ══════ convert agent · engine=tts · ROOM='room-A' · identity=... ══════
 ```
 
 Needs `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` in the repo-root

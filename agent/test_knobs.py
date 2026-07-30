@@ -363,6 +363,43 @@ def test_dynamic_voice_knob_clamp_and_metadata():
     assert md2["voice"]["choices"] == []
 
 
+def test_dynamic_governor_cap_knobs_clamp_and_metadata():
+    # dynamic float: clamp accepts any finite value >= 0 (the apply path/governor
+    # clamps it to the live env ceiling), rejects negative and non-finite
+    a, _adj, rej = knobs.clamp_params({"tts_chars": 12000, "stt_seconds": 42.5})
+    assert a == {"tts_chars": 12000.0, "stt_seconds": 42.5} and rej == {}
+    assert "tts_chars" in knobs.clamp_params({"tts_chars": -1})[2]        # negative
+    assert "stt_seconds" in knobs.clamp_params({"stt_seconds": float("inf")})[2]
+    # runtime-bounded ⇒ excluded from the static defaults()/ranges()
+    for n in ("tts_chars", "stt_seconds"):
+        assert n not in knobs.defaults("tts")
+        assert n not in knobs.ranges("tts")
+    # metadata injects lo=0 and hi=the live ceiling (the wall the slider maxes at)
+    spend = {"tts_chars_ceiling": 20000, "stt_seconds_ceiling": 600}
+    md = {e["name"]: e for e in knobs.metadata("tts", spend=spend)}
+    assert md["tts_chars"]["lo"] == 0.0 and md["tts_chars"]["hi"] == 20000
+    assert md["stt_seconds"]["hi"] == 600 and md["stt_seconds"]["dynamic"] is True
+    assert md["tts_chars"]["group"] == "Spend"
+    # no spend ⇒ falls back to the registry default ceiling, never crashes / None hi
+    md2 = {e["name"]: e for e in knobs.metadata("tts")}
+    assert md2["tts_chars"]["hi"] == 5000.0 and md2["stt_seconds"]["hi"] == 300.0
+    # governor caps are tts-only — absent from the rvc broadcast
+    assert "tts_chars" not in {e["name"] for e in knobs.metadata("rvc")}
+
+
+def test_loudness_knobs_clamp_and_defaults():
+    a, adj, rej = knobs.clamp_params({"loudness_normalize": False,
+                                      "loudness_target_db": -18.0})
+    assert a == {"loudness_normalize": False, "loudness_target_db": -18.0}
+    assert adj == {} and rej == {}
+    # out-of-range target is clamped (static float), not rejected
+    a2, adj2, _ = knobs.clamp_params({"loudness_target_db": 0.0})   # above hi -12
+    assert a2["loudness_target_db"] == -12.0 and "loudness_target_db" in adj2
+    # both are in the static defaults for tts (not dynamic)
+    d = knobs.defaults("tts")
+    assert d["loudness_normalize"] is True and d["loudness_target_db"] == -20.0
+
+
 def test_model_supports_stitching():
     assert knobs.model_supports_stitching("eleven_flash_v2_5") is True
     assert knobs.model_supports_stitching("eleven_multilingual_v2") is True

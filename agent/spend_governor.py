@@ -27,9 +27,27 @@ SEMANTICS — read this before changing anything here:
    channel, and then the next utterance is processed normally (it may well
    fit — a short one can pass after a long one was refused).
 
-Caps are env-overridable for deliberate longer sessions. A malformed override
-is fatal on purpose: silently falling back to a default is how a guardrail
-becomes a rumor.
+TWO-LAYER CAPS (post-Stage-1 ticket 2) — read this, it reverses an earlier
+ruling on purpose:
+
+  Through #19 the caps were env-only with NO console control ("no sliders").
+  The CEO now wants to adjust the session budget mid-drill without restarting
+  the agent. So the cap becomes a console KNOB (tts_chars / stt_seconds) — but
+  the financial guardrail is preserved by putting an env-only CEILING above it
+  that the client can NEVER breach:
+
+    ENV cap      (SPIKE_MAX_TTS_CHARS)          the STARTING session cap
+    knob         (tts_chars)                    console-adjustable, live
+    ENV ceiling  (SPIKE_MAX_TTS_CHARS_CEILING)  the WALL — env-only, immutable
+
+  Any set is clamped to [0, ceiling] and reported with the same three-way
+  disposition as every other knob (applied / adjusted / rejected). The ceiling
+  DEFAULTS TO THE STARTING CAP, so without a deliberate ceiling override the
+  console can only ever LOWER spend — an unattended run is still physically
+  unable to spend more than today. Raising the budget is a conscious env act.
+
+A malformed override (cap or ceiling) is fatal on purpose: silently falling
+back to a default is how a guardrail becomes a rumor.
 """
 
 import logging
@@ -42,6 +60,10 @@ DEFAULT_MAX_STT_SECONDS = 300.0
 
 ENV_MAX_TTS_CHARS = "SPIKE_MAX_TTS_CHARS"
 ENV_MAX_STT_SECONDS = "SPIKE_MAX_STT_SECONDS"
+
+# The wall: env-only absolute ceilings the console knob can never breach.
+ENV_MAX_TTS_CHARS_CEILING = "SPIKE_MAX_TTS_CHARS_CEILING"
+ENV_MAX_STT_SECONDS_CEILING = "SPIKE_MAX_STT_SECONDS_CEILING"
 
 # The one marker that means "we hit the money cap", never anything else
 SKIP_MARKER = "[governor] utterance skipped (would exceed cap)"
@@ -102,7 +124,8 @@ class SpendGovernor:
     vendor call still costs budget — the safe direction to be wrong in.
     """
 
-    def __init__(self, max_tts_chars=None, max_stt_seconds=None):
+    def __init__(self, max_tts_chars=None, max_stt_seconds=None,
+                 max_tts_chars_ceiling=None, max_stt_seconds_ceiling=None):
         self.max_tts_chars = (
             _env_number(ENV_MAX_TTS_CHARS, DEFAULT_MAX_TTS_CHARS, int)
             if max_tts_chars is None else int(max_tts_chars)
@@ -111,6 +134,28 @@ class SpendGovernor:
             _env_number(ENV_MAX_STT_SECONDS, DEFAULT_MAX_STT_SECONDS, float)
             if max_stt_seconds is None else float(max_stt_seconds)
         )
+        # The wall. Defaults to the starting cap, so an un-overridden ceiling
+        # means the console can only lower spend, never raise it past today.
+        self.tts_chars_ceiling = (
+            _env_number(ENV_MAX_TTS_CHARS_CEILING, self.max_tts_chars, int)
+            if max_tts_chars_ceiling is None else int(max_tts_chars_ceiling)
+        )
+        self.stt_seconds_ceiling = (
+            _env_number(ENV_MAX_STT_SECONDS_CEILING, self.max_stt_seconds, float)
+            if max_stt_seconds_ceiling is None else float(max_stt_seconds_ceiling)
+        )
+        # The wall always wins: a starting cap above its ceiling is clamped down
+        # (a misconfig must never widen the guardrail).
+        if self.max_tts_chars > self.tts_chars_ceiling:
+            log.warning("%s (%d) exceeds its ceiling %s (%d) — clamped to the wall",
+                        ENV_MAX_TTS_CHARS, self.max_tts_chars,
+                        ENV_MAX_TTS_CHARS_CEILING, self.tts_chars_ceiling)
+            self.max_tts_chars = self.tts_chars_ceiling
+        if self.max_stt_seconds > self.stt_seconds_ceiling:
+            log.warning("%s (%.0f) exceeds its ceiling %s (%.0f) — clamped to the wall",
+                        ENV_MAX_STT_SECONDS, self.max_stt_seconds,
+                        ENV_MAX_STT_SECONDS_CEILING, self.stt_seconds_ceiling)
+            self.max_stt_seconds = self.stt_seconds_ceiling
         self.tts_chars_used = 0
         self.stt_seconds_used = 0.0
         self.tts_calls = 0
@@ -119,11 +164,38 @@ class SpendGovernor:
 
     def log_startup(self):
         log.info(
-            "spend caps for this run: TTS %d chars (%s), STT %.0f s (%s) — "
-            "per-process, not persisted",
-            self.max_tts_chars, ENV_MAX_TTS_CHARS,
-            self.max_stt_seconds, ENV_MAX_STT_SECONDS,
+            "spend caps for this run: TTS %d/%d chars (cap/ceiling), STT %.0f/%.0f s "
+            "(cap/ceiling) — cap is console-adjustable up to the env-only ceiling "
+            "(%s / %s); per-process, not persisted",
+            self.max_tts_chars, self.tts_chars_ceiling,
+            self.max_stt_seconds, self.stt_seconds_ceiling,
+            ENV_MAX_TTS_CHARS_CEILING, ENV_MAX_STT_SECONDS_CEILING,
         )
+
+    # ── live cap control (console knob, walled by the env ceiling) ────
+
+    def set_cap(self, meter, value):
+        """Live-adjust a session cap, clamped to its env ceiling — the wall the
+        client can NEVER breach. `meter` is "tts_chars" or "stt_seconds".
+
+        Returns (applied, adjusted_or_None): adjusted = {"requested","applied"}
+        when the request was clamped to the ceiling (or up to 0), else None.
+        Lowering below current usage is allowed — it simply refuses sooner; the
+        ceiling is the only hard upper bound.
+        """
+        if meter == "tts_chars":
+            requested = int(value)
+            applied = max(0, min(requested, self.tts_chars_ceiling))
+            self.max_tts_chars = applied
+        elif meter == "stt_seconds":
+            requested = float(value)
+            applied = max(0.0, min(requested, self.stt_seconds_ceiling))
+            self.max_stt_seconds = applied
+        else:
+            raise ValueError(f"unknown meter {meter!r}")
+        adjusted = None if applied == requested else {"requested": requested,
+                                                      "applied": applied}
+        return applied, adjusted
 
     # ── reservations ─────────────────────────────────────────────────
 
@@ -168,8 +240,10 @@ class SpendGovernor:
         return {
             "tts_chars_used": self.tts_chars_used,
             "tts_chars_cap": self.max_tts_chars,
+            "tts_chars_ceiling": self.tts_chars_ceiling,
             "stt_seconds_used": round(self.stt_seconds_used, 2),
             "stt_seconds_cap": self.max_stt_seconds,
+            "stt_seconds_ceiling": self.stt_seconds_ceiling,
             "tts_calls": self.tts_calls,
             "stt_calls": self.stt_calls,
             "refusals": self.refusals,

@@ -4,6 +4,100 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 30 July 2026 — 05:14 PDT — POST-STAGE-1 POLISH: loudness, governor console, --room, layout (PR pending, HOLD FOR CTO)
+
+### Task (verbatim)
+
+> POST-STAGE-1 POLISH (branch: feat/loudness-governor-console) — four tickets:
+> 1. LOUDNESS NORMALIZATION: per-utterance loudness measurement + normalization
+>    to a target level before enqueue, with a soft limiter (no clipping, ever).
+>    Verify the right measurement approach for short utterances against practice
+>    (RMS vs LUFS-style) and say which you chose and why. Knobs: loudness_normalize
+>    (bool, default on for tts), loudness_target_db. CEO evidence: continuity holds
+>    tone but volume sags across consecutive utterances; Speaker Boost doesn't
+>    address level.
+> 2. GOVERNOR → CONSOLE, CEILING-WALLED: session caps become knobs (tts_chars,
+>    stt_seconds) adjustable from the console, server-side clamped to new env
+>    ceilings (SPIKE_MAX_*_CEILING) that the client can NEVER exceed — requests
+>    above ceiling clamp + report, same three-way disposition as every knob.
+>    Env-only absolute ceiling is the wall; document the two-layer design.
+> 3. AGENT --room FLAG: make the room name a first-class CLI flag/env so two
+>    agent processes can serve two rooms concurrently (the manual two-session
+>    test); log the room prominently at startup.
+> 4. UI LAYOUT LEFTOVERS: the knob grid still collides at CEO's width (ticket 5
+>    of #19 couldn't be live-verified) — fix against the real broadcast,
+>    screenshots in the PR as evidence.
+> Discipline unchanged: clamp-never-crash, applied-truth broadcast, captures,
+> RVC suite green. PR → CodeRabbit → evidence → HOLD for CTO.
+
+### What I did (branched off main; #18/#19/#20 all merged)
+
+- **T1 loudness.** New `loudness.py`: measure each utterance's RMS, level to
+  `loudness_target_db`, soft-knee limiter that ASYMPTOTES to a -1 dBFS ceiling
+  (|out| < full scale for any input → cannot clip). **RMS, not integrated LUFS**
+  — reasoned against BS.1770/EBU R128: integrated loudness gates over 400 ms
+  blocks with a -10 LU relative gate, defined for program-length material and
+  unstable on short utterances; and the problem is the relative level of ONE
+  stationary voice, which RMS tracks directly (K-weighting buys ~nothing for a
+  single spectrum). The engine BUFFERS the short utterance when normalization is
+  on so the RMS is exact before enqueue; `tts_ttfb_ms` still marks the vendor's
+  first chunk, tail is measured at the real enqueue, and the added wait is
+  reported as `enqueue_delay_ms`. OFF ⇒ original chunk streaming, byte-identical.
+  Knobs `loudness_normalize` (bool, default on) + `loudness_target_db` (-40…-12,
+  default -20). Panel shows `lvl <out>dBFS`.
+- **T2 governor two-layer** (REVERSES the #19 "no sliders" ruling, on the CEO's
+  instruction). Caps became dynamic-float knobs `tts_chars`/`stt_seconds` whose
+  slider max is a live env-only CEILING (`SPIKE_MAX_*_CEILING`). set_cap() clamps
+  to [0, ceiling] with the three-way disposition; the ceiling DEFAULTS TO THE
+  STARTING CAP, so without a deliberate override the console can only ever LOWER
+  spend. A starting cap above its ceiling is clamped down; a malformed ceiling
+  env is fatal. dynamic-float clamp branch added; metadata injects lo=0/hi=ceiling
+  from the governor snapshot.
+- **T3 --room.** `--room` is env-aware (`LIVEKIT_ROOM`) and logged in a banner at
+  the very top of `main()`; two agents → two rooms, unambiguous from line one.
+- **T4 layout.** Reproduced the collision: the grid splits 2-col at lg (viewport
+  ≥1024px) but the container was `max-w-2xl` (672px) → ~320px cells, and a
+  `<input type=range>` won't shrink that far so it collapsed to a bare thumb.
+  Fix: widen the dev console to `max-w-4xl` (896px) → ~432px cells. Evidence:
+  `devlog/evidence/knob-grid-before-after.png` at 1440px from the REAL broadcast
+  + the exact KnobRow markup (generator committed for reproducibility).
+
+### Key findings / surprises
+
+- The streaming-vs-exact-RMS tension is real: exact per-utterance leveling needs
+  the whole utterance, so I buffer (short utterances) and report the cost rather
+  than hide it. For the shortest utterances the cost is ~0 (they already wait for
+  force_prime). Keeping OFF byte-identical means the CEO can A/B the latency.
+- The layout bug was NOT label overflow (my #19 truncate fix held) — it was the
+  range input's intrinsic min-width in a viewport/container mismatch. The
+  screenshot made it obvious (sliders → dots in the "before").
+- Ceiling-defaults-to-cap is the crux that keeps this a guardrail, not a hole:
+  the console gains a knob but an un-overridden environment can't spend a cent
+  more than before.
+
+### Files changed
+
+- New: `agent/loudness.py`, `agent/test_loudness.py`, `devlog/evidence/*`.
+- `agent/knobs.py` (loudness + Spend knobs, dynamic-float clamp, ceiling
+  metadata), `agent/tts_engine.py` (buffered normalize path), `agent/convert_agent.py`
+  (apply routing, snapshot, broadcast, --room), `agent/spend_governor.py`
+  (ceilings + set_cap), `src/pages/LiveKitTest.jsx` (max-w-4xl, spend line,
+  loudness panel), `agent/README.md`.
+- Tests: `test_tts_engine.py`, `test_knobs.py`, `test_spend_governor.py`.
+
+### Verification
+
+- **212 py** (+11 over the session start's 201) · **28 node** · lint clean ·
+  typecheck **60 (baseline, 0 in changed files)** · build green.
+- RVC/VAD suites green (`test_bridge.py` + `test_vad.py` = 25) — loudness OFF and
+  the RVC path never construct/touch the normalizer.
+- Agent imports smoke-clean; `--room`/`LIVEKIT_ROOM` verified via `--help`.
+- **Next:** CodeRabbit → evidence replies → **CTO presses merge**. Live E2E =
+  volume-consistency A/B (loudness on/off), a cap slider drill + an over-ceiling
+  raw set (watch the clamp), and two agents in two rooms.
+
+---
+
 ## 30 July 2026 — 04:22 PDT — LOCK IN the tuning-session profile (agent/tts_profile.json, PR pending, HOLD FOR CTO)
 
 ### Task (verbatim)
