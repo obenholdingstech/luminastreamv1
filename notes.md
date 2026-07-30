@@ -2,6 +2,16 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 30 July 2026 — POST-STAGE-1 POLISH: loudness, governor console, --room, layout (branch feat/loudness-governor-console, PR pending, HOLD FOR CTO)
+
+- Four tickets, off main (#18/#19/#20 merged). Commits: loudness+room, governor console, layout, docs.
+- **T1 loudness:** new `loudness.py` — per-utterance RMS leveling to `loudness_target_db` + soft-knee limiter (asymptotes to -1 dBFS, cannot clip). **RMS not integrated LUFS** (LUFS gating unstable on short utterances; one stationary voice → K-weighting moot). Engine buffers the short utterance for exact RMS before enqueue; `enqueue_delay_ms` reports the cost; OFF = byte-identical streaming. Knobs `loudness_normalize` (on) + `loudness_target_db` (-20). Panel shows `lvl`.
+- **T2 governor:** REVERSES #19 "no sliders" — caps are now dynamic-float knobs `tts_chars`/`stt_seconds`, walled by env-only `SPIKE_MAX_*_CEILING`. `set_cap()` clamps to [0,ceiling] w/ three-way disposition. **Ceiling defaults to the starting cap → console can only LOWER spend un-overridden** (guardrail intact). Console renders cap sliders (metadata-driven); spend line reframed.
+- **T3 --room:** env-aware (`LIVEKIT_ROOM`) + startup banner → two agents, two rooms.
+- **T4 layout:** collision was the range input's intrinsic min-width in a viewport(lg)/container(672px) mismatch → sliders became dots. Fix: dev console `max-w-2xl`→`max-w-4xl`. Evidence: `devlog/evidence/knob-grid-before-after.png` (real broadcast, exact markup, 1440px) + committed generator.
+- Verified: 212 py (+11) / 28 node / lint clean / typecheck 60 baseline (0 mine) / build green. RVC+VAD green.
+- **Next:** push, open PR → CodeRabbit → **CTO merges**. Live E2E: loudness on/off A/B, cap-slider + over-ceiling raw-set drill, two-room test.
+
 ## 30 July 2026 — LOCK IN the tuning-session profile (branch chore/lock-tts-profile, PR pending, HOLD FOR CTO)
 
 - Replaced `agent/tts_profile.json` with the CEO's tuning-session **export** (verbatim) and opened a lock-in PR off main (#18+#19 both merged, so the voice/comfort/continuity knobs exist on base).
