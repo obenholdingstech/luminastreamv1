@@ -2,7 +2,20 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
-## 29 July 2026 — TTS TUNING CONSOLE retooled for --engine tts (PR pending, HOLD FOR CTO)
+## 30 July 2026 — CONSOLE POLISH + VOICE CONTINUITY: CEO tuning-session findings (PR pending, HOLD FOR CTO)
+
+- Branch feat/tts-continuity-comfort off main (PR #18 merged first). Six tickets, one PR.
+- **T1 request continuity (tone-drift fix):** verified vs docs — `previous_request_ids` (max 3) via the `request-id` header, full body read first, **NOT on eleven_v3**. Engine conditions each utterance on the prior; resets on session/voice/model change; bool knob `request_continuity` (default on). Panel marks "stitched".
+- **T6 voice selector:** `GET /v1/voices` agent-side (free GET, browser never holds the key); dynamic `voice` enum w/ display names; apply validates + loads the new voice's own settings + resets continuity; refresh button; export pins voice_id+name; ELEVENLABS_VOICE_ID stays startup default. **Shared Library out of scope** (separate machinery) — flagged.
+- **T2 comfort noise:** ComfortNoise bed (LPF white, crossfaded, dBFS) under gate-closed silence; knob `comfort_noise_db` (-80 off…-40); OFF=exact zeros so RVC byte-identical; analyzer taught the floor so the bed classifies as silence.
+- **T3 punctuation:** confirmed transcript reaches synthesis verbatim (test pins ? ! …); panel shows terminal punctuation as the prosody channel.
+- **T4 governor:** env names in tooltip, one-decimal remaining budget, README preset; caps stay env-only.
+- **T5 layout:** knob grid overlap fixed (single-col until lg, min-w-0 + truncate + tabular-nums).
+- Verified: 174 py (+19) / 26 node (+2) / lint clean / typecheck +0 / build green. RVC untouched.
+- **Deviations flagged:** shared Library out of scope; comfort = operator-tuned shaped noise (not auto-derived); continuity via ids not previous_text.
+- **Next:** open PR → CodeRabbit → **CTO presses merge**. Live E2E (continuity ×3, comfort by ear, voice switch) is the acceptance run.
+
+## 29 July 2026 — TTS TUNING CONSOLE retooled for --engine tts (MERGED, PR #18)
 
 - **Retooled the Phase 4 console for tts by EXTENDING the existing path** (registry → set_config under the FIFO lock → clamp → apply → config_change capture → agent_config broadcast → applied-truth badges) — no parallel system. RVC knobs stay (parked engine).
 - **Verified voice_settings against live ElevenLabs docs.** Added the 5th param the brief omitted (`speed`) + a `bool` kind (`use_speaker_boost`) + `tts_model` select. Per-model validation: `eleven_v3` has NO `similarity_boost`/`use_speaker_boost` (quoted from docs) → UI disables with reason, agent rejects the set. Audit picks: `min_speech_ms` (real), `queue_wait_warn_ms` (diagnostic).
