@@ -19,6 +19,10 @@
 // fix and lands with /api/session/create.
 
 const STORAGE_KEY = 'luminastream_identity';
+const CLAIM_KEY = 'luminastream_identity_claims';
+// A tab that holds an identity refreshes its claim on every read. Anything
+// older than this is treated as a closed tab and its identity is free.
+const CLAIM_TTL_MS = 30_000;
 
 // Base36 keeps it short and URL-safe. 8 chars of crypto randomness is ~41
 // bits — far past what a handful of concurrent tabs needs, and it never
@@ -31,24 +35,84 @@ function randomSuffix(length = 8) {
   return out;
 }
 
+// Unique per document, generated in memory at module evaluation. This is the
+// one value a duplicated tab CANNOT inherit: sessionStorage is copied into an
+// auxiliary browsing context, but a fresh document re-evaluates the module and
+// gets a new TAB_ID. That asymmetry is what makes copied identities detectable.
+const TAB_ID = randomSuffix(12);
+
+function readClaims() {
+  try {
+    const raw = globalThis.localStorage?.getItem(CLAIM_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeClaims(claims) {
+  try {
+    globalThis.localStorage?.setItem(CLAIM_KEY, JSON.stringify(claims));
+  } catch {
+    // No localStorage — we lose duplicate-tab detection but never correctness
+    // of the sessionStorage path. Documented limitation, not a failure.
+  }
+}
+
+/** True when another live document currently holds this identity. */
+function heldByAnotherTab(identity, now) {
+  const claim = readClaims()[identity];
+  return Boolean(claim) && claim.tab !== TAB_ID && now - claim.t < CLAIM_TTL_MS;
+}
+
+function claim(identity, now) {
+  const claims = readClaims();
+  // Opportunistically drop expired entries so the record can't grow forever.
+  for (const [id, c] of Object.entries(claims)) {
+    if (!c || now - c.t >= CLAIM_TTL_MS) delete claims[id];
+  }
+  claims[identity] = { tab: TAB_ID, t: now };
+  writeClaims(claims);
+}
+
 /**
  * A stable-per-tab identity, e.g. `studio-k3f9a1zq`.
  *
+ * Stable across reloads in the same tab, distinct in every other tab —
+ * including a tab **duplicated** from this one. Duplication is the case worth
+ * calling out: opening a link with cmd-click, `target="_blank"`, or "Duplicate
+ * Tab" copies the opener's sessionStorage into the new document, so the naive
+ * read would hand back the opener's identity and evict it. We detect that by
+ * cross-checking a claim record in localStorage — which is shared between tabs
+ * rather than copied — against this document's in-memory TAB_ID.
+ *
  * Falls back to a fresh non-persisted value if sessionStorage is unavailable
- * (Safari private mode, embedded webviews, storage disabled). A fresh value
- * is always safe here — worst case a reload looks like a new participant,
- * which is still strictly better than colliding with someone else.
+ * (Safari private mode, embedded webviews). A fresh value is always safe here:
+ * worst case a reload looks like a new participant, which is still strictly
+ * better than colliding with someone else.
+ *
+ * Residual limitation, deliberately accepted: a tab that dies without clearing
+ * its claim keeps it for CLAIM_TTL_MS, so a reload inside that window mints a
+ * new identity instead of reclaiming the old one. Erring toward a spare
+ * participant beats erring toward an eviction. Server-side allocation via
+ * /api/session/create removes the guesswork entirely.
  *
  * @param {string} prefix Human-readable role, e.g. 'studio' or 'devtools'.
  * @returns {string}
  */
 export function getSessionIdentity(prefix = 'studio') {
   const key = `${STORAGE_KEY}_${prefix}`;
+  const now = Date.now();
   try {
     const existing = globalThis.sessionStorage?.getItem(key);
-    if (existing) return existing;
+    if (existing && !heldByAnotherTab(existing, now)) {
+      claim(existing, now); // refresh our lease
+      return existing;
+    }
     const fresh = `${prefix}-${randomSuffix()}`;
     globalThis.sessionStorage?.setItem(key, fresh);
+    claim(fresh, now);
     return fresh;
   } catch {
     return `${prefix}-${randomSuffix()}`;

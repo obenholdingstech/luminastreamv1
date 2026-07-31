@@ -183,11 +183,19 @@ export function useLiveKitVoice(url, token) {
           // One agent adopts one speaker. Arriving second means silence with
           // no explanation, which reads as a broken pipeline — so the agent
           // says so out loud and we surface it.
-          setAgentBusy({
-            processing: typeof msg.processing === 'string' ? msg.processing : null,
-            ignored: typeof msg.ignored === 'string' ? msg.ignored : null,
-            reason: msg.reason ?? null,
-          });
+          //
+          // But data messages go to the WHOLE room, and this one names a
+          // specific victim. Filtered here rather than in the UI so no
+          // consumer can render "you are not being processed" at the person
+          // whose audio is, in fact, being processed.
+          const me = newRoom.localParticipant?.identity;
+          if (typeof msg.ignored === 'string' && msg.ignored === me) {
+            setAgentBusy({
+              processing: typeof msg.processing === 'string' ? msg.processing : null,
+              ignored: msg.ignored,
+              reason: msg.reason ?? null,
+            });
+          }
         } else if (msg?.type === 'tts_utterance') {
           // agent-confirmed utterance result — applied-truth, same rules
           setUtterances((prev) =>

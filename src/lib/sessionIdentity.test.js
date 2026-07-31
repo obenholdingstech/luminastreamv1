@@ -7,17 +7,42 @@ import assert from 'node:assert/strict';
 
 import { getSessionIdentity, resetSessionIdentity } from './sessionIdentity.js';
 
-function installStorage() {
-  const map = new Map();
-  globalThis.sessionStorage = {
-    getItem: (k) => (map.has(k) ? map.get(k) : null),
-    setItem: (k, v) => map.set(k, String(v)),
-    removeItem: (k) => map.delete(k),
+function makeStorage(seed = new Map()) {
+  const map = new Map(seed);
+  return {
+    map,
+    api: {
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => map.set(k, String(v)),
+      removeItem: (k) => map.delete(k),
+    },
   };
-  return map;
+}
+
+// localStorage is SHARED between tabs — never copied — so it is where the
+// claim record lives. sessionStorage is per-tab but IS copied into a
+// duplicated tab, which is the hole the claim record closes.
+let sharedLocal;
+
+function installStorage(seed) {
+  const s = makeStorage(seed);
+  globalThis.sessionStorage = s.api;
+  return s.map;
+}
+
+/** Snapshot of the current tab's sessionStorage — what a duplicate inherits. */
+function sharedSessionSeed() {
+  const out = new Map();
+  for (const k of ['luminastream_identity_studio', 'luminastream_identity_devtools']) {
+    const v = globalThis.sessionStorage.getItem(k);
+    if (v !== null) out.set(k, v);
+  }
+  return out;
 }
 
 beforeEach(() => {
+  sharedLocal = makeStorage();
+  globalThis.localStorage = sharedLocal.api;
   installStorage();
 });
 
@@ -32,6 +57,61 @@ test('a second tab gets a different identity — this is the whole bug', () => {
   installStorage(); // a fresh tab starts with empty sessionStorage
   const tabB = getSessionIdentity('studio');
   assert.notEqual(tabA, tabB);
+});
+
+test('a DUPLICATED tab does not reuse the opener identity', async () => {
+  // cmd-click / target="_blank" / "Duplicate Tab" copies the opener's
+  // sessionStorage into the new document. The naive read would hand back the
+  // opener's identity and evict it — the exact bug this module exists to stop.
+  const opener = getSessionIdentity('studio');
+
+  // A new document re-evaluates the module, so it gets a fresh in-memory
+  // TAB_ID. Cache-busting import is how we get a genuinely separate instance.
+  const dup = await import('./sessionIdentity.js?tab=duplicate');
+  installStorage(sharedSessionSeed()); // ← copied storage, as the browser does
+  const copied = dup.getSessionIdentity('studio');
+
+  assert.notEqual(copied, opener, 'duplicated tab reused the opener identity');
+});
+
+test('the opener keeps its identity after a duplicate steals nothing', async () => {
+  const opener = getSessionIdentity('studio');
+  const openerStorage = sharedSessionSeed();
+
+  const dup = await import('./sessionIdentity.js?tab=duplicate2');
+  installStorage(openerStorage);
+  dup.getSessionIdentity('studio');
+
+  // Opener re-reads (e.g. on reconnect) and must still be itself.
+  installStorage(openerStorage);
+  assert.equal(getSessionIdentity('studio'), opener);
+});
+
+test('an expired claim is reclaimable — a closed tab does not hold forever', () => {
+  const first = getSessionIdentity('studio');
+  // Age every claim past the TTL, as if that tab had been closed.
+  const claims = JSON.parse(globalThis.localStorage.getItem('luminastream_identity_claims'));
+  for (const c of Object.values(claims)) c.t -= 60_000;
+  globalThis.localStorage.setItem('luminastream_identity_claims', JSON.stringify(claims));
+
+  // Same tab, same storage → reclaims rather than churning a new name.
+  assert.equal(getSessionIdentity('studio'), first);
+});
+
+test('claim record does not grow without bound', () => {
+  for (let i = 0; i < 40; i += 1) {
+    installStorage();
+    getSessionIdentity('studio');
+  }
+  const claims = JSON.parse(globalThis.localStorage.getItem('luminastream_identity_claims'));
+  // Expired entries are swept on write; only live leases survive.
+  assert.ok(Object.keys(claims).length <= 40);
+});
+
+test('missing localStorage degrades without throwing', () => {
+  globalThis.localStorage = undefined;
+  assert.doesNotThrow(() => getSessionIdentity('studio'));
+  assert.match(getSessionIdentity('studio'), /^studio-/);
 });
 
 test('never returns the old hardcoded literal', () => {
