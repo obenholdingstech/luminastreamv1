@@ -307,6 +307,13 @@ class ConvertAgent:
         if self.process_task and not self.process_task.done():
             log.warning("already processing %s — ignoring %s",
                         self.processed_identity, participant.identity)
+            # Tell the room, don't just log it. One agent adopts exactly one
+            # speaker; anyone arriving second gets silence back and no reason
+            # for it. Silence that looks like a broken pipeline is the worst
+            # failure mode we ship — a second speaker must be able to see that
+            # they are being ignored, and by whom. Room-per-session removes
+            # the condition; until then this makes it legible.
+            self._spawn(self._publish_busy(participant.identity))
             return
         self.processed_identity = participant.identity
         self.process_task = asyncio.ensure_future(self._process(track, participant.identity))
@@ -378,6 +385,31 @@ class ConvertAgent:
         if self.capture:
             self.capture.event("mode_change", mode=mode, reason=reason)
         log.info("mode → %s%s", mode, f" ({reason})" if reason else "")
+
+    async def _publish_busy(self, ignored_identity):
+        """Broadcast that a second speaker is being ignored.
+
+        Additive and backward-compatible: older frontends do not know the
+        `agent_busy` type and ignore it, exactly as they ignore unknown keys
+        on `agent_mode`.
+        """
+        if self.room.connection_state != rtc.ConnectionState.CONN_CONNECTED:
+            return
+        payload = {
+            "type": "agent_busy",
+            "processing": self.processed_identity,
+            "ignored": ignored_identity,
+            "reason": "one_speaker_per_agent",
+        }
+        if self.capture:
+            self.capture.event("agent_busy", **{k: v for k, v in payload.items()
+                                                if k != "type"})
+        try:
+            await self.room.local_participant.publish_data(
+                json.dumps(payload), reliable=True
+            )
+        except Exception as exc:
+            log.error("failed to publish agent_busy: %s", exc)
 
     async def _publish_mode(self):
         if self.room.connection_state != rtc.ConnectionState.CONN_CONNECTED:

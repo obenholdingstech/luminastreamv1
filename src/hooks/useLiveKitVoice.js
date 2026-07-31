@@ -35,6 +35,10 @@ export function useLiveKitVoice(url, token) {
   // the source of truth; null until the first agent_mode message arrives
   const [agentMode, setAgentMode] = useState(null);
   const [agentModeReason, setAgentModeReason] = useState(null);
+  // Set when the agent reports it is already serving another speaker. Until
+  // room-per-session lands, a second participant is ignored and would
+  // otherwise just hear nothing.
+  const [agentBusy, setAgentBusy] = useState(null);
   // Mic capture constraints (Phase 2 experiment) — survive across sessions;
   // applied at publish time and re-applied live via restartTrack
   const [captureConstraints, setCaptureConstraints] = useState(DEFAULT_CAPTURE_CONSTRAINTS);
@@ -102,6 +106,7 @@ export function useLiveKitVoice(url, token) {
     setAudioBlocked(false);
     setAgentMode(null);
     setAgentModeReason(null);
+    setAgentBusy(null);
     setAppliedConstraints(null);
     setAgentConfig(null);
     setUtterances([]);
@@ -173,6 +178,15 @@ export function useLiveKitVoice(url, token) {
             spend: msg.spend ?? null,
             adjusted: msg.adjusted ?? null,
             rejected: msg.rejected ?? null,
+          });
+        } else if (msg?.type === 'agent_busy') {
+          // One agent adopts one speaker. Arriving second means silence with
+          // no explanation, which reads as a broken pipeline — so the agent
+          // says so out loud and we surface it.
+          setAgentBusy({
+            processing: typeof msg.processing === 'string' ? msg.processing : null,
+            ignored: typeof msg.ignored === 'string' ? msg.ignored : null,
+            reason: msg.reason ?? null,
           });
         } else if (msg?.type === 'tts_utterance') {
           // agent-confirmed utterance result — applied-truth, same rules
@@ -438,6 +452,7 @@ export function useLiveKitVoice(url, token) {
     audioBlocked,
     agentMode,
     agentModeReason,
+    agentBusy,
     captureConstraints,
     appliedConstraints,
     agentConfig,
