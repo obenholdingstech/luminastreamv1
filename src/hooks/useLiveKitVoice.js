@@ -35,6 +35,10 @@ export function useLiveKitVoice(url, token) {
   // the source of truth; null until the first agent_mode message arrives
   const [agentMode, setAgentMode] = useState(null);
   const [agentModeReason, setAgentModeReason] = useState(null);
+  // Set when the agent reports it is already serving another speaker. Until
+  // room-per-session lands, a second participant is ignored and would
+  // otherwise just hear nothing.
+  const [agentBusy, setAgentBusy] = useState(null);
   // Mic capture constraints (Phase 2 experiment) — survive across sessions;
   // applied at publish time and re-applied live via restartTrack
   const [captureConstraints, setCaptureConstraints] = useState(DEFAULT_CAPTURE_CONSTRAINTS);
@@ -102,6 +106,7 @@ export function useLiveKitVoice(url, token) {
     setAudioBlocked(false);
     setAgentMode(null);
     setAgentModeReason(null);
+    setAgentBusy(null);
     setAppliedConstraints(null);
     setAgentConfig(null);
     setUtterances([]);
@@ -174,6 +179,23 @@ export function useLiveKitVoice(url, token) {
             adjusted: msg.adjusted ?? null,
             rejected: msg.rejected ?? null,
           });
+        } else if (msg?.type === 'agent_busy') {
+          // One agent adopts one speaker. Arriving second means silence with
+          // no explanation, which reads as a broken pipeline — so the agent
+          // says so out loud and we surface it.
+          //
+          // But data messages go to the WHOLE room, and this one names a
+          // specific victim. Filtered here rather than in the UI so no
+          // consumer can render "you are not being processed" at the person
+          // whose audio is, in fact, being processed.
+          const me = newRoom.localParticipant?.identity;
+          if (typeof msg.ignored === 'string' && msg.ignored === me) {
+            setAgentBusy({
+              processing: typeof msg.processing === 'string' ? msg.processing : null,
+              ignored: msg.ignored,
+              reason: msg.reason ?? null,
+            });
+          }
         } else if (msg?.type === 'tts_utterance') {
           // agent-confirmed utterance result — applied-truth, same rules
           setUtterances((prev) =>
@@ -438,6 +460,7 @@ export function useLiveKitVoice(url, token) {
     audioBlocked,
     agentMode,
     agentModeReason,
+    agentBusy,
     captureConstraints,
     appliedConstraints,
     agentConfig,

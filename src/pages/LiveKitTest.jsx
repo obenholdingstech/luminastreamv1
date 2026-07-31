@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ConnectionQuality, ConnectionState } from 'livekit-client';
 import { KNOB_STATE_COLORS, knobDisplay, knobState } from '@/lib/knobState';
 import { buildConfigExport, configExportFilename } from '@/lib/configExport';
+import { getSessionIdentity } from '@/lib/sessionIdentity';
 import {
   Activity,
   AlertTriangle,
@@ -262,6 +263,7 @@ export default function LiveKitTest() {
     audioBlocked,
     agentMode,
     agentModeReason,
+    agentBusy,
     captureConstraints,
     appliedConstraints,
     agentConfig,
@@ -300,7 +302,11 @@ export default function LiveKitTest() {
   const apiConfigured = Boolean(API_BASE);
   const [adminPassword, setAdminPassword] = useState('');
   const [mintRoom, setMintRoom] = useState('luminastream-test');
-  const [mintIdentity, setMintIdentity] = useState('test-user');
+  // Per-tab, never a shared literal. 'test-user' meant every participant
+  // collided and LiveKit evicted whoever was already connected — the bug
+  // that reads like a flaky connection but is a name clash. Lazy initializer
+  // so sessionStorage is touched once, not on every render.
+  const [mintIdentity, setMintIdentity] = useState(() => getSessionIdentity('devtools'));
   const [adminToken, setAdminToken] = useState('');
   const [minting, setMinting] = useState(false);
   const [mintError, setMintError] = useState('');
@@ -547,6 +553,35 @@ export default function LiveKitTest() {
             </div>
           )}
         </div>
+
+        {/* One agent serves one speaker. Arriving second means silence with no
+            explanation — the single most misleading state we can ship, because
+            it is indistinguishable from a broken pipeline. The agent broadcasts
+            agent_busy; we make it loud. Removed by room-per-session. */}
+        {agentBusy && (
+          <div
+            role="status"
+            className="bg-[#1A1206] border border-[#F59E0B]/40 rounded-lg p-4 mb-6"
+          >
+            <div className="text-[11px] tracking-widest uppercase text-[#F59E0B] mb-1">
+              Agent busy — you are not being processed
+            </div>
+            <p className="text-[11px] text-[#94A3B8] leading-relaxed">
+              This agent is already converting{' '}
+              <span className="font-mono text-[#E2E8F0]">
+                {agentBusy.processing ?? 'another participant'}
+              </span>
+              . Your microphone is reaching the room, but nothing is being
+              transformed and you will hear no converted audio back.
+            </p>
+            <p className="mt-2 text-[9px] text-[#4A5568] leading-relaxed">
+              One agent process adopts exactly one speaker. Use a different room
+              (agent <span className="font-mono">--room</span>) to run a second
+              session. Per-session rooms land with{' '}
+              <span className="font-mono">/api/session/create</span>.
+            </p>
+          </div>
+        )}
 
         {/* Voice mode — talks to the convert agent over the data channel.
             The buttons only REQUEST a mode; the indicator shows what the
