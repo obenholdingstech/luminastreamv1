@@ -48,12 +48,20 @@ guide her through them and verify the pasted output. Never ask for the
 box's credentials; never propose a command that would print secrets.
 
 ## Fire-up runbook (CEO executes, Claude verifies)
-```
+```sh
 ssh lumina@<vps-host>
-cd ~/luminastreamv1 && git pull                                    # code FIRST
-cd agent && ./.venv/bin/python -m pip install -r requirements.txt  # deps SECOND
-./.venv/bin/python lk_smoke.py                                     # GATE: CONNECTED OK
-tmux new -s agent        # or: tmux attach -t agent
+
+# code FIRST — and the branch check is the doctrine, not a formality:
+# a plain `git pull` deploys whatever branch the box happens to be on.
+cd ~/luminastreamv1 && git switch main && git pull --ff-only origin main
+
+# deps SECOND
+cd agent && ./.venv/bin/python -m pip install -r requirements.txt
+
+./.venv/bin/python lk_smoke.py            # GATE: must print CONNECTED OK
+
+# attach-or-create: plain `tmux new -s agent` errors if the session exists
+tmux attach -t agent 2>/dev/null || tmux new -s agent
 
 # optional session-cap raise for a long tuning session:
 #   export SPIKE_MAX_TTS_CHARS=20000
@@ -64,6 +72,13 @@ tmux new -s agent        # or: tmux attach -t agent
 
 # detach: Ctrl-B then D
 ```
+
+**One agent process per room.** If the `agent` session already exists and
+has a live agent in it, stop that agent (Ctrl-C) before launching another
+against the same room — two processes sharing the default identity collide
+on LiveKit. A *second* room is fine and is the supported pattern: launch it
+with `--room <name>` (and give it its own `--identity` if you also override
+the default).
 
 **Startup gates, in this order — do not proceed past a missing one:**
 `STT READY` → `TTS READY (TTFB …ms)` → `PREFLIGHT OK` → connected to room.

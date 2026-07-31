@@ -4,13 +4,12 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 ## 31 July 2026 — RECORD REPAIR: the VPS deploy already happened (branch fix/vps-record-repair, PR pending, HOLD FOR CEO)
 
-- **The record had a hole and it produced a false history.** The incoming CTO read `notes.md:71` ("Amy to place it, I did not copy it"), found no VPS drill in `devlog/`, and concluded the TTS engine had never run on the VPS — reporting the migration as the biggest unclaimed win. Wrong. It was claimed on 29 Jul and graded.
-- **What actually happened, 29 Jul 2026:** Amy placed `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` into the VPS `secrets.env` by hand (`read -rs` piped append — values never on screen). The TTS engine then cleared its preflight gates and ran a full live drill on the box. Capture: `agent/captures/vps_drill1/20260729-221506-696613` (session header `wall_time 2026-07-29T22:15`, produced at `lumina@luminastream`).
-- **Measured on VPS topology:** tail p50 **648 ms** / p95 1924 ms (p95 = one cold-start utterance, since fixed by warm-on-join in PR #18); steady-state TTS TTFB **81–129 ms**. The Mac-over-Starlink baseline was ~340 ms TTFB — these numbers are impossible from the Mac and are the proof the drill ran where it says it ran.
-- **The CEO's formal scores were earned on this topology:** clean 8 / latency-feel 8.3 / is-it-ME 8.5 → **8.7 overall**. The `notes.md:57` "clean 7/10" line is the *earlier* verbal impression from the Mac topology, not this scorecard.
-- **Method was right, record was incomplete.** Repo-over-handover stands. The fix is the record: CEO-run drills now get analyzer report + scores committed the same day (added to `CLAUDE.md` conventions). Also added a full **VPS OPERATIONS** section to `CLAUDE.md` — the box, the no-SSH wall, the fire-up runbook, pull-then-pip, VPS-tracks-main, the Starlink DNS hazard. Host address deliberately left as a placeholder: this repo is PUBLIC and `.gitignore` exists to keep raw VPS IPs out of it.
-- **Stage 2 baseline re-derived: VPS TTS = 648 ms measured.** The next latency work is optimization *from* 648, not a migration that already happened. Removed the phantom "VPS move" track from the Stage 2 plan.
-- **Next:** CEO pastes the full analyzer report from the capture dir → append to the `devlog/SESSIONS.md` entry as source material → PR → CodeRabbit → **CEO presses merge**.
+- **The VPS deploy already happened.** Amy placed the ElevenLabs keys by hand on 29 Jul and the TTS engine ran a full live drill on the box that night: tail p50 **648 ms**, steady-state TTFB 81–129 ms, CEO scorecard **8.7 overall** (clean 8 / latency-feel 8.3 / is-it-ME 8.5 — the first is-it-ME judgement ever made). Never logged.
+- **So the incoming CTO reconstructed a false history** from `notes.md:71` + an empty `devlog/`, and reported the completed migration as the biggest unclaimed win. Method (repo over handover) stands; the record had the hole.
+- **Fix:** `CLAUDE.md` gains a **VPS OPERATIONS** section (box, no-SSH wall, fire-up runbook + gates, pull-then-pip, VPS-tracks-main, Starlink DNS hazard) and a new convention — CEO-run drills logged the SAME DAY. Host left as a placeholder; repo is PUBLIC.
+- `notes.md:63`/`:71` corrected in place with dated markers; 29 Jul drill backfilled to `devlog/SESSIONS.md`.
+- **Stage 2 baseline re-derived: 648 ms.** Remaining latency work is optimization *from* 648; the "VPS move" track is struck from the plan, replaced by the never-run capacity test.
+- **Next:** CEO pastes the analyzer report → append to the 29 Jul entry (marked ⛔ incomplete until then) → **CEO presses merge** on PR #22.
 
 ## 30 July 2026 — POST-STAGE-1 POLISH: loudness, governor console, --room, layout (branch feat/loudness-governor-console, PR pending, HOLD FOR CTO)
 

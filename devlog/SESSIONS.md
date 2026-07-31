@@ -10,11 +10,42 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 > You are now the CTO and Lead Developer for LuminaStream. The previous CTO (a web
 > chat instance) was fired for losing the core product vision. I am the CEO.
+>
 > Your first mandatory task is to read CTO_HANDOVER.md, review our entire codebase,
-> to understand where we are and where we are headed. [...] Confirm you have read
-> the codebase and the handover file. Tell me exactly how the VPS is currently
-> working, summarize the previous CTO's mistake, and outline your exact step-by-step
-> plan to kick off Stage 2.
+> to understand where we are and where we are headed.
+>
+> YOUR OPERATING RULES:
+>
+> Alignment First: We have not started coding Stage 2 yet. Once you read the
+> handover, you must summarize the previous CTO's mistake to prove you understand
+> the 'Lens' vision (Virtual Camera + Virtual Mic), and align with me before
+> writing code.
+>
+> Tooling & MCPs: You are authorized to install and configure any necessary MCP
+> servers, skills, or sub-agents required for speed, accuracy, and execution, and
+> plan ahead for the business logic and how we are going to approach this project.
+> This includes tools for Git hygiene e.g creating pr before edit,commiting,
+> waiting for coderabbit review, merge & sync local etc. because were designing for
+> scale and for others to join etc, filesystem management, and UI/UX design (our
+> product must be highly elegant with animated UIs, never something generic), tools
+> that gives you eyes and ears if needed to be able to see what were doing when it
+> comes to virtuals.
+>
+> Execution & Ownership: You write the code. If you need to spawn sub-agents for
+> parallel tasks, you create and align them, but you own the final integration.
+>
+> Enterprise Scale: You must build for scale immediately. Implement proper caching,
+> rate-limiting, and performance safeguards etc. Remember the mobile limitations and
+> browser throttling physics from the handover. and you have the permision recommend
+> whats best i want us to fasten up things while not compromising quality, security,
+> performance.
+>
+> Plain English: You are highly technical, but when you speak to me, you explain
+> your decisions, tradeoffs, and risks in plain, digestible English.
+>
+> Confirm you have read the codebase and the handover file. Tell me exactly how the
+> VPS is currently working, summarize the previous CTO's mistake, and outline your
+> exact step-by-step plan to kick off Stage 2.
 
 Followed mid-session by a **VPS RECORD CORRECTION + OPERATIONS BRIEFING** from the
 CEO correcting my report and specifying three writes (see below).
@@ -86,11 +117,12 @@ password oracle becomes unthrottled and nothing errors.
 ### A deliberate deviation, flagged
 
 The CEO's briefing said to write "everything under THE VPS, COMPLETE" into
-`CLAUDE.md`. **`CLAUDE.md` is a tracked file and this repo is PUBLIC.** The raw VPS
-IP, the `lumina@host` SSH pair, and the LiveKit project subdomain appear in **zero**
-tracked files today — `.gitignore` carries an explicit rule ("Ops handover notes —
-contain raw VPS IPs/port maps; never commit") that exists to keep it that way.
-Committing them verbatim would be a new public exposure of infrastructure specifics.
+`CLAUDE.md`. **`CLAUDE.md` is a tracked file and this repo is PUBLIC.** Before this
+commit, the raw VPS IP, the concrete `lumina@host` value, and the LiveKit project
+subdomain appeared in **zero** tracked files — `.gitignore` carries an explicit rule
+("Ops handover notes — contain raw VPS IPs/port maps; never commit") that exists to
+keep it that way. Committing the literals would be a new public exposure of
+infrastructure specifics.
 
 I wrote the section complete with those three literals as placeholders pointing at
 where the real values live. Nothing operational is lost — Claude has no SSH to the
@@ -102,8 +134,10 @@ the CEO for override; one word and I inline them.**
 - `scripts/check-live.sh` → PASS on all three layers (Worker `/api/health`,
   Pages `/`, Pages `/livekit-test`).
 - Docs-only change: no code touched, no test suite affected.
-- `git grep` confirms the VPS IP, `lumina@`, and the LiveKit subdomain remain
-  absent from all tracked files after this commit.
+- `git grep` confirms that no raw VPS IP, no concrete `lumina@host` value, and no
+  LiveKit subdomain is tracked after this commit. **Placeholders deliberately
+  remain** — `CLAUDE.md` carries `ssh lumina@<vps-host>` so the runbook reads as a
+  runbook; the literal host is what stays out.
 
 ### Next
 
@@ -446,8 +480,16 @@ Open PR via gh → CodeRabbit → evidence replies → **HOLD MERGE for CTO**.
 
 ### Source material
 
-The full analyzer report from the capture directory is to be pasted by the CEO and
-appended here verbatim. **Placeholder — this entry is not complete until it lands.**
+> ### ⛔ TODO — THIS ENTRY IS INCOMPLETE
+>
+> The full analyzer report from
+> `agent/captures/vps_drill1/20260729-221506-696613` has **not** been appended.
+> The CEO pastes it; it goes here verbatim.
+>
+> **Until it lands, every number in this entry is transcribed from the CEO's
+> briefing, not from a committed artifact.** That is exactly the condition this
+> entry was written to end. Do not treat this record as closed, and do not cite
+> its figures as evidence elsewhere without saying where they came from.
 
 ### Consequences for Stage 2
 
