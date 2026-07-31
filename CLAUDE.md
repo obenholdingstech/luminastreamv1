@@ -53,10 +53,15 @@ check meant to catch a mis-parented branch is exactly the check that fails
 open:
 
 ```sh
-git fetch origin
-git merge-base --is-ancestor origin/main HEAD   # must succeed
-git log --oneline origin/main..HEAD             # must show ONLY this PR's commits
+git fetch origin \
+  && git merge-base --is-ancestor origin/main HEAD \
+  && git log --oneline origin/main..HEAD   # must show ONLY this PR's commits
 ```
+
+Chained with `&&` deliberately: if the fetch fails, the ancestry test would
+run against a stale `origin/main`; if the ancestry test fails, the branch is
+mis-parented and the log output is meaningless. Each step is a precondition
+for the next, so the chain must fail closed.
 
 **The three human-only walls are unchanged and are not covered by that
 permission:** credential minting/scoping, DNS and custom domains, and
