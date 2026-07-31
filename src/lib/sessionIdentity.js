@@ -95,10 +95,17 @@ export function releaseSessionClaims() {
 if (typeof globalThis.addEventListener === 'function') {
   globalThis.addEventListener('pagehide', releaseSessionClaims);
   globalThis.addEventListener('pageshow', () => {
-    const now = Date.now();
-    for (const prefix of ['studio', 'devtools']) {
-      const held = globalThis.sessionStorage?.getItem(`${STORAGE_KEY}_${prefix}`);
-      if (held) claim(held, now);
+    // Optional chaining does not help here: in Safari private mode the
+    // `sessionStorage` getter itself throws, so the access must be guarded.
+    // Nothing to restore is a fine outcome — never a thrown handler.
+    try {
+      const now = Date.now();
+      for (const prefix of ['studio', 'devtools']) {
+        const held = globalThis.sessionStorage?.getItem(`${STORAGE_KEY}_${prefix}`);
+        if (held) claim(held, now);
+      }
+    } catch {
+      // Storage unavailable — skip claim restoration.
     }
   });
 }
