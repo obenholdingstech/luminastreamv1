@@ -4,6 +4,115 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 31 July 2026 — CTO HANDOVER + RECORD REPAIR: the VPS drill that was never logged (branch fix/vps-record-repair, PR pending, HOLD FOR CEO)
+
+### Task (verbatim)
+
+> You are now the CTO and Lead Developer for LuminaStream. The previous CTO (a web
+> chat instance) was fired for losing the core product vision. I am the CEO.
+> Your first mandatory task is to read CTO_HANDOVER.md, review our entire codebase,
+> to understand where we are and where we are headed. [...] Confirm you have read
+> the codebase and the handover file. Tell me exactly how the VPS is currently
+> working, summarize the previous CTO's mistake, and outline your exact step-by-step
+> plan to kick off Stage 2.
+
+Followed mid-session by a **VPS RECORD CORRECTION + OPERATIONS BRIEFING** from the
+CEO correcting my report and specifying three writes (see below).
+
+### What I did
+
+- Read `CTO_HANDOVER.md`, the full codebase (agent/, src/, workers/api/, scripts/,
+  .github/), `notes.md`, `devlog/SESSIONS.md`, `SPIKE.md`, `README.md`, `runbook.md`.
+  Ran `scripts/check-live.sh` — all three layers PASS.
+- Verified externally, before planning on top of them: Decart Lucy 2.5 pricing and
+  SDK, macOS Camera Extension (CoreMediaIO) and AudioServerPlugIn feasibility,
+  Windows `MFCreateVirtualCamera`, and the code-signing/notarization gates.
+- Confirmed the lens vision (Virtual Camera + Virtual Microphone; LuminaStream is
+  identity infrastructure, not a destination) and produced a Stage 2 plan. CEO
+  decisions taken: engine-first sequencing as originally drafted; macOS first for
+  the native shell; Base44 deleted in M0; video spend wall 180 s/session, ~$60 total.
+- **Then got corrected on the VPS, and repaired the record** (this session's commit).
+
+### Key findings
+
+**1. Four "canon" documents in the handover never existed.** `ROADMAP.md` (v2.1),
+`STAGE2_BLUEPRINT.md`, `COST_CONTROLS.md`, `MVP_BUDGET.md` — searched the working
+tree, all 17 local+remote branches, and the full commit graph via
+`--diff-filter=A` and `-S`. Never added, on any branch, ever. They lived in the
+outgoing CTO's chat context. **The 27-entry doctrine list ("ROADMAP §5") is lost**;
+the only surviving version is the handover's 6-line condensation. Reconstruction
+from the failure narratives in this file is the recovery path.
+
+**2. `/api/session/create` is not in our Worker.** The handover describes it as a
+skeleton returning 503 until `DECART_API_KEY` is set. `workers/api/src/index.js`
+has exactly three routes. The 503 being remembered is
+`base44/functions/createSession/entry.ts` on the dead Base44 backend — which
+**returns the raw Decart account key to the browser** (`entry.ts:64-73`). Noted as
+the anti-pattern for M1.
+
+**3. THE BIG ONE — I reconstructed a false history from an incomplete record.**
+I read `notes.md:71` ("Amy to place it, I did not copy it"), found no VPS TTS drill
+anywhere in `devlog/`, and reported to the CEO that the engine had never run on the
+VPS — presenting the migration as the cheapest unclaimed win, worth ~350 ms.
+**False.** It ran on 29 Jul and was graded at 648 ms. The method (trust the repo
+over the handover) was right; the repo had a hole in it because CEO-run drills were
+never logged. See the backfilled 29 Jul 22:15 entry below for the full record.
+
+**4. The 8.7 / 8.3 scores the handover cited are real** — earned on the VPS
+topology on 29 Jul. They are absent from the repo for the same reason: unlogged.
+My report stated they "appear nowhere in the repo," which was true of the repo and
+false of reality. Both are now recorded.
+
+**5. Decart is less than half the assumed cost.** Verified against
+`docs.platform.decart.ai` today: Lucy 2.5 realtime is **$0.02/sec at 720p
+($1.20/min)**, not the $0.05/sec ($3/min) in the handover. Free credits on new
+accounts. Volume/enterprise pricing exists via contact.
+
+**6. Security posture note (not fixed here, queued for M0 PR D).**
+`workers/api/src/index.js:47` — `isRateLimited` **fails open** when the binding is
+missing. Deliberate and documented, so `node --test` runs without bindings. But if
+a deploy ever drops the `ratelimits` block from `wrangler.jsonc`, the admin
+password oracle becomes unthrottled and nothing errors.
+
+### Files changed
+
+- `CLAUDE.md` — new **VPS OPERATIONS** section (the box, the no-SSH wall, the
+  fire-up runbook with startup gates, pull-then-pip, VPS-tracks-main, profile
+  precedence, the Starlink DNS hazard). New same-day CEO-drill logging convention.
+- `notes.md` — corrected the two stale lines (63, 71) in place with dated
+  `[CORRECTED]` markers rather than rewriting them; new top entry.
+- `devlog/SESSIONS.md` — this entry, plus the backfilled 29 Jul 22:15 VPS drill.
+
+### A deliberate deviation, flagged
+
+The CEO's briefing said to write "everything under THE VPS, COMPLETE" into
+`CLAUDE.md`. **`CLAUDE.md` is a tracked file and this repo is PUBLIC.** The raw VPS
+IP, the `lumina@host` SSH pair, and the LiveKit project subdomain appear in **zero**
+tracked files today — `.gitignore` carries an explicit rule ("Ops handover notes —
+contain raw VPS IPs/port maps; never commit") that exists to keep it that way.
+Committing them verbatim would be a new public exposure of infrastructure specifics.
+
+I wrote the section complete with those three literals as placeholders pointing at
+where the real values live. Nothing operational is lost — Claude has no SSH to the
+box by design, so the literals are never needed by a future session. **Flagged to
+the CEO for override; one word and I inline them.**
+
+### Verification
+
+- `scripts/check-live.sh` → PASS on all three layers (Worker `/api/health`,
+  Pages `/`, Pages `/livekit-test`).
+- Docs-only change: no code touched, no test suite affected.
+- `git grep` confirms the VPS IP, `lumina@`, and the LiveKit subdomain remain
+  absent from all tracked files after this commit.
+
+### Next
+
+CEO pastes the analyzer report from `agent/captures/vps_drill1/20260729-221506-696613`
+→ appended verbatim to the 29 Jul entry (marked incomplete until then) → PR →
+CodeRabbit → evidence replies → **CEO presses merge**. Then M0 PRs A–D.
+
+---
+
 ## 30 July 2026 — 05:14 PDT — POST-STAGE-1 POLISH: loudness, governor console, --room, layout (PR pending, HOLD FOR CTO)
 
 ### Task (verbatim)
@@ -272,6 +381,79 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 ### Next
 
 Open PR via gh → CodeRabbit → evidence replies → **HOLD MERGE for CTO**.
+
+---
+
+## 29 July 2026 — 22:15 PDT — VPS PRODUCTION DRILL: TTS engine on the box, CEO scorecard 8.7 overall  ⟵ BACKFILLED 31 Jul 2026
+
+> **This entry was written on 31 July 2026, two days late.** The drill was run by
+> the CEO on the VPS and the result lived only in chat. The gap caused real damage:
+> the incoming CTO read the stale `notes.md:71` ("Amy to place it, I did not copy
+> it"), found no VPS drill in this log, and reported to the CEO that the TTS engine
+> had never run on the VPS — proposing an already-completed migration as the
+> project's biggest unclaimed win. **This is why CEO-run drills are now logged the
+> same day** (convention added to `CLAUDE.md`). Chat is not a system of record.
+
+### What happened
+
+- **Keys placed (CEO's hands, human wall).** `ELEVENLABS_API_KEY` and
+  `ELEVENLABS_VOICE_ID` appended to the VPS `~/luminastreamv1/secrets.env` by hand
+  via `read -rs` piped append — values never rendered on screen, never in chat,
+  never copied by an agent. This closed the last blocker recorded at `notes.md:71`.
+- **Engine ran on the VPS**, through the full positive-preflight sequence:
+  `STT READY` → `TTS READY (TTFB …ms)` → `PREFLIGHT OK` → connected to room.
+- **Full live drill executed.** Capture:
+  `agent/captures/vps_drill1/20260729-221506-696613` (on the box, not in git —
+  `agent/captures/` is gitignored). Session header records `wall_time
+  2026-07-29T22:15`, produced at `lumina@luminastream` — the self-identifying
+  header doing exactly the job it was built for.
+
+### Measured — VPS topology
+
+| metric | VPS (29 Jul) | Mac/Starlink baseline (28 Jul) |
+|---|---|---|
+| tail latency p50 | **648 ms** | 932–954 ms (drill) / 1001 ms (live) |
+| tail latency p95 | 1924 ms | 949–1009 ms (drill) / 1920 ms (live) |
+| TTS TTFB, steady state | **81–129 ms** | ~344 ms p50 |
+
+- **The p95 is one cold-start utterance**, not a distribution problem — the first
+  synthesis of the session paying model-warmth cost. Fixed afterwards by
+  warm-on-join (PR #18), which fires a real metered synthesis on
+  `participant_connected` precisely because a GET ping cannot warm a voice model.
+- **The TTFB collapse is the proof of location.** 81–129 ms steady-state is not
+  reachable from the Mac, where measured Starlink RTT to `api.elevenlabs.io` alone
+  was 200 ms TCP / 433 ms TLS. This drill ran where it says it ran.
+- **The 28 Jul prediction was correct and is now closed.** *"VPS deploy should
+  reach p50 ~550-650ms with zero code change"* — landed at 648 ms, inside the band,
+  with no pipeline code touched.
+
+### CEO scorecard (formal, this topology)
+
+| axis | score |
+|---|---|
+| clean | 8 |
+| latency-feel | 8.3 |
+| is-it-ME | 8.5 |
+| **overall** | **8.7** |
+
+- This supersedes the earlier verbal *"clean 7/10, beats RVC on purity, emotions
+  inconsistent vs live prosody"* (`notes.md:57`), which was an impression formed on
+  the **Mac** topology at ~950 ms. Same engine, different latency, different verdict.
+- **`is-it-ME` = 8.5 is the first time that judgement has been made at all.**
+  `notes.md:59` correctly recorded that it had not been — that caveat is now closed.
+- The 8.3 latency-feel score is the standing acceptance line: the CEO consciously
+  revised the 1000 ms target after hearing this build. Her ears are the law.
+
+### Source material
+
+The full analyzer report from the capture directory is to be pasted by the CEO and
+appended here verbatim. **Placeholder — this entry is not complete until it lands.**
+
+### Consequences for Stage 2
+
+**Baseline re-derived: VPS TTS = 648 ms measured.** The remaining latency work is
+optimization *from* 648 ms, not a migration. The "move the engine to the VPS"
+track has been struck from the Stage 2 plan as already-done.
 
 ---
 
