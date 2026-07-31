@@ -71,6 +71,64 @@ def test_second_speaker_is_ignored_and_announced():
     asyncio.run(run())
 
 
+def test_holder_is_snapshotted_before_the_task_runs():
+    """The incumbent's name must survive cleanup racing the background task.
+
+    _publish_busy is spawned, not awaited. If it read self.processed_identity
+    when finally polled, a _process cleanup landing first would broadcast
+    "processing": null — naming nobody, in the one message whose entire job
+    is to name somebody.
+    """
+    async def run():
+        agent = _agent()
+        agent.room = _CapturingRoom()
+        agent.processed_identity = "studio-aaa"
+        agent.process_task = asyncio.ensure_future(asyncio.sleep(3600))
+
+        agent._maybe_adopt(_audio_track(), _participant("studio-bbb"))
+        # Cleanup wins the race: state is cleared before the task is polled.
+        agent.processed_identity = None
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        busy = [m for m in agent.room.published if m["type"] == "agent_busy"]
+        assert len(busy) == 1, agent.room.published
+        assert busy[0]["processing"] == "studio-aaa", (
+            "broadcast lost the incumbent to a cleanup race")
+
+        agent.process_task.cancel()
+
+    asyncio.run(run())
+
+
+def test_capture_event_is_written_at_the_rejection_point():
+    """Recorded synchronously, so it lands on the session that rejected."""
+    async def run():
+        events = []
+
+        class _Cap:
+            def event(self, name, **kw):
+                events.append((name, kw))
+
+        agent = _agent()
+        agent.room = _CapturingRoom()
+        agent.capture = _Cap()
+        agent.processed_identity = "studio-aaa"
+        agent.process_task = asyncio.ensure_future(asyncio.sleep(3600))
+
+        agent._maybe_adopt(_audio_track(), _participant("studio-bbb"))
+        # Written before any await — present immediately, not after a tick.
+        assert events == [("agent_busy", {
+            "processing": "studio-aaa",
+            "ignored": "studio-bbb",
+            "reason": "one_speaker_per_agent",
+        })], events
+
+        agent.process_task.cancel()
+
+    asyncio.run(run())
+
+
 def test_first_speaker_is_adopted_silently():
     """No busy broadcast when there is nothing to refuse."""
     async def run():
@@ -118,7 +176,7 @@ def test_busy_broadcast_is_a_no_op_while_disconnected():
         agent.room = _CapturingRoom(connected=False)
         agent.processed_identity = "studio-aaa"
 
-        await agent._publish_busy("studio-bbb")
+        await agent._publish_busy("studio-bbb", "studio-aaa")
         assert agent.room.published == []
 
     asyncio.run(run())
@@ -136,7 +194,7 @@ def test_publish_failure_is_swallowed_not_raised():
         agent.room.local_participant.publish_data = _boom
         agent.processed_identity = "studio-aaa"
 
-        await agent._publish_busy("studio-bbb")  # must not raise
+        await agent._publish_busy("studio-bbb", "studio-aaa")  # must not raise
 
     asyncio.run(run())
 

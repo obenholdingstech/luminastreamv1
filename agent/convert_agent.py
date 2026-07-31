@@ -313,7 +313,19 @@ class ConvertAgent:
             # failure mode we ship — a second speaker must be able to see that
             # they are being ignored, and by whom. Room-per-session removes
             # the condition; until then this makes it legible.
-            self._spawn(self._publish_busy(participant.identity))
+            #
+            # Snapshot the incumbent HERE, not inside the background task.
+            # _publish_busy runs later; by then _process cleanup may have
+            # cleared processed_identity and the broadcast would name nobody.
+            holder = self.processed_identity
+            # Same reasoning for the capture event: record it at the rejection
+            # point so it lands on the session that actually rejected, rather
+            # than on whichever capture object exists when the task is polled.
+            if self.capture:
+                self.capture.event("agent_busy", processing=holder,
+                                   ignored=participant.identity,
+                                   reason="one_speaker_per_agent")
+            self._spawn(self._publish_busy(participant.identity, holder))
             return
         self.processed_identity = participant.identity
         self.process_task = asyncio.ensure_future(self._process(track, participant.identity))
@@ -386,8 +398,14 @@ class ConvertAgent:
             self.capture.event("mode_change", mode=mode, reason=reason)
         log.info("mode → %s%s", mode, f" ({reason})" if reason else "")
 
-    async def _publish_busy(self, ignored_identity):
+    async def _publish_busy(self, ignored_identity, holder_identity):
         """Broadcast that a second speaker is being ignored.
+
+        `holder_identity` is passed in rather than read from self: this runs
+        as a background task, and by the time it is polled `_process` cleanup
+        may have cleared `processed_identity`, which would broadcast
+        "processing": null and name nobody. The capture event is written by
+        the caller at the rejection point for the same reason.
 
         Additive and backward-compatible: older frontends do not know the
         `agent_busy` type and ignore it, exactly as they ignore unknown keys
@@ -397,13 +415,10 @@ class ConvertAgent:
             return
         payload = {
             "type": "agent_busy",
-            "processing": self.processed_identity,
+            "processing": holder_identity,
             "ignored": ignored_identity,
             "reason": "one_speaker_per_agent",
         }
-        if self.capture:
-            self.capture.event("agent_busy", **{k: v for k, v in payload.items()
-                                                if k != "type"})
         try:
             await self.room.local_participant.publish_data(
                 json.dumps(payload), reliable=True
