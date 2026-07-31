@@ -272,6 +272,84 @@ npx wrangler dev                 # → http://localhost:8787
 npm test                         # node --test (offline, no secrets)
 ```
 
+## Voice Agent (VPS) — automated deploy
+
+The VPS was the last hand-driven surface in the project. Every merge touching
+`agent/` used to need someone to remember to SSH in and pull, and the failure
+mode was silent: the box quietly ran stale code while a fix appeared to have
+shipped. That cost a full session of wrong conclusions once. Now a merge
+deploys it, exactly as it already does for the Worker and the site.
+
+### How it works
+
+`.github/workflows/deploy-agent.yml` fires on a push to `main` touching
+`agent/**`, runs the agent test suite, then executes
+[`scripts/deploy-agent.sh`](scripts/deploy-agent.sh) over SSH on the box.
+
+**The ordering is the safety property.** A naive deploy pulls, restarts, and if
+the new code is broken you are left with *no* agent — mid-drill, with no obvious
+cause. Instead:
+
+1. `git pull --ff-only` then `pip install` — code first, dependencies second
+   (pip alone is a silent no-op that once produced a green run against stale
+   code and a meaningless drill result).
+2. **Preflight the new code in a throwaway process** — it must print
+   `STT READY`, `TTS READY` and `PREFLIGHT OK`.
+3. Only then stop the old agent and start the new one.
+4. Verify the new agent cleared the same gates, and fail loudly if it did not.
+
+The old agent keeps serving through steps 1–2. If the preflight fails the deploy
+aborts red **with the working agent still running and untouched.**
+
+### Blocking a deploy during a drill
+
+```bash
+touch ~/luminastreamv1/agent/.deploy-hold     # restarts are skipped
+rm    ~/luminastreamv1/agent/.deploy-hold     # and re-enabled
+```
+
+With the hold file present, code and dependencies still update but the running
+process is left alone — and the deploy says so rather than pretending it swapped.
+
+### One-time setup (human wall — credential minting)
+
+Mint a **dedicated** deploy key. Do not reuse a personal key, and give it no
+passphrase (CI cannot type one):
+
+```bash
+ssh-keygen -t ed25519 -C "luminastream-deploy" -f ~/.ssh/luminastream_deploy -N ""
+ssh-copy-id -i ~/.ssh/luminastream_deploy.pub lumina@<vps-host>
+ssh-keyscan -H <vps-host>                      # for VPS_KNOWN_HOSTS below
+```
+
+Then add four **repository secrets** (Settings → Secrets and variables →
+Actions):
+
+| Secret | Value |
+| --- | --- |
+| `VPS_SSH_KEY` | contents of `~/.ssh/luminastream_deploy` (the **private** key) |
+| `VPS_HOST` | the VPS address |
+| `VPS_USER` | `lumina` |
+| `VPS_KNOWN_HOSTS` | output of the `ssh-keyscan` above |
+
+`VPS_KNOWN_HOSTS` is optional but recommended: with it, the deploy fails rather
+than trusting a substituted host. Without it the workflow logs a warning and
+accepts the host key on first use.
+
+The private key never leaves GitHub's secret store — it is written to the
+runner, used, and removed in an `if: always()` step. Nothing prints it.
+
+### Verifying, and recovering
+
+The workflow output is the receipt: it prints a PASS line per startup gate. To
+check by hand, or to recover after a failed restart:
+
+```bash
+ssh lumina@<vps-host>
+tmux attach -t agent          # detach again with Ctrl-B then D
+bash ~/luminastreamv1/scripts/deploy-agent.sh    # same script, run manually
+```
+
 ## Use The Hosted Backend
 
 For frontend-only development, create or update `.env.local` in the project root:
