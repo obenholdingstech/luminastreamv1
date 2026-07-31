@@ -66,6 +66,43 @@ function heldByAnotherTab(identity, now) {
   return Boolean(claim) && claim.tab !== TAB_ID && now - claim.t < CLAIM_TTL_MS;
 }
 
+/**
+ * Hand back every claim this document holds.
+ *
+ * Load-bearing for reloads, not just tidiness. A reload keeps sessionStorage
+ * but produces a NEW document, and therefore a new TAB_ID — so without this,
+ * the identity we just refreshed looks like it belongs to a live stranger and
+ * every reload would mint a new participant. The TTL alone does not save us,
+ * because the claim was refreshed moments earlier.
+ *
+ * Exported for tests; wired to `pagehide` in browsers below.
+ */
+export function releaseSessionClaims() {
+  const claims = readClaims();
+  let touched = false;
+  for (const [id, c] of Object.entries(claims)) {
+    if (c && c.tab === TAB_ID) {
+      delete claims[id];
+      touched = true;
+    }
+  }
+  if (touched) writeClaims(claims);
+}
+
+// `pagehide` is the reliable teardown signal — `unload` is unreliable and
+// blocks the back/forward cache. Restoring from bfcache re-runs `pageshow`
+// without re-evaluating the module, so we re-assert our claims there.
+if (typeof globalThis.addEventListener === 'function') {
+  globalThis.addEventListener('pagehide', releaseSessionClaims);
+  globalThis.addEventListener('pageshow', () => {
+    const now = Date.now();
+    for (const prefix of ['studio', 'devtools']) {
+      const held = globalThis.sessionStorage?.getItem(`${STORAGE_KEY}_${prefix}`);
+      if (held) claim(held, now);
+    }
+  });
+}
+
 function claim(identity, now) {
   const claims = readClaims();
   // Opportunistically drop expired entries so the record can't grow forever.

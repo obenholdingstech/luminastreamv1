@@ -5,7 +5,11 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getSessionIdentity, resetSessionIdentity } from './sessionIdentity.js';
+import {
+  getSessionIdentity,
+  releaseSessionClaims,
+  resetSessionIdentity,
+} from './sessionIdentity.js';
 
 function makeStorage(seed = new Map()) {
   const map = new Map(seed);
@@ -85,6 +89,33 @@ test('the opener keeps its identity after a duplicate steals nothing', async () 
   // Opener re-reads (e.g. on reconnect) and must still be itself.
   installStorage(openerStorage);
   assert.equal(getSessionIdentity('studio'), opener);
+});
+
+test('a RELOAD keeps the same identity — the core promise of this module', async () => {
+  // A reload keeps sessionStorage but creates a NEW document, so a new
+  // TAB_ID. Without releasing on teardown, the claim we refreshed moments
+  // ago looks like a live stranger's and every reload would mint a new
+  // participant. This test failed before releaseSessionClaims existed.
+  const before = getSessionIdentity('studio');
+  const storage = sharedSessionSeed();
+
+  releaseSessionClaims();                 // what `pagehide` does on teardown
+
+  const reloaded = await import('./sessionIdentity.js?tab=reload');
+  installStorage(storage);                // sessionStorage survives a reload
+  assert.equal(reloaded.getSessionIdentity('studio'), before);
+});
+
+test('a reload after an UNCLEAN exit still never collides', async () => {
+  // Crash / force-quit: no pagehide fired, so the claim lingers for its TTL.
+  // We accept minting a new identity here — a spare participant is cheap,
+  // an eviction is not.
+  const before = getSessionIdentity('studio');
+  const storage = sharedSessionSeed();
+
+  const crashed = await import('./sessionIdentity.js?tab=crash');
+  installStorage(storage);
+  assert.notEqual(crashed.getSessionIdentity('studio'), before);
 });
 
 test('an expired claim is reclaimable — a closed tab does not hold forever', () => {
