@@ -23,6 +23,33 @@ CTO read the stale notes.md around it and reconstructed a false history
 (see "the record had a hole" entry in notes.md). An unlogged result is
 a result the project does not own.
 
+# Git & merge workflow
+
+One PR at a time. No step is skippable:
+
+1. `git checkout main && git pull` — **sync first, every time.**
+2. `git checkout -b <type>/<slug>` — **off freshly-synced `main`, never off
+   another feature branch.** Branching off an unmerged branch puts the
+   parent's commits inside the child's diff, so the reviewer cannot tell
+   the two changes apart.
+3. Build. Commit with specific `git add <paths>` — **never `git add -A`.**
+4. Push, open the PR.
+5. Wait for CodeRabbit. Reply with evidence to **every** finding, including
+   the ones you reject. It is the only independent reviewer this project
+   has; never claim a throttled or ambiguous pass as clean — re-trigger.
+6. **Merge** — see authority below.
+7. `git checkout main && git pull` before starting anything else.
+
+**Merge authority (CEO, 31 Jul 2026):** Claude may merge, conditional on
+both — the work is tested, and CodeRabbit's review has been read and
+addressed. Before merging, verify parentage: `git log --oneline main..HEAD`
+must show *only* this PR's commits.
+
+**The three human-only walls are unchanged and are not covered by that
+permission:** credential minting/scoping, DNS and custom domains, and
+spend-authority keys (`DECART_API_KEY`, `ELEVENLABS_API_KEY`). Those stay
+the CEO's hands alone.
+
 # VPS OPERATIONS
 
 The VPS is the production runtime for the voice agent. It is the topology

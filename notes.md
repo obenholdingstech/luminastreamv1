@@ -9,7 +9,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 - **Fix:** `CLAUDE.md` gains a **VPS OPERATIONS** section (box, no-SSH wall, fire-up runbook + gates, pull-then-pip, VPS-tracks-main, Starlink DNS hazard) and a new convention — CEO-run drills logged the SAME DAY. Host left as a placeholder; repo is PUBLIC.
 - `notes.md:63`/`:71` corrected in place with dated markers; 29 Jul drill backfilled to `devlog/SESSIONS.md`.
 - **Stage 2 baseline re-derived: 648 ms.** Remaining latency work is optimization *from* 648; the "VPS move" track is struck from the plan, replaced by the never-run capacity test.
-- **Next:** CEO pastes the analyzer report → append to the 29 Jul entry (marked ⛔ incomplete until then) → **CEO presses merge** on PR #22.
+- **Analyzer report is gone** (CEO, 31 Jul) — 29 Jul entry closed on stated provenance: figures are CEO-reported, not analyzer output; acceptance rests on her closed-headphone listening test before Stage 1 close; TTFB independently corroborated by the logged Starlink RTT. **Next:** merge #22, sync, then M0 PR A (canon docs + doctrine reconstruction).
 
 ## 30 July 2026 — POST-STAGE-1 POLISH: loudness, governor console, --room, layout (branch feat/loudness-governor-console, PR pending, HOLD FOR CTO)
 

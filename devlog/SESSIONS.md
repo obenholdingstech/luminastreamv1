@@ -141,9 +141,17 @@ the CEO for override; one word and I inline them.**
 
 ### Next
 
-CEO pastes the analyzer report from `agent/captures/vps_drill1/20260729-221506-696613`
-→ appended verbatim to the 29 Jul entry (marked incomplete until then) → PR →
-CodeRabbit → evidence replies → **CEO presses merge**. Then M0 PRs A–D.
+The analyzer report is **not available** — the CEO confirmed on 31 Jul that it was
+not retained. The 29 Jul entry is therefore closed on stated provenance rather than
+on a committed artifact (see its "Provenance" section), with her closed-headphone
+listening test standing as the acceptance evidence for the voice engine. Then M0
+PRs A–D, starting with the canon documents and the doctrine reconstruction.
+
+**Merge authority changed this session.** The CEO granted standing permission to
+merge, conditional on: the work is tested, and CodeRabbit's review has been read and
+addressed. The hold-for-CEO default no longer applies to routine PRs. The three
+human-only walls are unchanged — credential minting/scoping, DNS and custom domains,
+and spend-authority keys remain hers alone.
 
 ---
 
@@ -478,18 +486,31 @@ Open PR via gh → CodeRabbit → evidence replies → **HOLD MERGE for CTO**.
 - The 8.3 latency-feel score is the standing acceptance line: the CEO consciously
   revised the 1000 ms target after hearing this build. Her ears are the law.
 
-### Source material
+### Provenance of these numbers — read before citing them
 
-> ### ⛔ TODO — THIS ENTRY IS INCOMPLETE
->
-> The full analyzer report from
-> `agent/captures/vps_drill1/20260729-221506-696613` has **not** been appended.
-> The CEO pastes it; it goes here verbatim.
->
-> **Until it lands, every number in this entry is transcribed from the CEO's
-> briefing, not from a committed artifact.** That is exactly the condition this
-> entry was written to end. Do not treat this record as closed, and do not cite
-> its figures as evidence elsewhere without saying where they came from.
+**The analyzer report was not retained and is not available** (CEO, 31 Jul 2026).
+The capture directory `agent/captures/vps_drill1/20260729-221506-696613` lives on
+the VPS and `agent/captures/` is gitignored, so no committed artifact backs the
+figures above. This entry is therefore closed on the best evidence that exists,
+not on the evidence we would have had if it had been logged on the day:
+
+- **The latency figures and the scorecard are transcribed from the CEO's briefing
+  of 31 Jul 2026.** They are her direct report of a drill she ran. Cite them as
+  that — "CEO-reported, VPS drill 29 Jul" — never as analyzer output.
+- **The acceptance judgement is first-hand and is not in doubt.** Before closing
+  Stage 1, the CEO listened on closed headphones — the drill protocol's own
+  standard — and confirmed she was satisfied with the voice engine. That listening
+  test, not the numbers, is what closed Stage 1.
+- **The one figure with independent corroboration is the TTFB.** 81–129 ms
+  steady-state is unreachable from the Mac, where Starlink RTT to
+  `api.elevenlabs.io` alone measured 200 ms TCP / 433 ms TLS (28 Jul, logged). The
+  physics confirm the topology even though the report is gone.
+
+**This is the cost of the gap, made concrete.** A drill was run, it passed, it
+changed the project's direction — and the primary artifact is unrecoverable two
+days later. Everything downstream now rests on a transcription. The same-day
+logging convention added to `CLAUDE.md` in this PR exists so that this entry is
+the last one that ever has to carry a section like this.
 
 ### Consequences for Stage 2
 
