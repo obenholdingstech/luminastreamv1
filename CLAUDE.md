@@ -27,7 +27,9 @@ a result the project does not own.
 
 One PR at a time. No step is skippable:
 
-1. `git checkout main && git pull` — **sync first, every time.**
+1. `git checkout main && git pull --ff-only origin main` — **sync first,
+   every time.** `--ff-only` so a diverged local state fails loudly instead
+   of quietly creating a merge commit.
 2. `git checkout -b <type>/<slug>` — **off freshly-synced `main`, never off
    another feature branch.** Branching off an unmerged branch puts the
    parent's commits inside the child's diff, so the reviewer cannot tell
@@ -38,12 +40,23 @@ One PR at a time. No step is skippable:
    the ones you reject. It is the only independent reviewer this project
    has; never claim a throttled or ambiguous pass as clean — re-trigger.
 6. **Merge** — see authority below.
-7. `git checkout main && git pull` before starting anything else.
+7. `git checkout main && git pull --ff-only origin main` before starting
+   anything else.
 
 **Merge authority (CEO, 31 Jul 2026):** Claude may merge, conditional on
 both — the work is tested, and CodeRabbit's review has been read and
-addressed. Before merging, verify parentage: `git log --oneline main..HEAD`
-must show *only* this PR's commits.
+addressed.
+
+**Pre-merge parentage check — always against `origin/main`, never local
+`main`.** A stale local `main` silently under-reports the diff, so the one
+check meant to catch a mis-parented branch is exactly the check that fails
+open:
+
+```sh
+git fetch origin
+git merge-base --is-ancestor origin/main HEAD   # must succeed
+git log --oneline origin/main..HEAD             # must show ONLY this PR's commits
+```
 
 **The three human-only walls are unchanged and are not covered by that
 permission:** credential minting/scoping, DNS and custom domains, and
