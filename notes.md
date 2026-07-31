@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 31 July 2026 — RECORD REPAIR: the VPS deploy already happened (branch fix/vps-record-repair, PR pending, HOLD FOR CEO)
+
+- **The VPS deploy already happened.** Amy placed the ElevenLabs keys by hand on 29 Jul and the TTS engine ran a full live drill on the box that night: tail p50 **648 ms**, steady-state TTFB 81–129 ms, CEO scorecard **8.7 overall** (clean 8 / latency-feel 8.3 / is-it-ME 8.5 — the first is-it-ME judgement ever made). Never logged.
+- **So the incoming CTO reconstructed a false history** from `notes.md:71` + an empty `devlog/`, and reported the completed migration as the biggest unclaimed win. Method (repo over handover) stands; the record had the hole.
+- **Fix:** `CLAUDE.md` gains a **VPS OPERATIONS** section (box, no-SSH wall, fire-up runbook + gates, pull-then-pip, VPS-tracks-main, Starlink DNS hazard) and a new convention — CEO-run drills logged the SAME DAY. Host left as a placeholder; repo is PUBLIC.
+- `notes.md:63`/`:71` corrected in place with dated markers; 29 Jul drill backfilled to `devlog/SESSIONS.md`.
+- **Stage 2 baseline re-derived: 648 ms.** Remaining latency work is optimization *from* 648; the "VPS move" track is struck from the plan, replaced by the never-run capacity test.
+- **Analyzer report is gone** (CEO, 31 Jul) — 29 Jul entry closed on stated provenance: figures are CEO-reported, not analyzer output; acceptance rests on her closed-headphone listening test before Stage 1 close; TTFB independently corroborated by the logged Starlink RTT. **Next:** merge #22, sync, then M0 PR A (canon docs + doctrine reconstruction).
+
 ## 30 July 2026 — POST-STAGE-1 POLISH: loudness, governor console, --room, layout (branch feat/loudness-governor-console, PR pending, HOLD FOR CTO)
 
 - Four tickets, off main (#18/#19/#20 merged). Commits: loudness+room, governor console, layout, docs.
@@ -60,7 +69,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 - **Pivot committed (08cf39e):** `--engine` defaults to `tts`. RVC is NOT removed — `--engine rvc` is the parked baseline/fallback, unchanged and green. Rests on measured evidence: tail p50 1938→932ms, p95 2511→949ms (drill); live conversation 86 utterances p50 1001ms/p90 1111ms; quality flat throughout (transcripts byte-identical, WER unchanged 0.1458, no splitting/clipping).
 - **Ear-drill: superseded by the verbal verdict at the top of this entry.** The pivot commit (08cf39e) was written before any verdict existed and states that the scores were unrecorded — still true of the per-model scorecard, which remains blank in SPIKE.md. Fill it in there if the 3-model drill is ever run.
-- **Remaining floor:** ~400ms of the ~950ms p50 is Starlink RTT (measured: 200ms TCP, 433ms TLS to api.elevenlabs.io). **VPS deploy should reach p50 ~550-650ms with zero code change** — the biggest lever left. Needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID hand-typed into the VPS secrets.env by Amy; deploy sequence + preflight in agent/README.md.
+- **Remaining floor:** ~400ms of the ~950ms p50 is Starlink RTT (measured: 200ms TCP, 433ms TLS to api.elevenlabs.io). **VPS deploy should reach p50 ~550-650ms with zero code change** — the biggest lever left. ~~Needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID hand-typed into the VPS secrets.env by Amy~~ **[CORRECTED 31 Jul 2026 — done 29 Jul; drill measured p50 648ms, inside the predicted band. See the top entry.]**; deploy sequence + preflight in agent/README.md.
 - **p95 in live conversation (1920ms) is structural, not a defect:** synthesized audio plays for about as long as the speech took to say, so continuous talking accumulates backlog that drains at pauses. Video-sync budget for the avatar leg must be ELASTIC, not fixed.
 - Merged origin/main (workers/api + server-mint frontend) — only conflict was SESSIONS.md ordering, both histories kept. All suites green: 136 py + 21 src/lib + 35 workers/api. Positive preflight added (STT READY / TTS READY / PREFLIGHT OK; failures are plain sentences, never tracebacks). CodeRabbit round complete (10 findings, all addressed — see PR #15). **CTO has since approved for merge; the merge itself is still the CTO's to press.**
 
@@ -68,7 +77,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 
 - **p50 1938 → 932ms, p95 2511 → 949ms** on the same drill, quality untouched (transcripts byte-identical, WER unchanged 0.1458, 5/5 utterances). Default config is `--tts-hangover-ms 200`; one launch command in SPIKE.md.
 - Wins: streaming STT while the gate is open (STT 1121→315ms; test contract amended deliberately to "nothing COMMITTED while open"), and connection keepalive — the first-utterance ~1040ms TTFB was aiohttp's pool reaping the idle connection (default timeout 15s, my ping was 20s, so it always arrived too late). Rejected: `optimize_streaming_latency` + text normalization, both pure noise.
-- **~400ms of the remaining 954ms is Starlink RTT** (measured: 200ms TCP, 433ms TLS). VPS topology is the biggest lever left — should reach p50 ~550-650ms with no code change. **Needs ELEVENLABS_API_KEY in the VPS secrets.env — Amy to place it, I did not copy it.**
+- **~400ms of the remaining 954ms is Starlink RTT** (measured: 200ms TCP, 433ms TLS). VPS topology is the biggest lever left — should reach p50 ~550-650ms with no code change. ~~**Needs ELEVENLABS_API_KEY in the VPS secrets.env — Amy to place it, I did not copy it.**~~ **[CORRECTED 31 Jul 2026 — Amy placed `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` into the VPS `secrets.env` by hand on 29 Jul 2026 (`read -rs` piped append; values never on screen). The VPS deploy HAPPENED and was measured the same night: p50 648ms. The prediction above was correct and is now history, not a to-do. See the top entry.]**
 - Trap avoided: analyzer's "clipped tails" is meaningless in tts mode (3 at 300ms baseline, 3 at 200ms, 2 at 100ms; envelope corr 0.047) — nearly cited it as clipping evidence. Analyzer now disowns it; transcripts are the real evidence.
 - Open for the CEO's ear: aggressive `--tts-hangover-ms 100` hits p50 787ms but may split sentences at natural pauses — the drill (1.6s gaps) cannot show this, free-talking can. Both configs presented, not chosen.
 
