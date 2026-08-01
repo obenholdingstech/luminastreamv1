@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 1 August 2026 — LENS ON `/`, BASE44 GONE, CANON WRITTEN (PRs #24 + #25 merged, branch docs/roadmap-canon)
+
+- **VPS is on systemd.** CEO installed the units; `lumina-agent` runs as a service and `lumina-deploy.timer` polls `origin/main` every 2 min. **Merging is now deploying** — no more hand commands on the box.
+- **#25 merged:** `/` is the lens (one decision, one action, everything from agent-confirmed state), `/livekit-test` stays the instrument. Base44 excised — 107 files, 33 deps. The Vite plugin was also the undocumented source of the `@` alias; now explicit.
+- **CEO drill, 1 Aug:** unlocked the lens against the live agent — **it works**. Informal, no analyzer report or scores. Her note: the UI is generic. Deferred to a dedicated design session, now **P7** in `ROADMAP.md` (after P1, since the session layer changes what the page shows).
+- **9 CodeRabbit rounds, 25 findings** — 24 accepted, 1 declined with reasoning, 1 reframed at its root. **Six were defects in my own tests**, two of which could not fail and one of which hung the runner rather than failing. That pattern is now doctrine entry 10.
+- **`ROADMAP.md` v2.2 written:** the lens canon, real state (648 ms baseline, 8.7 scorecard), phases P0–P8, and **29 doctrine entries reconstructed from `devlog/SESSIONS.md` failure narratives**, each citing the session that paid for it. The lost 27-entry original is explicitly *not* claimed as recovered.
+- **Next:** CI hardening — the deploy workflow still runs **no tests and no lint**, which is why nine rounds of review fell to a bot instead of a pipeline. Then the owed micro-fixes (fail-open rate limiter at `workers/api/src/index.js:47`), then P1.
+
 ## 31 July 2026 — RECORD REPAIR: the VPS deploy already happened (branch fix/vps-record-repair, PR pending, HOLD FOR CEO)
 
 - **The VPS deploy already happened.** Amy placed the ElevenLabs keys by hand on 29 Jul and the TTS engine ran a full live drill on the box that night: tail p50 **648 ms**, steady-state TTFB 81–129 ms, CEO scorecard **8.7 overall** (clean 8 / latency-feel 8.3 / is-it-ME 8.5 — the first is-it-ME judgement ever made). Never logged.

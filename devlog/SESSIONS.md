@@ -4,6 +4,149 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 1 August 2026 — THE LENS ON `/`, BASE44 GONE, AND THE CANON WRITTEN DOWN (PRs #24 merged, #25 merged, branch docs/roadmap-canon)
+
+### Task (verbatim)
+
+> "i have ran the commands required of me to do on the vps, and its up and
+> running, lets move ahead with the next thing which should be PR — P0: main UI
+> wired to the real voice engine + Base44 excision, and remember to never forget
+> git hygiene"
+
+and, after the merge:
+
+> "tested it and it worked, thou the ui looks generic, but i dont want ui and ux
+> polishing to be something of todat but id like for it to be added in the
+> roadmap, cause i would like a special sessio where all we will do is repolish
+> the app ui and enhance user experiemce but for now lets focus on the nest P0
+> PRs. movre on with the momentum."
+
+### CEO-run drill — logged same day, per convention
+
+**The CEO unlocked the lens at `/` against the live VPS agent and confirmed it
+works.** Informal confirmation, not a scored drill: no analyzer report, no
+scorecard, no latency figures taken. Recorded here so the result is owned by the
+project rather than by a chat window — the exact failure this convention exists
+to prevent.
+
+Her one substantive note: **the UI is generic.** Deferred deliberately to a
+dedicated design session rather than absorbed into feature work; now **P7** in
+`ROADMAP.md`, scheduled after P1 because the session layer changes what the lens
+page shows.
+
+### What I did
+
+**Box setup (CEO's hands, verified by me).** The three systemd units are
+installed and the agent runs as `lumina-agent`, with `lumina-deploy.timer`
+polling `origin/main` every two minutes. Deploys are now a property of merging.
+
+**PR #25 — the lens on `/`, Base44 excised.** 107 files deleted, 33 runtime
+dependencies removed, and a new product surface built on the same hook the
+console uses.
+
+- `src/lib/lensState.js` — the whole translation layer between the agent's
+  protocol vocabulary and the product's, kept pure and unit-tested. Mode mapping
+  (Direct↔passthrough, Converted↔convert), status derivation in severity order,
+  and a median-of-five latency readout.
+- `src/lib/micLevelMeter.js` — the mic amplitude lifecycle, every browser
+  dependency injectable so it tests under plain node.
+- `src/pages/Studio.jsx` — one decision, one action, everything rendered from
+  agent-confirmed state.
+- `src/hooks/useMicLevel.js` — five lines of React binding over the meter.
+
+**PR (this one) — the canon.** `ROADMAP.md` v2.2: the lens paragraph, the real
+state of the system, phases P0–P8, and a doctrine section reconstructed from the
+failure narratives in this file. `graphify-out/` gitignored.
+
+### Key findings / surprises
+
+**1. The Vite plugin was load-bearing in a way nothing documented.** The Base44
+plugin also supplied the `@` path alias that every file in `src/` imports
+through. Deleting the plugin without noticing would have broken every import in
+the codebase. Now declared explicitly in `vite.config.js`.
+
+**2. A screenshot found a bug no test could.** The status line — the single piece
+of text that says whether your voice is reaching the room — mounted with
+framer-motion's enter animation armed, so it rendered at `opacity: 0` and was
+invisible in the captured DOM. Confirmed in the dump, not inferred. Fixed with
+`initial={false}`: the first status is already there, only changes animate.
+
+**3. Nine rounds of CodeRabbit, twenty-five findings.** 24 accepted, 1 declined
+with reasoning, 1 reframed at its root (CodeRabbit had correctly applied a rule I
+had just written in `AGENTS.md`, and the rule was wrong — it forbade *naming* the
+deleted vendor rather than *depending* on it, which would have deleted the
+comment explaining why the `@` alias is declared manually).
+
+**4. Six of the twenty-five were defects in my own tests.** This is the finding
+worth carrying forward, and it is now doctrine entry 10. Two of the six were
+tests that *could not fail*: one asserted `medianTailMs` honoured its window
+using data whose median is identical either way, and I reported it to CodeRabbit
+as fixed when it was not. One hung the runner for 240 s instead of failing —
+a promise that only settles on abort, with the abort removed. The others: an
+`indexOf` returning −1 that made a renamed field report as a deleted one, and
+coverage claimed for a path the suite never reached.
+
+**5. The leak the setup guard structurally could not reach.** `tick` runs from
+the browser's animation-frame callback, not from inside the setup `try`. A throw
+there escaped to the browser, scheduled no next frame, and never reached
+teardown — the same leaked `AudioContext` the failure path already guarded,
+arriving by a route that guard has no visibility into.
+
+**6. Presence is not liveness.** A device unplugged mid-session leaves the
+publication in place holding a track that has **ended** — still an object,
+producing nothing. The ring animated silence while the readout said "live".
+Filtered on `readyState === 'live'`, with an `ended` listener on the track
+itself: that event produces no room event, so nothing else would ever re-read.
+
+**7. `fetch()` has no timeout.** The unlock exchange could hang forever, leaving
+the only entry to the lens disabled with no error. Not hypothetical here — the
+CEO's Starlink intermittently blackholes DNS, already documented as a drill
+hazard. One deadline across the whole exchange, not one per hop.
+
+### Files changed
+
+- **New:** `ROADMAP.md`, `src/lib/lensState.js` (+ test), `src/lib/micLevelMeter.js`
+  (+ test), `src/hooks/useMicLevel.js`, `src/pages/Studio.jsx`,
+  `src/pages/PageNotFound.jsx` (moved out of `src/lib/`)
+- **Rewritten:** `src/App.jsx`, `vite.config.js`, `index.html`, `AGENTS.md`,
+  `README.md` (head + verification gate), `src/lib/serverMint.js` (deadlines)
+- **Deleted:** 107 files — every auth page, `src/components/studio/`,
+  `src/components/admin/`, all 50 `src/components/ui/`, three dead hooks,
+  `base44/`, `AuthContext`, `ovcClient`, the audio worklet
+- **Config:** `package.json` (33 deps removed, renamed to `luminastream`),
+  `jsconfig.json` (widened to `src/`, seven surfaced type errors fixed),
+  `.gitignore` (`graphify-out/` in, dead `base44/` rule out)
+
+### Verification
+
+```
+parentage (fails closed)   origin/main is ancestor ✓, 10 commits, only this PR's
+npm run lint               clean
+npm run typecheck          clean
+node --test src/lib/*      89 pass / 0 fail
+npm run build              ✓ 852 kB
+workers/api node --test    35 pass / 0 fail
+agent pytest -q            221 pass
+secrets scan (full diff)   no literals
+```
+
+Both routes rendered and screenshotted in real headless Chrome, in three states:
+lens with no API configured, lens with `VITE_API_BASE` set, and the console.
+Fourteen discrimination mutations run across the PR; every one failed the test it
+was supposed to, except one that failed nothing and exposed a missing test — the
+`stopped` guard in `teardown`, whose real job turned out to be suppressing a
+redundant `report(0)` during a track swap. Test added, mutation re-run, 1 fail.
+
+### Next
+
+P0 continues: CI hardening (the workflow still runs **no tests at all**), then
+the owed micro-fixes including the fail-open rate limiter. Then P1 — the session
+layer, which is where audio becomes genuinely multi-user.
+
+---
+
+---
+
 ## 31 July 2026 — CTO HANDOVER + RECORD REPAIR: the VPS drill that was never logged (branch fix/vps-record-repair, PR pending, HOLD FOR CEO)
 
 ### Task (verbatim)
