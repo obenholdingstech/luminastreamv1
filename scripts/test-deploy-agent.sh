@@ -176,7 +176,10 @@ rc=$(PATH="$ROOT/sbin:$PATH" ARGS_OUT="$ROOT/args.txt" PIP_LOG="$ROOT/pip.txt" \
      bash "$SCRIPT" >"$ROOT/out.txt" 2>&1; echo $?)
 chk "exit 0 — full path completes" "$rc" "0"
 grep -q "DEPLOY OK" "$ROOT/out.txt"; chk "reports DEPLOY OK" "$?" "0"
-grep -q "result=ok\b" "$R/agent/.deploy-state"; chk "zero strays recorded as ok, not misfired" "$?" "0"
+# Tab-delimited field match: `result=ok\b` would ALSO match
+# `result=ok-with-stray`, since \b treats the hyphen as a word boundary —
+# the assertion would pass on exactly the outcome it exists to rule out.
+grep -q "$(printf '\tresult=ok\t')" "$R/agent/.deploy-state"; chk "zero strays recorded as exactly ok" "$?" "0"
 # Deliberately NOT asserting the absence of a stray warning here: pgrep is
 # machine-global, so any unrelated process on a developer box matching the
 # pattern would trip it. That is flaky, not meaningful. T11 pins detection
