@@ -1,49 +1,60 @@
-# Base44 Project
+# LuminaStream
 
-Use this repository to run and edit the app locally, then publish changes back through Base44.
+LuminaStream is a **lens, not a venue.** A person installs it, presses Start, and
+LuminaStream presents itself to the operating system as a **Virtual Camera and
+Virtual Microphone**. They then open WhatsApp, Zoom, TikTok Live or Discord,
+select LuminaStream as their camera and mic, and the other platform receives the
+transformed person. Viewers live on those platforms and never know this project
+exists.
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
+The browser app in this repo is the workshop, not the product. It has two
+surfaces, both driving the same voice engine through the same hook:
+
+| Route | What it is |
+|---|---|
+| `/` | **The lens.** One decision (Direct or Converted), one action. What the product does. |
+| `/livekit-test` | **The console.** Every knob the agent broadcasts, in the agent's own vocabulary. Dev-only, permanently useful, never the product. |
+
+The engine itself runs off-browser: a Python agent on a VPS (`agent/`), a
+Cloudflare Worker for session authority (`workers/api/`), and LiveKit Cloud for
+transport.
 
 ## Prerequisites
 
-1. Clone the repository using the project's Git URL.
-2. Navigate to the project directory.
-3. Install dependencies: `npm install`.
-4. Install the Base44 CLI: `npm install -g base44@latest`.
+1. Clone the repository and `cd` into it.
+2. `npm install`.
 
-See the [Base44 CLI docs](https://docs.base44.com/developers/references/cli/get-started/overview) if you want to run Base44 commands directly.
+Node 20+. The agent has its own toolchain — see `agent/README.md`.
 
 ## Run Locally
-
-Run the full local development environment from the project root:
-
-```bash
-base44 dev
-```
-
-`base44 dev` starts the local Base44 development backend and, when this app is configured for it, also starts the frontend dev server for you. Use the frontend URL printed by the command.
-
-For example, when the Base44 project config includes a `serveCommand`, `base44 dev` can launch the frontend too:
-
-```json5
-{
-  "site": {
-    "serveCommand": "npm run dev"
-  }
-}
-```
-
-In a Base44 project this lives in `base44/config.jsonc`.
-
-## Run Only The Frontend
-
-If you only want to work on the frontend against the hosted Base44 backend, run:
 
 ```bash
 npm run dev
 ```
 
-Open the local URL printed by Vite.
+Open the URL Vite prints. Without `VITE_API_BASE` set there is no session
+authority to mint a LiveKit token from, so the lens says so and points at the
+console, which accepts a hand-pasted token from
+`node scripts/generate-livekit-token.js`.
+
+To run against a deployed Worker:
+
+```bash
+VITE_API_BASE=https://<your-worker-host> npm run dev
+```
+
+`VITE_LIVEKIT_ROOM` overrides the room the lens joins (default
+`luminastream-test`, matching the agent's own default). One agent serves one
+speaker; a second concurrent session needs its own room **and** its own agent.
+
+## Verification
+
+```bash
+npm run lint
+node --test src/lib/*.test.js     # includes a real `vite build` guard
+npm run build
+cd agent && pytest -q
+```
 
 ## Deploy — Cloudflare Pages (studio.luminastream.live)
 
@@ -350,34 +361,3 @@ VPS, no network, no systemd. It pins the properties that matter: a failed
 preflight swaps nothing, the hold file blocks the swap, `--poll` is silent when
 nothing changed, a legacy `.venv` directory is migrated rather than deleted, and
 statically that no restart can precede the gates.
-
-## Use The Hosted Backend
-
-For frontend-only development, create or update `.env.local` in the project root:
-
-```bash
-VITE_BASE44_APP_ID=your_app_id
-VITE_BASE44_APP_BASE_URL=https://your-app.base44.app
-```
-
-`VITE_BASE44_APP_ID` identifies the Base44 app.
-
-`VITE_BASE44_APP_BASE_URL` tells the Base44 Vite plugin where to send local `/api` requests. Point it at your deployed Base44 app URL when you want the local frontend to use the hosted backend.
-
-When you use `base44 dev`, the command injects the local Base44 values for you, so `.env.local` is mainly needed for frontend-only workflows.
-
-## Publish Your Changes
-
-After pushing your changes to git, open the Base44 dashboard and publish the app:
-
-```bash
-base44 dashboard open
-```
-
-## Docs & Support
-
-Documentation: [https://docs.base44.com/Integrations/Using-GitHub](https://docs.base44.com/Integrations/Using-GitHub)
-
-Base44 CLI command reference: [https://docs.base44.com/developers/references/cli/commands/introduction](https://docs.base44.com/developers/references/cli/commands/introduction)
-
-Support: [https://app.base44.com/support](https://app.base44.com/support)
