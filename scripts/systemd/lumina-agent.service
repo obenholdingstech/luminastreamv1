@@ -1,0 +1,45 @@
+[Unit]
+Description=LuminaStream voice agent
+Documentation=https://github.com/obenholdingstech/luminastreamv1
+# The agent is an outbound client (LiveKit, ElevenLabs). Starting before the
+# network is genuinely up just burns a restart attempt against the limit below.
+After=network-online.target
+Wants=network-online.target
+
+# ── Crash-loop protection is a SPEND control, not just hygiene ──────────────
+# Every agent start fires a real warm-up synthesis against ElevenLabs, and the
+# spend governor is per-process — a hundred restarts is a hundred fresh
+# budgets, none aware of the others. Unbounded restarts against a metered
+# vendor is a money leak that runs all night. Five failures inside five minutes
+# and systemd gives up, parks the unit in `failed`, and stops calling out.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/luminastreamv1/agent
+# .venv is a symlink managed by scripts/deploy-agent.sh. exec resolves it at
+# start, so a running process keeps the venv it booted with even after a later
+# deploy swaps the link.
+ExecStart=%h/luminastreamv1/agent/.venv/bin/python convert_agent.py --engine tts --mode convert
+
+Restart=always
+RestartSec=5
+
+# SIGTERM is systemd's default and the agent installs handlers for it. The
+# clean path runs aclose(), which finalises capture WAV headers — a hard kill
+# corrupts the evidence of whatever session was running. Give it room to finish.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+KillMode=mixed
+
+# Unbuffered, so journalctl shows the startup gates as they happen rather than
+# in a lump when a buffer flushes.
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lumina-agent
+
+[Install]
+WantedBy=default.target

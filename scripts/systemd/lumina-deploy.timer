@@ -1,0 +1,18 @@
+[Unit]
+Description=Check origin/main for agent changes
+Documentation=https://github.com/obenholdingstech/luminastreamv1
+
+[Timer]
+# Two minutes after boot, then every two minutes. The poll is cheap — a fetch
+# and a SHA comparison — and exits without output when nothing has changed.
+OnBootSec=2min
+OnUnitActiveSec=2min
+# Spread ticks slightly so a deploy never lands on a predictable boundary.
+RandomizedDelaySec=15
+# Catch up after downtime: if the box was off, check once on the way back up
+# rather than waiting a full interval.
+Persistent=true
+Unit=lumina-deploy.service
+
+[Install]
+WantedBy=timers.target

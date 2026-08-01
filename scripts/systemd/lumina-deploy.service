@@ -1,0 +1,20 @@
+[Unit]
+Description=LuminaStream agent deploy (pull-based)
+Documentation=https://github.com/obenholdingstech/luminastreamv1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/luminastreamv1
+# --poll exits silently when origin/main has not moved, so the common case is a
+# fetch and nothing else. systemd will not start a second instance while this
+# one runs, which is the concurrency guard for the timer path.
+ExecStart=/bin/bash %h/luminastreamv1/scripts/deploy-agent.sh --poll
+# A failed deploy must not take the timer down with it — the next tick should
+# try again, and the failure is already recorded in the journal and
+# agent/.deploy-state.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lumina-deploy

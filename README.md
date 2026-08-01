@@ -272,83 +272,84 @@ npx wrangler dev                 # → http://localhost:8787
 npm test                         # node --test (offline, no secrets)
 ```
 
-## Voice Agent (VPS) — automated deploy
+## Voice Agent (VPS) — pull-based deploy
 
-The VPS was the last hand-driven surface in the project. Every merge touching
-`agent/` used to need someone to remember to SSH in and pull, and the failure
-mode was silent: the box quietly ran stale code while a fix appeared to have
-shipped. That cost a full session of wrong conclusions once. Now a merge
-deploys it, exactly as it already does for the Worker and the site.
+The VPS was the last hand-driven surface. Every merge touching `agent/` needed
+someone to remember to SSH in and pull, and the failure mode was **silent**: the
+box quietly ran stale code while a fix appeared to have shipped. That cost a
+full session of wrong conclusions once.
 
-### How it works
+### Why pull and not push
 
-`.github/workflows/deploy-agent.yml` fires on a push to `main` touching
-`agent/**`, runs the agent test suite, then executes
-[`scripts/deploy-agent.sh`](scripts/deploy-agent.sh) over SSH on the box.
+The box checks the repo itself on a timer. GitHub never reaches in.
 
-**The ordering is the safety property.** A naive deploy pulls, restarts, and if
-the new code is broken you are left with *no* agent — mid-drill, with no obvious
-cause. Instead:
+| | Push (CI opens a shell) | **Pull (box checks)** |
+| --- | --- | --- |
+| Credential | private SSH key **with login as `lumina`**, held by CI | **none** — the repo is public, so `git fetch` is anonymous |
+| Blast radius if leaked | total: that key owns `secrets.env` | no key exists to leak |
+| Inbound access | CI can open a shell on production | nothing reaches in |
+| If GitHub is down | no deploys | deploys still work |
 
-1. `git pull --ff-only` then `pip install` — code first, dependencies second
-   (pip alone is a silent no-op that once produced a green run against stale
-   code and a meaningless drill result).
-2. **Preflight the new code in a throwaway process** — it must print
-   `STT READY`, `TTS READY` and `PREFLIGHT OK`.
-3. Only then stop the old agent and start the new one.
-4. Verify the new agent cleared the same gates, and fail loudly if it did not.
+If the repo ever goes private this needs a **read-only** deploy key on the box —
+still outbound-only, still unable to log in. A push key can always log in.
 
-The old agent keeps serving through steps 1–2. If the preflight fails the deploy
-aborts red **with the working agent still running and untouched.**
+### The procedure
 
-### Blocking a deploy during a drill
+[`scripts/deploy-agent.sh`](scripts/deploy-agent.sh), run identically by the
+timer, by a human, or by hand. **The ordering is the safety property:**
 
-```bash
-touch ~/luminastreamv1/agent/.deploy-hold     # restarts are skipped
-rm    ~/luminastreamv1/agent/.deploy-hold     # and re-enabled
-```
+1. `git fetch`; stop immediately if `origin/main` has not moved.
+2. `git pull --ff-only` — a diverged checkout stops the deploy, never merges on production.
+3. **Build a *new* venv for this release.** The live agent's venv is never touched, so a half-finished `pip install` cannot poison a running process.
+4. **Preflight the new build in a throwaway LiveKit room** (`--room preflight-$$ --identity echo-preflight-$$`). The default room and identity would collide with the live agent — LiveKit evicts on duplicate identity, so a careless preflight would kick the very agent it exists to protect.
+5. Only if `STT READY` / `TTS READY` / `PREFLIGHT OK` all appear: swap the venv symlink (atomic rename) and `systemctl --user restart`.
+6. Verify the new agent cleared the same gates in the journal; report loudly if not.
 
-With the hold file present, code and dependencies still update but the running
-process is left alone — and the deploy says so rather than pretending it swapped.
+The live agent serves untouched through steps 1–4. A failure before step 5
+leaves it running on the old code **and** the old venv.
 
-### One-time setup (human wall — credential minting)
-
-Mint a **dedicated** deploy key. Do not reuse a personal key, and give it no
-passphrase (CI cannot type one):
+### Freeze, and deploy on demand
 
 ```bash
-ssh-keygen -t ed25519 -C "luminastream-deploy" -f ~/.ssh/luminastream_deploy -N ""
-ssh-copy-id -i ~/.ssh/luminastream_deploy.pub lumina@<vps-host>
-ssh-keyscan -H <vps-host>                      # for VPS_KNOWN_HOSTS below
+touch ~/luminastreamv1/agent/.deploy-hold      # block swaps during a drill
+rm    ~/luminastreamv1/agent/.deploy-hold      # unblock
+bash  ~/luminastreamv1/scripts/deploy-agent.sh # deploy now
+cat   ~/luminastreamv1/agent/.deploy-state     # what happened, and when
 ```
 
-Then add four **repository secrets** (Settings → Secrets and variables →
-Actions):
+With the hold file present, code and the new venv are still built **and
+verified** — only the swap is skipped, and the deploy says so rather than
+pretending it succeeded.
 
-| Secret | Value |
-| --- | --- |
-| `VPS_SSH_KEY` | contents of `~/.ssh/luminastream_deploy` (the **private** key) |
-| `VPS_HOST` | the VPS address |
-| `VPS_USER` | `lumina` |
-| `VPS_KNOWN_HOSTS` | output of the `ssh-keyscan` above |
-
-`VPS_KNOWN_HOSTS` is optional but recommended: with it, the deploy fails rather
-than trusting a substituted host. Without it the workflow logs a warning and
-accepts the host key on first use.
-
-The private key never leaves GitHub's secret store — it is written to the
-runner, used, and removed in an `if: always()` step. Nothing prints it.
-
-### Verifying, and recovering
-
-The workflow output is the receipt: it prints a PASS line per startup gate. To
-check by hand, or to recover after a failed restart:
+### One-time setup on the box
 
 ```bash
-ssh lumina@<vps-host>
-tmux attach -t agent          # detach again with Ctrl-B then D
-bash ~/luminastreamv1/scripts/deploy-agent.sh    # same script, run manually
+mkdir -p ~/.config/systemd/user
+cp ~/luminastreamv1/scripts/systemd/lumina-agent.service   ~/.config/systemd/user/
+cp ~/luminastreamv1/scripts/systemd/lumina-deploy.service  ~/.config/systemd/user/
+cp ~/luminastreamv1/scripts/systemd/lumina-deploy.timer    ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now lumina-agent.service
+systemctl --user enable --now lumina-deploy.timer
+
+# Survive logout and start at boot (the one command needing sudo):
+sudo loginctl enable-linger lumina
 ```
+
+User services, so no root and no sudoers rule for the restart. `enable-linger`
+is what makes them start at boot rather than at login.
+
+### Tests
+
+```bash
+bash scripts/test-deploy-agent.sh
+```
+
+Runs the real deploy script against a throwaway repo and a stub python — no
+VPS, no network, no systemd. It pins the properties that matter: a failed
+preflight swaps nothing, the hold file blocks the swap, `--poll` is silent when
+nothing changed, a legacy `.venv` directory is migrated rather than deleted, and
+statically that no restart can precede the gates.
 
 ## Use The Hosted Backend
 

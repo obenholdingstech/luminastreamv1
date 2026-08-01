@@ -128,6 +128,47 @@ the default).
 **Startup gates, in this order — do not proceed past a missing one:**
 `STT READY` → `TTS READY (TTFB …ms)` → `PREFLIGHT OK` → connected to room.
 
+## Agent process & deploys (systemd, pull-based)
+
+The agent is a **systemd user service**, not a process in someone's tmux. tmux
+is for attaching to watch; it is not what keeps the agent alive.
+
+```sh
+systemctl --user status  lumina-agent      # is it up, on what, since when
+systemctl --user restart lumina-agent      # SIGTERM → clean aclose()
+systemctl --user stop    lumina-agent
+journalctl --user -u lumina-agent -f       # follow the log
+journalctl --user -u lumina-agent -n 100 --no-pager
+
+systemctl --user list-timers lumina-deploy.timer   # when the next poll fires
+journalctl --user -u lumina-deploy -n 50 --no-pager
+```
+
+**Deploys are pull-based.** The box polls `origin/main` every two minutes and
+deploys itself when the SHA moves. Nothing outside reaches in — the repo is
+public, so this needs **no credential at all**, and there is no deploy key to
+leak onto a machine holding `secrets.env`.
+
+```sh
+bash ~/luminastreamv1/scripts/deploy-agent.sh          # deploy now, on demand
+touch ~/luminastreamv1/agent/.deploy-hold              # FREEZE (mid-drill)
+rm    ~/luminastreamv1/agent/.deploy-hold              # unfreeze
+cat   ~/luminastreamv1/agent/.deploy-state             # what happened, and when
+```
+
+**A crash loop is a spend leak, not just noise.** Every agent start fires a
+real warm-up synthesis, and the governor is per-process — a hundred restarts is
+a hundred fresh budgets. `StartLimitBurst=5` / `StartLimitIntervalSec=300` make
+systemd give up and park the unit in `failed` rather than bill all night. If
+you see `failed`, that limit did its job; fix the cause, then
+`systemctl --user reset-failed lumina-agent`.
+
+**Blue/green venvs.** `agent/.venv` is a **symlink** into `agent/.venvs/<sha>`.
+Never `pip install` into a venv a live agent is using — a half-written package
+only explodes on a later lazy import, which looks like a working agent with a
+landmine in it. The deploy builds a new venv, proves it, then swaps the link;
+the running process keeps its own by inode.
+
 ## Doctrines
 - **pull-then-pip.** `git pull` BEFORE `pip install`, always. `pip` alone
   is a silent no-op that once produced a vacuous drill result — green
