@@ -52,6 +52,13 @@ export function useMicLevel(track, onLevel) {
 
     try {
       context = new AudioContextCtor();
+      // An AudioContext constructed outside a gesture handler starts
+      // `suspended`, and a suspended context feeds the analyser nothing but
+      // silence — the ring would sit dead still with no error anywhere. This
+      // effect runs after the click that started the session, not inside it,
+      // so the resume is required rather than defensive. Already-running
+      // contexts resolve immediately.
+      context.resume?.().catch(() => {});
       // A dedicated MediaStream wrapping the same track: we only ever read
       // from it. Nothing is connected to context.destination, so this graph
       // cannot route the microphone back out of the speakers.

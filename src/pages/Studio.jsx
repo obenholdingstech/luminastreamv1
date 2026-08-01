@@ -192,15 +192,14 @@ export default function Studio() {
     ?.getTrackPublication(Track.Source.Microphone)
     ?.audioTrack?.mediaStreamTrack;
   const reduceMotion = useReducedMotion();
-  const paintLevel = useCallback(
-    (level) => {
-      // A viewer who asked for reduced motion gets a still ring, not a
-      // throttled one. The audio graph is still running — see below.
-      levelHostRef.current?.style.setProperty('--level', reduceMotion ? '0' : String(level));
-    },
-    [reduceMotion],
-  );
-  useMicLevel(micTrack ?? null, paintLevel);
+  const paintLevel = useCallback((level) => {
+    levelHostRef.current?.style.setProperty('--level', String(level));
+  }, []);
+  // Reduced motion is honoured by not building the audio graph at all, rather
+  // than by building it and discarding every frame. A viewer who asked for a
+  // still interface should not also pay for an AudioContext and a 60 Hz
+  // animation frame loop to produce a number nothing reads.
+  useMicLevel(reduceMotion ? null : (micTrack ?? null), paintLevel);
 
   const unlock = async (event) => {
     event?.preventDefault();
