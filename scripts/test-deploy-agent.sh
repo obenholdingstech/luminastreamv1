@@ -147,6 +147,58 @@ chk "venv symlink unchanged" "$(readlink "$R/agent/.venv")" "$BEFORE"
 grep -q "result=skipped" "$R/agent/.deploy-state"; chk "recorded as skipped" "$?" "0"
 chk "working tree still fast-forwarded" "$(cd "$R" && git rev-parse HEAD)" "$(cd "$R" && git rev-parse origin/main)"
 
+echo "── T10 full happy path reaches the stray scan (zero matches) ──"
+# T1-T9 all stop at the missing systemd unit, so the tail of the script — the
+# restart, the gate re-verification, and the stray scan — was never executed.
+# Stub systemctl/journalctl so the whole path runs, and pin that a zero-match
+# pgrep records `ok` rather than misfiring. (`pgrep -fc` prints 0 AND exits 1
+# on no match, which is exactly how the previous implementation went wrong.)
+mkdir -p "$ROOT/sbin"
+cat > "$ROOT/sbin/systemctl" <<'SC'
+#!/usr/bin/env bash
+case "$*" in
+  *"show -p MainPID"*) echo 0 ;;   # no live service in the test env
+  *) exit 0 ;;                     # list-unit-files / restart both succeed
+esac
+SC
+cat > "$ROOT/sbin/journalctl" <<'JC'
+#!/usr/bin/env bash
+printf 'STT READY
+TTS READY (TTFB 88ms)
+PREFLIGHT OK
+'
+JC
+chmod +x "$ROOT/sbin/systemctl" "$ROOT/sbin/journalctl"
+
+R="$ROOT/r10"; build_repo "$R" "$GOOD"
+rc=$(PATH="$ROOT/sbin:$PATH" ARGS_OUT="$ROOT/args.txt" PIP_LOG="$ROOT/pip.txt" \
+     LUMINA_REPO="$R" LUMINA_PYTHON="$ROOT/bin/fakepython" LUMINA_SERVICE="lumina-agent" \
+     bash "$SCRIPT" >"$ROOT/out.txt" 2>&1; echo $?)
+chk "exit 0 — full path completes" "$rc" "0"
+grep -q "DEPLOY OK" "$ROOT/out.txt"; chk "reports DEPLOY OK" "$?" "0"
+grep -q "result=ok\b" "$R/agent/.deploy-state"; chk "zero strays recorded as ok, not misfired" "$?" "0"
+# Deliberately NOT asserting the absence of a stray warning here: pgrep is
+# machine-global, so any unrelated process on a developer box matching the
+# pattern would trip it. That is flaky, not meaningful. T11 pins detection
+# positively instead, which is the direction that actually matters.
+
+echo "── T11 a real stray IS detected and named ──"
+# The zero-match case is not discriminating: both the old and new
+# implementations land on `ok` with nothing running. The defect only bites
+# when a stray EXISTS — so spawn one whose argv matches, and require the
+# deploy to name its PID rather than silently reporting healthy.
+( exec -a "python3 convert_agent.py --engine tts --mode convert" sleep 30 ) &
+STRAY_PID=$!
+sleep 0.3
+R="$ROOT/r11"; build_repo "$R" "$GOOD"
+rc=$(PATH="$ROOT/sbin:$PATH" ARGS_OUT="$ROOT/args.txt" PIP_LOG="$ROOT/pip.txt" \
+     LUMINA_REPO="$R" LUMINA_PYTHON="$ROOT/bin/fakepython" LUMINA_SERVICE="lumina-agent" \
+     bash "$SCRIPT" >"$ROOT/out.txt" 2>&1; echo $?)
+grep -q "stray agent process" "$ROOT/out.txt"; chk "stray reported" "$?" "0"
+grep -q "$STRAY_PID" "$ROOT/out.txt"; chk "names the offending PID" "$?" "0"
+grep -q "result=ok-with-stray" "$R/agent/.deploy-state"; chk "recorded as ok-with-stray" "$?" "0"
+kill "$STRAY_PID" 2>/dev/null; wait "$STRAY_PID" 2>/dev/null
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
