@@ -246,6 +246,10 @@ export default function Studio() {
         token: lkToken,
         url: lkUrl,
         adminToken: session,
+        // mintViaServer applies one deadline across the whole exchange
+        // (serverMint.DEFAULT_TIMEOUT_MS). Without it a hung request would
+        // never settle, `finally` would never run, and this form — the only
+        // way into the lens — would sit disabled with nothing to show.
       } = await mintViaServer({
         password: accessKey,
         adminToken,

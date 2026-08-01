@@ -103,3 +103,81 @@ test('mintViaServer does not retry a 401 when no password is available', async (
     /session expired/,
   );
 });
+
+// ── deadlines ──────────────────────────────────────────────────────────────
+// fetch() has no timeout of its own, so a hung request would leave the unlock
+// form disabled forever with nothing to show. These pin the deadline down.
+
+test('every request carries an abort signal', async () => {
+  const signals = [];
+  stub(async (_url, opts) => {
+    signals.push(opts.signal);
+    return jsonResponse(200, { ok: true, token: 'sess.tok' });
+  });
+  await verifyAdmin('pw', BASE);
+  assert.equal(signals.length, 1);
+  assert.ok(signals[0] instanceof AbortSignal, 'verifyAdmin sent no signal');
+});
+
+// A request that only ever settles on abort. If the deadline is not wired
+// through, this rejects on its own guard timer rather than hanging: a test that
+// hangs is barely better than one that cannot fail, because it stalls the suite
+// instead of naming the defect. Verified by deleting the signal from postJson —
+// these fail with 'no deadline reached fetch' instead of blocking.
+function hangsUntilAborted(guardMs = 2000) {
+  return (_url, opts) =>
+    new Promise((_resolve, reject) => {
+      const guard = setTimeout(
+        () => reject(new Error('no deadline reached fetch')),
+        guardMs,
+      );
+      opts.signal?.addEventListener('abort', () => {
+        clearTimeout(guard);
+        reject(opts.signal.reason);
+      });
+    });
+}
+
+test('a hung request becomes a readable error, not an endless wait', async () => {
+  stub(hangsUntilAborted());
+  await assert.rejects(
+    () => verifyAdmin('pw', BASE, AbortSignal.timeout(10)),
+    /did not respond/,
+    'a timed-out verify must surface as a human-readable error',
+  );
+  await assert.rejects(
+    () => mintToken('sess', { room: 'r', identity: 'i' }, BASE, AbortSignal.timeout(10)),
+    /did not respond/,
+    'a timed-out mint must surface as a human-readable error',
+  );
+});
+
+test('mintViaServer shares ONE deadline across every hop', async () => {
+  const signals = [];
+  let call = 0;
+  stub(async (_url, opts) => {
+    signals.push(opts.signal);
+    call += 1;
+    if (call === 1) return jsonResponse(200, { ok: true, token: 'sess.tok' }); // verify
+    if (call === 2) return jsonResponse(401, { ok: false }); // mint → session expired
+    if (call === 3) return jsonResponse(200, { ok: true, token: 'sess2.tok' }); // re-verify
+    return jsonResponse(200, { ok: true, token: 'lk.tok', url: 'wss://x' }); // mint
+  });
+
+  const out = await mintViaServer({ password: 'pw', room: 'r', identity: 'i' }, BASE);
+  assert.equal(out.token, 'lk.tok');
+  assert.equal(signals.length, 4, 'the retry path should make four requests');
+  // One deadline for the exchange, not one per hop — otherwise the worst case
+  // stacks to four times the budget.
+  assert.equal(new Set(signals).size, 1, 'each hop got its own deadline');
+});
+
+test('a caller may shorten the deadline', async () => {
+  stub(hangsUntilAborted());
+  const started = Date.now();
+  await assert.rejects(
+    () => mintViaServer({ password: 'pw', room: 'r', identity: 'i', timeoutMs: 20 }, BASE),
+    /did not respond/,
+  );
+  assert.ok(Date.now() - started < 5000, 'the short deadline was ignored');
+});
