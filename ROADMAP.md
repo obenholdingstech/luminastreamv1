@@ -70,7 +70,7 @@ Clearing the debt that would otherwise be paid at a worse time.
 
 - ✅ Pull-based blue/green agent deploy on systemd *(#24)*
 - ✅ The lens on `/`, Base44 excised — 107 files, 33 dependencies *(#25)*
-- ⬜ **This document**, and the doctrine below
+- ✅ **This document**, and the doctrine below *(#26)*
 - ⬜ **CI hardening.** The deploy workflow currently runs **no tests and no
   lint**. Nine rounds of external review on #25 found twenty-five issues that a
   pipeline should have been the first to see.
@@ -130,25 +130,74 @@ against a runaway loop burning the company's card during testing. They are not
 the production model. A user with a funded wallet streams as long as the wallet
 covers, and the wallet is debited against metered COGS.
 
-### P6 — The Lens *(~3 weeks, gated on Apple enrolment)*
+### P6 — The Lens *(~3–4 weeks of build, gated on Apple enrolment)*
 
 The native macOS app. This is the product claim becoming true.
 
-- **Virtual Camera:** CoreMediaIO Camera Extension (ExtensionKit) — embedded in
-  the app bundle, no installer, no reboot.
-- **Virtual Microphone:** an **AudioServerPlugIn** (CoreAudio HAL) — a different
-  technology from the camera, and Apple's explicit guidance for purely virtual
-  audio devices. Precedents: BlackHole, Soundflower, BackgroundMusic.
-- **Audio-only mode** ships here: the mic without the camera, for voice calls.
+**The camera and the microphone are not one job done twice.** They are different
+technologies with different install paths, different approval flows, and
+different failure modes for the user. Planning them as a pair is the mistake this
+section exists to prevent — and the microphone, which is a *first-class*
+deliverable here because audio-only is a whole product mode, is the harder half.
+
+**Virtual Camera — CoreMediaIO Camera Extension (`CMIOExtension`)**
+
+- macOS **12.3+** for the API; the Xcode template and the full feature set want
+  Ventura.
+- Ships **inside the app bundle** at `Contents/Library/SystemExtensions`. No
+  separate installer package — but "no installer" is not "no install flow".
+- Activated at runtime via `OSSystemExtensionRequest.activationRequest` through
+  `OSSystemExtensionManager`.
+- **The container app must live in `/Applications`.** Activation fails anywhere
+  else. That is a distribution constraint, not a detail — a user who runs it from
+  `~/Downloads` gets a failure we have to explain.
+- The user sees a **"System Extension Blocked"** alert and must approve it in
+  **System Settings → Privacy & Security**. First-run onboarding has to walk them
+  through this or the product simply does not appear in Zoom.
+- Uninstalls when the user deletes the app from `/Applications`.
+- The extension is **sandboxed** — `Process.run()` is unavailable, so anything
+  the extension needs must arrive over IPC.
+- Entitlements: System Extension capability, matching App Groups on both targets,
+  camera permission, and `NSCameraUsageDescription` in **both** Info.plists.
+
+**Virtual Microphone — the decision that has to be made before the estimate holds**
+
+Two routes, and they differ enormously in what we ask of the user:
+
+1. **`AudioServerPlugIn` (CoreAudio HAL)** — Apple's long-standing guidance for
+   purely virtual audio devices, and what BlackHole, Soundflower and
+   BackgroundMusic all use. But it installs as a `.driver` bundle into
+   **`/Library/Audio/Plug-Ins/HAL`**, owned `root:wheel`, which means a
+   **privileged installer package and an admin password prompt** — and
+   `coreaudiod` must be restarted
+   (`sudo launchctl kickstart -kp system/com.apple.audio.coreaudiod`) before the
+   device is discoverable. A separate, heavier, more alarming install than the
+   camera's.
+2. **`AudioDriverKit`** — a DriverKit system extension, so it ships embedded in
+   the app bundle and follows the *same* activation-and-approval flow as the
+   camera. One install story instead of two, at the cost of a newer and less
+   battle-tested API for a purely virtual device.
+
+**This is unresolved and is the first task of P6, not an implementation detail.**
+Route 1 is proven and asks the user for an admin password; route 2 is cleaner and
+less trodden. Prototype both against a real Zoom/WhatsApp call before committing
+— that probe is cheap and it moves the whole phase estimate.
+
+**The rest**
+
+- **Audio-only mode** ships here: the microphone with no camera at all, for voice
+  calls. It depends only on whichever route above wins.
 - A hidden `WKWebView` drives the existing pipeline, so P1–P3 are reused rather
   than reimplemented. Browser-throttling physics do not apply — this is our own
-  always-foreground process.
+  always-foreground process, not a backgrounded tab.
 - Windows (`MFCreateVirtualCamera`, user-mode COM) is designed for, post-Stage 2.
 
 > **Hard external gate:** Apple Developer Program enrolment, Developer ID
 > certificate, notarisation. Restricted entitlements fail signature validation
-> without them. **Enrolment has lead time and is a human-wall action — it must
-> start during P0 or it becomes the critical path.**
+> without them, so nothing above can even be tested on another machine until
+> enrolment completes. **It has lead time, it is a human-wall action, and it must
+> start during P0 or it becomes the critical path.** The 3–4 week estimate is
+> build time and excludes enrolment and notarisation latency entirely.
 
 ### P7 — Design & experience *(a dedicated session, CEO-requested)*
 

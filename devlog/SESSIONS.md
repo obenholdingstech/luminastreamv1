@@ -86,19 +86,33 @@ a promise that only settles on abort, with the abort removed. The others: an
 `indexOf` returning −1 that made a renamed field report as a deleted one, and
 coverage claimed for a path the suite never reached.
 
-**5. The leak the setup guard structurally could not reach.** `tick` runs from
+**5. P6 was planned wrong, and CodeRabbit caught it in the roadmap.** I wrote the
+macOS camera extension as "embedded in the app bundle, no installer, no reboot".
+Verified against Apple's docs and the CMIO community writeups: the extension does
+ship in the bundle, but it needs `OSSystemExtensionRequest` activation, the
+container app **must be in `/Applications`**, and the user must clear a "System
+Extension Blocked" alert in Privacy & Security. And the microphone is worse — an
+`AudioServerPlugIn` installs to `/Library/Audio/Plug-Ins/HAL` as `root:wheel`,
+which means a privileged installer, an admin password prompt, and a `coreaudiod`
+restart before the device is discoverable. **The camera and mic are not one job
+done twice**, and the mic — a first-class deliverable, since audio-only is a whole
+product mode — is the harder half. `AudioDriverKit` would give the mic the same
+embedded flow as the camera; that choice is now P6's first task rather than an
+implementation detail, and P6 widened to 3–4 weeks of build.
+
+**6. The leak the setup guard structurally could not reach.** `tick` runs from
 the browser's animation-frame callback, not from inside the setup `try`. A throw
 there escaped to the browser, scheduled no next frame, and never reached
 teardown — the same leaked `AudioContext` the failure path already guarded,
 arriving by a route that guard has no visibility into.
 
-**6. Presence is not liveness.** A device unplugged mid-session leaves the
+**7. Presence is not liveness.** A device unplugged mid-session leaves the
 publication in place holding a track that has **ended** — still an object,
 producing nothing. The ring animated silence while the readout said "live".
 Filtered on `readyState === 'live'`, with an `ended` listener on the track
 itself: that event produces no room event, so nothing else would ever re-read.
 
-**7. `fetch()` has no timeout.** The unlock exchange could hang forever, leaving
+**8. `fetch()` has no timeout.** The unlock exchange could hang forever, leaving
 the only entry to the lens disabled with no error. Not hypothetical here — the
 CEO's Starlink intermittently blackholes DNS, already documented as a drill
 hazard. One deadline across the whole exchange, not one per hop.
@@ -119,7 +133,7 @@ hazard. One deadline across the whole exchange, not one per hop.
 
 ### Verification
 
-```
+```text
 parentage (fails closed)   origin/main is ancestor ✓, 10 commits, only this PR's
 npm run lint               clean
 npm run typecheck          clean
