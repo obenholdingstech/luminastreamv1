@@ -96,9 +96,15 @@ Extension Blocked" alert in Privacy & Security. And the microphone is worse — 
 which means a privileged installer, an admin password prompt, and a `coreaudiod`
 restart before the device is discoverable. **The camera and mic are not one job
 done twice**, and the mic — a first-class deliverable, since audio-only is a whole
-product mode — is the harder half. `AudioDriverKit` would give the mic the same
-embedded flow as the camera; that choice is now P6's first task rather than an
-implementation detail, and P6 widened to 3–4 weeks of build.
+product mode — is the harder half. I first widened the section to offer `AudioDriverKit` as
+an alternative route with the same embedded flow as the camera — then checked,
+and it is **not a route at all**: Apple supports AudioDriverKit for *physical*
+audio devices only and states that entitlements will not be granted for virtual
+ones. So the mic is an `AudioServerPlugIn`, its install friction is a fixed
+product constraint rather than an open decision, and P7 owes it design time.
+Worth recording that I added that route on a review suggestion and only verified
+it on the next round — doctrine 6 says verify the invocation before believing the
+verdict, and a suggestion is a verdict too.
 
 **6. The leak the setup guard structurally could not reach.** `tick` runs from
 the browser's animation-frame callback, not from inside the setup `try`. A throw

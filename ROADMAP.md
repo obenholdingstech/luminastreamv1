@@ -157,36 +157,47 @@ deliverable here because audio-only is a whole product mode, is the harder half.
 - Uninstalls when the user deletes the app from `/Applications`.
 - The extension is **sandboxed** — `Process.run()` is unavailable, so anything
   the extension needs must arrive over IPC.
-- Entitlements: System Extension capability, matching App Groups on both targets,
-  camera permission, and `NSCameraUsageDescription` in **both** Info.plists.
+- **Entitlements, scoped by which target actually captures.** The *host app*
+  needs `com.apple.developer.system-extension.install`, App Groups, and — because
+  the host is what opens the user's real camera to feed the pipeline — camera
+  permission with `NSCameraUsageDescription`. The *extension* needs App Groups
+  and its own signature, and **not** camera permission: it generates frames from
+  IPC rather than capturing them from hardware. Asking for a privacy permission a
+  target does not use is a gratuitous scare in an install flow that is already
+  asking the user for trust.
 
-**Virtual Microphone — the decision that has to be made before the estimate holds**
+**Virtual Microphone — `AudioServerPlugIn`, and there is no second route**
 
-Two routes, and they differ enormously in what we ask of the user:
+This one is settled, and it is settled *against* the convenient answer.
 
-1. **`AudioServerPlugIn` (CoreAudio HAL)** — Apple's long-standing guidance for
-   purely virtual audio devices, and what BlackHole, Soundflower and
-   BackgroundMusic all use. But it installs as a `.driver` bundle into
-   **`/Library/Audio/Plug-Ins/HAL`**, owned `root:wheel`, which means a
-   **privileged installer package and an admin password prompt** — and
-   `coreaudiod` must be restarted
-   (`sudo launchctl kickstart -kp system/com.apple.audio.coreaudiod`) before the
-   device is discoverable. A separate, heavier, more alarming install than the
-   camera's.
-2. **`AudioDriverKit`** — a DriverKit system extension, so it ships embedded in
-   the app bundle and follows the *same* activation-and-approval flow as the
-   camera. One install story instead of two, at the cost of a newer and less
-   battle-tested API for a purely virtual device.
+`AudioDriverKit` would have let the microphone ship as an embedded system
+extension with the same activation-and-approval flow as the camera — one install
+story instead of two. **It is not available to us.** Apple's guidance is explicit
+that AudioDriverKit supports *physical* audio devices only, that virtual devices
+should continue to use the Audio Server plug-in model, and that **entitlements
+will not be granted for virtual audio drivers**. It is not a riskier route; it is
+a route that fails at the entitlement request. (Core Audio taps are also named for
+loopback, which is not what we do — we inject synthesised audio as a source, not
+observe existing output.)
 
-**This is unresolved and is the first task of P6, not an implementation detail.**
-Route 1 is proven and asks the user for an admin password; route 2 is cleaner and
-less trodden. Prototype both against a real Zoom/WhatsApp call before committing
-— that probe is cheap and it moves the whole phase estimate.
+So the microphone is an **`AudioServerPlugIn`** (CoreAudio HAL), as BlackHole,
+Soundflower and BackgroundMusic all are, and it carries their install path:
+
+- a `.driver` bundle into **`/Library/Audio/Plug-Ins/HAL`**, owned `root:wheel`
+- therefore a **privileged installer package and an admin password prompt**
+- and a `coreaudiod` restart
+  (`sudo launchctl kickstart -kp system/com.apple.audio.coreaudiod`) before the
+  device is discoverable at all
+
+**That friction is a fixed product constraint, not an open decision.** It cannot
+be engineered away, so it has to be designed for: the install flow asks for an
+administrator password, and the onboarding has to earn that moment rather than
+spring it. Budget design time for it in P7, not just build time here.
 
 **The rest**
 
 - **Audio-only mode** ships here: the microphone with no camera at all, for voice
-  calls. It depends only on whichever route above wins.
+  calls.
 - A hidden `WKWebView` drives the existing pipeline, so P1–P3 are reused rather
   than reimplemented. Browser-throttling physics do not apply — this is our own
   always-foreground process, not a backgrounded tab.
