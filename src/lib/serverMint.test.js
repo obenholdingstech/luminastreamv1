@@ -181,3 +181,24 @@ test('a caller may shorten the deadline', async () => {
   );
   assert.ok(Date.now() - started < 5000, 'the short deadline was ignored');
 });
+
+test('a runtime without AbortSignal.timeout still gets a real deadline', async () => {
+  // The fallback matters most on exactly the older runtimes that would
+  // otherwise be handed the one code path with no deadline at all.
+  const realTimeout = AbortSignal.timeout;
+  // eslint-disable-next-line no-undef
+  Object.defineProperty(AbortSignal, 'timeout', { value: undefined, configurable: true });
+  try {
+    stub(hangsUntilAborted());
+    await assert.rejects(
+      () => mintViaServer({ password: 'pw', room: 'r', identity: 'i', timeoutMs: 20 }, BASE),
+      /did not respond/,
+      'the AbortController fallback did not fire',
+    );
+  } finally {
+    Object.defineProperty(AbortSignal, 'timeout', {
+      value: realTimeout,
+      configurable: true,
+    });
+  }
+});

@@ -133,12 +133,20 @@ export function deriveLensStatus({
     };
   }
 
-  const lens = lensModeFor(agentMode);
+  // Explicitly connected, not "everything else". This branch is the last
+  // fall-through, so without the check any state this module does not
+  // recognise — a livekit-client release adding one — would be reported as
+  // live. The page would then assert that a voice is being transformed on a
+  // session that is not even connected.
+  const lens =
+    connectionState === CONNECTION.connected ? lensModeFor(agentMode) : null;
   if (!lens) {
     return {
       id: 'waiting',
       label: 'Waiting for the agent',
-      detail: 'Connected. No agent has claimed this room yet.',
+      // Worded to hold for both cases it now covers: connected with no agent,
+      // and a state we cannot vouch for.
+      detail: 'Waiting for an agent to claim this room.',
       tone: 'working',
     };
   }

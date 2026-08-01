@@ -212,17 +212,38 @@ export default function Studio() {
       setMicTrack(null);
       return undefined;
     }
-    const read = () =>
-      setMicTrack(
+    let current = null;
+    const read = () => {
+      const next =
         room.localParticipant?.getTrackPublication(Track.Source.Microphone)?.audioTrack
-          ?.mediaStreamTrack ?? null,
-      );
+          ?.mediaStreamTrack ?? null;
+      // readyState, not merely presence. A device unplugged mid-session leaves
+      // the publication in place with a track that has ENDED — still an object,
+      // producing nothing. Treating that as live is how the ring animates
+      // silence while the readout insists the mic is working.
+      const live = next && next.readyState === 'live' ? next : null;
+
+      // `ended` fires on the track itself and produces no room event at all,
+      // so nothing above would ever re-read without this listener.
+      if (current !== live) {
+        current?.removeEventListener?.('ended', read);
+        live?.addEventListener?.('ended', read);
+        current = live;
+      }
+      setMicTrack(live);
+    };
     read();
     room.on(RoomEvent.LocalTrackPublished, read);
     room.on(RoomEvent.LocalTrackUnpublished, read);
+    // Muting can stop the underlying track without unpublishing it.
+    room.on(RoomEvent.TrackMuted, read);
+    room.on(RoomEvent.TrackUnmuted, read);
     return () => {
       room.off(RoomEvent.LocalTrackPublished, read);
       room.off(RoomEvent.LocalTrackUnpublished, read);
+      room.off(RoomEvent.TrackMuted, read);
+      room.off(RoomEvent.TrackUnmuted, read);
+      current?.removeEventListener?.('ended', read);
     };
   }, [room]);
 

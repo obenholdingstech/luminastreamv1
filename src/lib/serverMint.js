@@ -22,13 +22,28 @@ function isAbort(err) {
 }
 
 /**
- * A signal that fires after `ms`, or null where the runtime lacks
- * AbortSignal.timeout. Absent support means no deadline — never a thrown
- * request, which would turn a missing convenience into a broken unlock.
+ * A signal that fires after `ms`.
+ *
+ * AbortSignal.timeout is the direct route, but falling back to `null` when it
+ * is missing would hand exactly the older runtimes that most need a deadline
+ * the one code path that has none. AbortController plus a timer is universally
+ * available and gives the same guarantee, so the fallback is a real deadline
+ * rather than an absent one. Returns null only if even that fails, because a
+ * missing convenience must never become a thrown request.
  */
 function deadline(ms = DEFAULT_TIMEOUT_MS) {
   try {
-    return AbortSignal.timeout(ms);
+    if (typeof AbortSignal?.timeout === 'function') return AbortSignal.timeout(ms);
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new DOMException('signal timed out', 'TimeoutError'));
+    }, ms);
+    // Never hold a Node process (or a test runner) open on a deadline that is
+    // only there in case something else stalls. In the browser setTimeout
+    // returns a number with no unref, which is why the call is guarded rather
+    // than typed — the DOM lib types this as `number`.
+    /** @type {any} */ (timer)?.unref?.();
+    return controller.signal;
   } catch {
     return null;
   }

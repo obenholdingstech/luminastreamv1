@@ -202,6 +202,20 @@ test('called with nothing at all, it does not throw', () => {
   assert.equal(s.tone, 'working'); // unknown state → not idle, not live
 });
 
+// The live branch is the last fall-through, so any state this module does not
+// recognise used to land there. A future livekit-client state would then be
+// reported as "Live — Converted" for a session that is not connected: the page
+// asserting something the transport does not support, which is the one thing it
+// exists to avoid.
+test('an unrecognised connection state is never reported as live', () => {
+  const s = deriveLensStatus({
+    connectionState: 'quantum-superposition',
+    agentMode: 'convert',
+  });
+  assert.notEqual(s.tone, 'live');
+  assert.equal(s.id, 'waiting');
+});
+
 // ── latency ────────────────────────────────────────────────────────────────
 
 test('median of the recent window, not the newest sample', () => {
@@ -221,14 +235,19 @@ test('even-sized windows average the two middles', () => {
 });
 
 test('only the newest sampleSize utterances count', () => {
+  // The two windows must DISAGREE. The previous data was
+  // [100,100,100,9000,9000], whose median is 100 with or without the bound —
+  // so the test held even if sampleSize were ignored entirely. Asserting both
+  // windows is what makes ignoring the bound detectable.
   const utterances = [
-    { tail_latency_ms: 100 },
+    { tail_latency_ms: 9000 },
     { tail_latency_ms: 100 },
     { tail_latency_ms: 100 },
     { tail_latency_ms: 9000 },
     { tail_latency_ms: 9000 },
   ];
-  assert.equal(medianTailMs(utterances, 3), 100);
+  assert.equal(medianTailMs(utterances, 3), 100, 'the bounded window');
+  assert.equal(medianTailMs(utterances), 9000, 'the full window must differ');
 });
 
 // sampleSize bounds the TIMED samples, not the positional window. A burst of
