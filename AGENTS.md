@@ -12,9 +12,17 @@ rules that bind agents working here: session logging, git and merge workflow,
 and VPS operations.
 
 This repository was generated from a Base44 template and ran on a Base44
-backend until that layer was deleted. If you find surviving references to
-`base44`, `@base44/*`, `base44 dev`, or a hosted Base44 backend, they are
-stale — delete them rather than building against them.
+backend until that layer was deleted.
+
+**Never build against it.** Any surviving *executable* reference — an import of
+`@base44/*`, a `base44 dev` instruction, a dependency, a call to a hosted
+Base44 endpoint — is stale, and the fix is to delete it, not to make it work.
+
+Comments and docs that *name* the vendor while explaining what was removed and
+why are deliberate and stay. `vite.config.js` declares the `@` alias explicitly
+because the deleted plugin used to supply it; deleting that sentence is how the
+alias gets quietly dropped by the next person tidying up. The rule is about
+what the code depends on, not about which words appear in it.
 
 ## The pieces
 

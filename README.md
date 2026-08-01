@@ -49,11 +49,17 @@ speaker; a second concurrent session needs its own room **and** its own agent.
 
 ## Verification
 
+Everything below is the release gate. All of it runs before a PR is opened; CI
+runs the frontend half on push.
+
 ```bash
 npm run lint
-node --test src/lib/*.test.js     # includes a real `vite build` guard
+npm run typecheck                  # tsc over src/ with checkJs
+node --test src/lib/*.test.js      # includes a real `vite build` guard
 npm run build
-cd agent && pytest -q
+
+(cd workers/api && node --test)    # the Worker's own suite
+(cd agent && pytest -q)            # the voice agent's suite
 ```
 
 ## Deploy — Cloudflare Pages (studio.luminastream.live)

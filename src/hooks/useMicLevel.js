@@ -86,6 +86,18 @@ export function useMicLevel(track, onLevel) {
     } catch {
       // Autoplay policy, a track that ended mid-setup, an exhausted audio
       // context budget — none of these are worth failing a voice session over.
+      //
+      // But the context is constructed BEFORE the calls that can throw, and
+      // returning undefined means no cleanup function ever runs. Browsers cap
+      // concurrent AudioContexts per page, so a failure that repeats across
+      // track changes would exhaust the budget and then the ring is dead for
+      // the rest of the page's life. Close it here rather than leaking it.
+      try {
+        source?.disconnect();
+      } catch {
+        // never connected
+      }
+      context?.close?.().catch(() => {});
       return undefined;
     }
 

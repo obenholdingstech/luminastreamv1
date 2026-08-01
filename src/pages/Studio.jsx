@@ -406,6 +406,8 @@ export default function Studio() {
                   value={accessKey}
                   onChange={(e) => setAccessKey(e.target.value)}
                   placeholder="••••••••"
+                  aria-invalid={Boolean(unlockError)}
+                  aria-describedby={unlockError ? 'access-key-error' : undefined}
                   className="flex-1 min-w-0 bg-[#0C0C16] border border-[#1A1A2E] rounded-full px-5 py-3 text-sm text-white placeholder:text-[#2E2E44] focus:outline-none focus:border-[#6366F1]/60 transition-colors"
                 />
                 <button
@@ -417,8 +419,16 @@ export default function Studio() {
                   Unlock
                 </button>
               </div>
+              {/* role="alert" rather than plain text: this form is the only
+                  way into the lens, so a screen-reader user who submits a bad
+                  key would otherwise get silence and no idea why nothing
+                  happened. */}
               {unlockError && (
-                <p className="flex items-center justify-center gap-1.5 text-[11px] text-[#EF4444]">
+                <p
+                  id="access-key-error"
+                  role="alert"
+                  className="flex items-center justify-center gap-1.5 text-[11px] text-[#EF4444]"
+                >
                   <AlertTriangle size={11} /> {unlockError}
                 </p>
               )}
