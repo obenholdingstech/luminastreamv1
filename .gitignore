@@ -44,5 +44,9 @@ CTO_HANDOVER*.md
 *.pyc
 __pycache__/
 
+# Knowledge-graph output from the /graphify skill — a generated artifact of the
+# repo's own contents, regenerable on demand and large. Never a source of truth.
+graphify-out/
+
 # Generated run reports from --report (evidence lives on the PR, not in git)
 agent/*report*.json

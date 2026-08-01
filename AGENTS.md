@@ -7,9 +7,15 @@ to the operating system as a Virtual Camera and Virtual Microphone, which the
 user then selects inside WhatsApp, Zoom, TikTok or Discord. The browser app in
 this repo is the workshop and the demo stage — it is never the product.
 
-Start with `README.md` for setup and deploy, and `CLAUDE.md` for the operating
-rules that bind agents working here: session logging, git and merge workflow,
-and VPS operations.
+Read `ROADMAP.md` first — it is the canon: what the product is, what state it
+is actually in, what order the remaining work happens in, and the doctrine
+(§4), every entry of which was paid for by a specific failure recorded in
+`devlog/SESSIONS.md`. Then `README.md` for setup and deploy, and `CLAUDE.md`
+for the operating rules that bind agents working here: session logging, git and
+merge workflow, and VPS operations.
+
+When `ROADMAP.md` and the code disagree, the code is right and the document is
+a bug — fix it in the same PR that caused the drift.
 
 This repository was generated from a Base44 template and ran on a Base44
 backend until that layer was deleted.

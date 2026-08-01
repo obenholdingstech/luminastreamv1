@@ -19,6 +19,9 @@ The engine itself runs off-browser: a Python agent on a VPS (`agent/`), a
 Cloudflare Worker for session authority (`workers/api/`), and LiveKit Cloud for
 transport.
 
+**[`ROADMAP.md`](ROADMAP.md) is the canon** — the full product definition, the
+real state of the system, the phase order, and the doctrine. Start there.
+
 ## Prerequisites
 
 1. Clone the repository and `cd` into it.
