@@ -280,19 +280,37 @@ ls -1dt "$VENVS_DIR"/*/ 2>/dev/null | tail -n "+$((KEEP_VENVS + 1))" | while rea
   rm -rf "$old" && note "pruned $(basename "$old")"
 done
 
-# A hand-started agent (e.g. left running in tmux from before systemd) would
-# join the same room under the SAME default identity, and LiveKit evicts on
-# duplicate identity — the two would fight over the slot. systemd cannot see
-# it, so say so loudly rather than let it look like a flaky connection.
-STRAY="$(pgrep -fc 'convert_agent\.py' 2>/dev/null || echo 0)"
-if [ "${STRAY:-0}" -gt 1 ]; then
-  bad "$STRAY convert_agent.py processes are running — expected 1"
-  note "A hand-started agent is probably still alive (tmux?). Two agents sharing"
-  note "the default identity evict each other. Find and stop the stray:"
+# A hand-started agent (e.g. left running in tmux from before systemd) joins
+# the same room under the SAME default identity, and LiveKit evicts on
+# duplicate identity — the two fight over the slot. systemd cannot see it, so
+# say so loudly rather than let it look like a flaky connection.
+#
+# Counting `convert_agent.py` processes is not enough: our own preflight runs
+# one too, and a `pgrep -fc` with no match prints 0 AND exits 1, so a naive
+# `|| echo 0` yields "0\n0" and the numeric test silently misfires. Identify
+# the service's own process by PID and exclude preflights explicitly.
+MAIN_PID="$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null)"
+MAIN_PID="${MAIN_PID:-0}"
+STRAYS=""
+while read -r pid rest; do
+  [ -z "${pid:-}" ] && continue
+  case "$rest" in *echo-preflight*) continue ;; esac   # our own preflight
+  [ "$pid" = "$MAIN_PID" ] && continue                 # the service itself
+  STRAYS="$STRAYS $pid"
+done <<STRAY_EOF
+$(pgrep -af 'convert_agent\.py' 2>/dev/null)
+STRAY_EOF
+
+if [ -n "${STRAYS# }" ]; then
+  bad "stray agent process(es) outside systemd:${STRAYS}"
+  note "A hand-started agent is still alive (tmux?). Two agents sharing the"
+  note "default identity evict each other. Stop it:"
   note "  pgrep -af convert_agent.py"
-  record "ok-with-stray" "$SHORT_SHA" "$STRAY agent processes"
+  note "  kill -INT${STRAYS}"
+  record "ok-with-stray" "$SHORT_SHA" "stray pids:${STRAYS}"
 else
   record "ok" "$SHORT_SHA" "healthy"
 fi
+
 echo
 echo "DEPLOY OK — $SERVICE running $SHORT_SHA."

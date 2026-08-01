@@ -105,28 +105,35 @@ ssh lumina@<vps-host>
 # `git pull` deploys whatever branch the box happens to be on.
 cd ~/luminastreamv1 && git switch main && git pull --ff-only origin main
 
-# One-time install of the units (idempotent):
+# STOP ANY HAND-STARTED AGENT *BEFORE* ENABLING THE SERVICE.
+# systemd cannot see a process someone launched in tmux, so enabling the unit
+# would start a SECOND agent. Both join the same room under the same default
+# identity, LiveKit evicts on duplicate identity, and they fight over the slot
+# — which presents as a flaky connection, not as a configuration error.
+pgrep -af convert_agent.py          # expect NOTHING before the unit is enabled
+tmux attach -t agent                # Ctrl-C the agent, then Ctrl-B D to detach
+pgrep -af convert_agent.py          # confirm it is gone
+
+# Install the units (idempotent):
 mkdir -p ~/.config/systemd/user
 cp ~/luminastreamv1/scripts/systemd/*.service ~/.config/systemd/user/
 cp ~/luminastreamv1/scripts/systemd/*.timer   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now lumina-agent.service
 systemctl --user enable --now lumina-deploy.timer
-sudo loginctl enable-linger lumina     # start at boot, not just at login
+sudo loginctl enable-linger lumina  # start at boot, not just at login
 
 systemctl --user status lumina-agent
 journalctl --user -u lumina-agent -n 50 --no-pager
 ```
 
-**Before enabling the service, stop any hand-started agent.** systemd does not
-know about a process someone launched in tmux, so it would start a *second*
-one. Both join the same room under the same default identity, and LiveKit
-evicts on duplicate identity — they fight over the slot and it looks like a
-flaky connection.
+**Checking for strays later.** Once systemd owns the agent, do not just count
+`convert_agent.py` processes — a deploy in progress runs its own preflight
+under `echo-preflight-*`, which is expected. Compare against the service PID:
 
 ```sh
-pgrep -af convert_agent.py     # expect exactly one line once systemd owns it
-tmux attach -t agent           # Ctrl-C a stray, then Ctrl-B D to detach
+systemctl --user show -p MainPID --value lumina-agent.service
+pgrep -af convert_agent.py    # anything that is neither MainPID nor a preflight
 ```
 
 **Startup gates, in this order — do not proceed past a missing one:**
