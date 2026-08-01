@@ -25,7 +25,14 @@ chk() { if [ "$2" = "$3" ]; then printf '  \033[32mok\033[0m   %s\n' "$1"; PASS=
 
 build_repo() {   # $1 = dir, $2 = gates the stub agent will print
   rm -rf "$1" "$1.origin"; : > "$ROOT/args.txt"; : > "$ROOT/pip.txt"
-  mkdir -p "$1.origin" && (cd "$1.origin" && git init -q --bare)
+  # HEAD is set EXPLICITLY rather than inherited from init.defaultBranch.
+  # Without this the bare repo's HEAD is whatever the developer's global git
+  # config says — `main` on a machine configured for it, `master` on a stock
+  # CI runner. A later `git clone` of this remote then checks out nothing, and
+  # every test that clones silently sets up wrong. `symbolic-ref` rather than
+  # `git init -b main` so it works on git older than 2.28.
+  mkdir -p "$1.origin" && (cd "$1.origin" && git init -q --bare) \
+    && git --git-dir="$1.origin" symbolic-ref HEAD refs/heads/main
   mkdir -p "$1/agent" "$1/scripts"
   : > "$1/agent/requirements.txt"
   cat > "$1/agent/convert_agent.py" <<PYEOF
@@ -34,10 +41,22 @@ open(os.environ.get("ARGS_OUT", "/dev/null"), "a").write(" ".join(sys.argv[1:]) 
 print("ARGS " + " ".join(sys.argv[1:]))
 $2
 PYEOF
-  (cd "$1" && git init -q && git add -A \
+  # NOT redirected to /dev/null. A blanket 2>/dev/null here once hid a broken
+  # setup completely: the clone in T9 failed, its commit never reached the
+  # remote, and the test reported a mismatched assertion instead of "the
+  # fixture did not build". A setup that fails must say so.
+  # `git branch -M main` below renames whatever init produced, so the working
+  # repo needs no -b flag; only the BARE repo's HEAD had to be pinned.
+  if ! (cd "$1" \
+     && git init -q \
+     && git add -A \
      && git -c user.email=t@t -c user.name=t commit -qm init \
-     && git branch -M main && git remote add origin "$1.origin" \
-     && git push -q origin main && git branch --set-upstream-to=origin/main main -q) 2>/dev/null
+     && git branch -M main \
+     && git remote add origin "$1.origin" \
+     && git push -q origin main \
+     && git branch --set-upstream-to=origin/main main -q); then
+    printf '  \033[31mFATAL\033[0m build_repo failed for %s\n' "$1"; exit 2
+  fi
 }
 
 make_python_stub() {   # a fake python3: makes venvs, no-ops pip, execs real python
@@ -137,9 +156,17 @@ BEFORE="$(readlink "$R/agent/.venv")"
 # Commit from a SEPARATE clone. Committing inside the deployed repo would put
 # the change in local HEAD already, so there would be nothing upstream to pull
 # and the poller would (correctly) see no change at all — testing nothing.
-CLONE="$ROOT/clone9"; git clone -q "$R.origin" "$CLONE"
-(cd "$CLONE" && echo doc >> README.md && git add -A \
-   && git -c user.email=t@t -c user.name=t commit -qm docs && git push -q origin main) 2>/dev/null
+CLONE="$ROOT/clone9"
+# -b main explicitly, and the whole setup fails loudly. Cloning without it
+# follows the remote's HEAD, which is exactly the machine-dependent value that
+# made this test pass on a developer laptop and fail on a stock CI runner —
+# while the 2>/dev/null that used to sit here hid the reason completely.
+if ! (git clone -q -b main "$R.origin" "$CLONE" \
+   && cd "$CLONE" && echo doc >> README.md && git add -A \
+   && git -c user.email=t@t -c user.name=t commit -qm docs \
+   && git push -q origin main); then
+  printf '  \033[31mFATAL\033[0m T9 fixture (clone/commit/push) failed\n'; exit 2
+fi
 : > "$ROOT/pip.txt"; rc=$(run "$R" --poll)
 chk "exit 0" "$rc" "0"
 chk "no rebuild (pip never ran)" "$(wc -c <"$ROOT/pip.txt" | tr -d ' ')" "0"
