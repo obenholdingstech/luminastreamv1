@@ -31,8 +31,14 @@ build_repo() {   # $1 = dir, $2 = gates the stub agent will print
   # CI runner. A later `git clone` of this remote then checks out nothing, and
   # every test that clones silently sets up wrong. `symbolic-ref` rather than
   # `git init -b main` so it works on git older than 2.28.
-  mkdir -p "$1.origin" && (cd "$1.origin" && git init -q --bare) \
-    && git --git-dir="$1.origin" symbolic-ref HEAD refs/heads/main
+  # Checked, because this script sets -u and NOT -e: an unchecked failure here
+  # would leave HEAD at the machine default and simply carry on, which is the
+  # same silent-setup-failure the fatal path below exists to stop.
+  if ! (mkdir -p "$1.origin" \
+     && (cd "$1.origin" && git init -q --bare) \
+     && git --git-dir="$1.origin" symbolic-ref HEAD refs/heads/main); then
+    printf '  \033[31mFATAL\033[0m bare repo setup failed for %s\n' "$1"; exit 2
+  fi
   mkdir -p "$1/agent" "$1/scripts"
   : > "$1/agent/requirements.txt"
   cat > "$1/agent/convert_agent.py" <<PYEOF
