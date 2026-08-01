@@ -82,7 +82,8 @@ every current latency number was measured on.
 - Agent venv: `agent/.venv` on **Python 3.12**. This is why the VPS gets
   patched aiohttp via environment markers. **The Python 3.9 venv is the
   Mac harness — never confuse the two.**
-- Agent runs in tmux session `agent`.
+- Agent runs as a **systemd user service** (`lumina-agent`), not in tmux — see
+  "Agent process & deploys" below. tmux is only for attaching to watch.
 - Secrets: `~/luminastreamv1/secrets.env` (repo root, gitignored) holding
   the LiveKit and ElevenLabs values.
 
@@ -93,40 +94,46 @@ guide her through them and verify the pasted output. Never ask for the
 box's credentials; never propose a command that would print secrets.
 
 ## Fire-up runbook (CEO executes, Claude verifies)
+
+Routine deploys are automatic (see "Agent process & deploys"). This is the
+bootstrap, and the recovery path.
+
 ```sh
 ssh lumina@<vps-host>
 
-# code FIRST — and the branch check is the doctrine, not a formality:
-# a plain `git pull` deploys whatever branch the box happens to be on.
+# code FIRST — and the branch check is doctrine, not formality: a plain
+# `git pull` deploys whatever branch the box happens to be on.
 cd ~/luminastreamv1 && git switch main && git pull --ff-only origin main
 
-# deps SECOND
-cd agent && ./.venv/bin/python -m pip install -r requirements.txt
+# One-time install of the units (idempotent):
+mkdir -p ~/.config/systemd/user
+cp ~/luminastreamv1/scripts/systemd/*.service ~/.config/systemd/user/
+cp ~/luminastreamv1/scripts/systemd/*.timer   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now lumina-agent.service
+systemctl --user enable --now lumina-deploy.timer
+sudo loginctl enable-linger lumina     # start at boot, not just at login
 
-./.venv/bin/python lk_smoke.py            # GATE: must print CONNECTED OK
-
-# attach-or-create: plain `tmux new -s agent` errors if the session exists
-tmux attach -t agent 2>/dev/null || tmux new -s agent
-
-# optional session-cap raise for a long tuning session:
-#   export SPIKE_MAX_TTS_CHARS=20000
-#   export SPIKE_MAX_STT_SECONDS=1800
-
-./.venv/bin/python convert_agent.py --engine tts --mode convert \
-    --capture-dir captures/<session_name>      # add --room <name> for a second room
-
-# detach: Ctrl-B then D
+systemctl --user status lumina-agent
+journalctl --user -u lumina-agent -n 50 --no-pager
 ```
 
-**One agent process per room.** If the `agent` session already exists and
-has a live agent in it, stop that agent (Ctrl-C) before launching another
-against the same room — two processes sharing the default identity collide
-on LiveKit. A *second* room is fine and is the supported pattern: launch it
-with `--room <name>` (and give it its own `--identity` if you also override
-the default).
+**Before enabling the service, stop any hand-started agent.** systemd does not
+know about a process someone launched in tmux, so it would start a *second*
+one. Both join the same room under the same default identity, and LiveKit
+evicts on duplicate identity — they fight over the slot and it looks like a
+flaky connection.
+
+```sh
+pgrep -af convert_agent.py     # expect exactly one line once systemd owns it
+tmux attach -t agent           # Ctrl-C a stray, then Ctrl-B D to detach
+```
 
 **Startup gates, in this order — do not proceed past a missing one:**
 `STT READY` → `TTS READY (TTFB …ms)` → `PREFLIGHT OK` → connected to room.
+
+**One agent per room.** A *second* room is the supported concurrency pattern:
+`--room <name>`, plus its own `--identity` if the default is also in use.
 
 ## Agent process & deploys (systemd, pull-based)
 

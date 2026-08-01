@@ -34,6 +34,12 @@ STATE_FILE="$AGENT_DIR/.deploy-state"
 SERVICE="${LUMINA_SERVICE:-lumina-agent}"
 KEEP_VENVS="${LUMINA_KEEP_VENVS:-3}"
 PREFLIGHT_TIMEOUT="${LUMINA_PREFLIGHT_TIMEOUT:-180}"
+# Network and install calls are bounded too. lumina-deploy.service is
+# Type=oneshot and systemd disables TimeoutStartSec for that type, so nothing
+# bounds them at the unit level — an unbounded stall would hang forever AND
+# block every future deploy, since systemd will not start a second instance.
+NET_TIMEOUT="${LUMINA_NET_TIMEOUT:-120}"
+INSTALL_TIMEOUT="${LUMINA_INSTALL_TIMEOUT:-600}"
 BOOT_TIMEOUT="${LUMINA_BOOT_TIMEOUT:-120}"
 PYTHON="${LUMINA_PYTHON:-python3}"
 # Startup gates, in order. Absent any one, the build is not healthy.
@@ -97,7 +103,7 @@ cd "$REPO" || fail "no repo at $REPO"
 # Nothing is printed before the change check: in poll mode the overwhelmingly
 # common outcome is "nothing to do", and a heartbeat every two minutes would
 # bury real deploys in the journal.
-git fetch origin --quiet || fail "git fetch failed"
+_timeout "$NET_TIMEOUT" git fetch origin --quiet || fail "git fetch failed or timed out"
 
 CURRENT_SHA="$(git rev-parse HEAD 2>/dev/null)"
 TARGET_SHA="$(git rev-parse origin/main 2>/dev/null)"
@@ -108,8 +114,26 @@ if [ "$CURRENT_SHA" = "$TARGET_SHA" ]; then
   say "Checking origin/main"
   note "already at $(git rev-parse --short HEAD) — redeploying anyway (manual run)"
 else
+  # Restarting the agent drops whatever session it is serving. A docs or
+  # frontend merge must never do that: only changes that can alter how the
+  # agent RUNS justify a rebuild and a restart. Everything else just
+  # fast-forwards the working tree.
+  TOUCHED="$(git diff --name-only "$CURRENT_SHA" "$TARGET_SHA" -- \
+              agent/ scripts/deploy-agent.sh scripts/systemd/ 2>/dev/null)"
+  if [ -z "$TOUCHED" ] && [ -L "$VENV_LINK" ] && [ "$POLL_MODE" = 1 ]; then
+    _timeout "$NET_TIMEOUT" git switch main >/dev/null 2>&1
+    if _timeout "$NET_TIMEOUT" git pull --ff-only origin main --quiet; then
+      record "skipped" "$(git rev-parse --short HEAD)" "no agent changes"
+    else
+      # Worth a breadcrumb either way: a fast-forward that fails here means the
+      # checkout has diverged, and the next agent change will abort on it.
+      record "skip-pull-failed" "$(git rev-parse --short "$TARGET_SHA")" "fast-forward failed"
+    fi
+    exit 0
+  fi
   say "Checking origin/main"
   note "$(git rev-parse --short HEAD) → $(git rev-parse --short "$TARGET_SHA")"
+  [ -n "$TOUCHED" ] && note "agent-affecting changes: $(printf '%s' "$TOUCHED" | wc -l | tr -d ' ') file(s)"
 fi
 
 # ── 2. code first ───────────────────────────────────────────────────────────
@@ -117,7 +141,7 @@ say "Updating the working tree"
 git switch main >/dev/null 2>&1 || fail "could not switch to main"
 # --ff-only: a diverged checkout must STOP the deploy, never silently merge on
 # production.
-git pull --ff-only origin main --quiet || fail "git pull --ff-only failed — the VPS has diverged from main"
+_timeout "$NET_TIMEOUT" git pull --ff-only origin main --quiet || fail "git pull --ff-only failed — the VPS has diverged from main"
 SHORT_SHA="$(git rev-parse --short HEAD)"
 ok "at $SHORT_SHA — $(git log -1 --pretty=%s | cut -c1-58)"
 
@@ -130,14 +154,20 @@ NEW_VENV="$VENVS_DIR/$SHORT_SHA"
 say "Building venv for $SHORT_SHA"
 mkdir -p "$VENVS_DIR" || fail "could not create $VENVS_DIR"
 
-if [ -x "$NEW_VENV/bin/python" ]; then
-  note "reusing existing venv for this sha"
+# bin/python exists the moment `python -m venv` returns — BEFORE pip runs. If
+# pip then failed, a bin/python check would treat the half-built venv as done on
+# the next attempt and never install requirements again, wedging this sha
+# permanently. The marker is written only after a SUCCESSFUL install.
+VENV_READY="$NEW_VENV/.install-complete"
+if [ -f "$VENV_READY" ] && [ -x "$NEW_VENV/bin/python" ]; then
+  note "reusing complete venv for this sha"
 else
   rm -rf "$NEW_VENV"
   "$PYTHON" -m venv "$NEW_VENV" || fail "python -m venv failed (is python3-venv installed?)"
-  "$NEW_VENV/bin/python" -m pip install -q --upgrade pip >/dev/null 2>&1
-  "$NEW_VENV/bin/python" -m pip install -q -r "$AGENT_DIR/requirements.txt" \
-    || fail "pip install failed — new venv discarded, live agent untouched"
+  _timeout "$INSTALL_TIMEOUT" "$NEW_VENV/bin/python" -m pip install -q --upgrade pip >/dev/null 2>&1
+  _timeout "$INSTALL_TIMEOUT" "$NEW_VENV/bin/python" -m pip install -q -r "$AGENT_DIR/requirements.txt" \
+    || fail "pip install failed or timed out — venv left incomplete, live agent untouched"
+  : > "$VENV_READY"
 fi
 ok "venv ready at .venvs/$SHORT_SHA"
 
@@ -153,6 +183,18 @@ _timeout "$PREFLIGHT_TIMEOUT" "$NEW_VENV/bin/python" "$AGENT_DIR/convert_agent.p
   --room "$PREFLIGHT_ROOM" --identity "echo-preflight-$$" \
   >"$PREFLIGHT_LOG" 2>&1
 PREFLIGHT_RC=$?
+
+# Gate TEXT is not enough. A process can print all three lines and then crash,
+# or be killed by the timeout (124) mid-shutdown — and we would swap the live
+# agent onto a build that never actually completed a clean run.
+if [ "$PREFLIGHT_RC" -ne 0 ]; then
+  echo "--- preflight output (tail) ---"; tail -30 "$PREFLIGHT_LOG"; echo "-------------------------------"
+  rm -f "$PREFLIGHT_LOG"
+  if [ "$PREFLIGHT_RC" -eq 124 ]; then
+    fail "preflight timed out after ${PREFLIGHT_TIMEOUT}s"
+  fi
+  fail "preflight exited $PREFLIGHT_RC — build not verified"
+fi
 
 for gate in "${GATES[@]}"; do
   if grep -qF "$gate" "$PREFLIGHT_LOG"; then
@@ -238,6 +280,19 @@ ls -1dt "$VENVS_DIR"/*/ 2>/dev/null | tail -n "+$((KEEP_VENVS + 1))" | while rea
   rm -rf "$old" && note "pruned $(basename "$old")"
 done
 
-record "ok" "$SHORT_SHA" "healthy"
+# A hand-started agent (e.g. left running in tmux from before systemd) would
+# join the same room under the SAME default identity, and LiveKit evicts on
+# duplicate identity — the two would fight over the slot. systemd cannot see
+# it, so say so loudly rather than let it look like a flaky connection.
+STRAY="$(pgrep -fc 'convert_agent\.py' 2>/dev/null || echo 0)"
+if [ "${STRAY:-0}" -gt 1 ]; then
+  bad "$STRAY convert_agent.py processes are running — expected 1"
+  note "A hand-started agent is probably still alive (tmux?). Two agents sharing"
+  note "the default identity evict each other. Find and stop the stray:"
+  note "  pgrep -af convert_agent.py"
+  record "ok-with-stray" "$SHORT_SHA" "$STRAY agent processes"
+else
+  record "ok" "$SHORT_SHA" "healthy"
+fi
 echo
 echo "DEPLOY OK — $SERVICE running $SHORT_SHA."

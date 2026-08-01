@@ -14,6 +14,10 @@ ExecStart=/bin/bash %h/luminastreamv1/scripts/deploy-agent.sh --poll
 # A failed deploy must not take the timer down with it — the next tick should
 # try again, and the failure is already recorded in the journal and
 # agent/.deploy-state.
+# Type=oneshot disables TimeoutStartSec by default. A stalled deploy would
+# otherwise hang forever AND block every later run, since systemd will not
+# start a second instance of a running unit.
+TimeoutStartSec=900
 SuccessExitStatus=0 1
 StandardOutput=journal
 StandardError=journal

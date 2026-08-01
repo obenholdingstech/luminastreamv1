@@ -24,7 +24,7 @@ chk() { if [ "$2" = "$3" ]; then printf '  \033[32mok\033[0m   %s\n' "$1"; PASS=
         else printf '  \033[31mFAIL\033[0m %s (got %s, want %s)\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi; }
 
 build_repo() {   # $1 = dir, $2 = gates the stub agent will print
-  rm -rf "$1" "$1.origin"; : > "$ROOT/args.txt"
+  rm -rf "$1" "$1.origin"; : > "$ROOT/args.txt"; : > "$ROOT/pip.txt"
   mkdir -p "$1.origin" && (cd "$1.origin" && git init -q --bare)
   mkdir -p "$1/agent" "$1/scripts"
   : > "$1/agent/requirements.txt"
@@ -50,13 +50,15 @@ if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
   chmod +x "$3/bin/python"
   exit 0
 fi
-if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then exit 0; fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then
+  echo "$*" >> "${PIP_LOG:-/dev/null}"; exit 0
+fi
 exec /usr/bin/python3 "$@"
 STUB
   chmod +x "$ROOT/bin/fakepython"
 }
 
-run() { ARGS_OUT="$ROOT/args.txt" LUMINA_REPO="$1" LUMINA_PYTHON="$ROOT/bin/fakepython" LUMINA_SERVICE="definitely-not-a-unit" \
+run() { ARGS_OUT="$ROOT/args.txt" PIP_LOG="$ROOT/pip.txt" LUMINA_REPO="$1" LUMINA_PYTHON="$ROOT/bin/fakepython" LUMINA_SERVICE="definitely-not-a-unit" \
         bash "$SCRIPT" "${2:-}" >"$ROOT/out.txt" 2>&1; echo $?; }
 
 make_python_stub
@@ -111,6 +113,39 @@ for pat in '_swap_symlink "' 'systemctl --user restart'; do
 done
 PIP=$(grep -n 'pip install -q -r' "$SCRIPT" | cut -d: -f1 | head -1)
 grep -n 'pip install -q -r' "$SCRIPT" | grep -q '\$NEW_VENV'; chk "pip only ever installs into the NEW venv" "$?" "0"
+
+echo "── T7  a half-built venv is rebuilt, not trusted ──"
+# bin/python exists as soon as `python -m venv` returns. Without a completion
+# marker, a failed pip install would wedge this sha forever.
+R="$ROOT/r7"; build_repo "$R" "$GOOD"
+SHA="$(cd "$R" && git rev-parse --short HEAD)"
+mkdir -p "$R/agent/.venvs/$SHA/bin"; cp "$ROOT/bin/fakepython" "$R/agent/.venvs/$SHA/bin/python"
+rc=$(run "$R")
+grep -q "requirements.txt" "$ROOT/pip.txt"; chk "requirements reinstalled over the half-built venv" "$?" "0"
+[ -f "$R/agent/.venvs/$SHA/.install-complete" ]; chk "completion marker written" "$?" "0"
+
+echo "── T8  gates printed but a NONZERO exit still blocks the swap ──"
+CRASH='print("STT READY"); print("TTS READY"); print("PREFLIGHT OK"); import sys; sys.exit(3)'
+R="$ROOT/r8"; build_repo "$R" "$CRASH"; rc=$(run "$R")
+chk "exit 1" "$rc" "1"
+[ -L "$R/agent/.venv" ]; chk "symlink NOT swapped on an unverified build" "$?" "1"
+grep -q "preflight exited 3" "$ROOT/out.txt"; chk "reports the exit code" "$?" "0"
+
+echo "── T9  a non-agent change does not restart the agent ──"
+R="$ROOT/r9"; build_repo "$R" "$GOOD"; rc=$(run "$R")   # first deploy establishes the venv
+BEFORE="$(readlink "$R/agent/.venv")"
+# Commit from a SEPARATE clone. Committing inside the deployed repo would put
+# the change in local HEAD already, so there would be nothing upstream to pull
+# and the poller would (correctly) see no change at all — testing nothing.
+CLONE="$ROOT/clone9"; git clone -q "$R.origin" "$CLONE"
+(cd "$CLONE" && echo doc >> README.md && git add -A \
+   && git -c user.email=t@t -c user.name=t commit -qm docs && git push -q origin main) 2>/dev/null
+: > "$ROOT/pip.txt"; rc=$(run "$R" --poll)
+chk "exit 0" "$rc" "0"
+chk "no rebuild (pip never ran)" "$(wc -c <"$ROOT/pip.txt" | tr -d ' ')" "0"
+chk "venv symlink unchanged" "$(readlink "$R/agent/.venv")" "$BEFORE"
+grep -q "result=skipped" "$R/agent/.deploy-state"; chk "recorded as skipped" "$?" "0"
+chk "working tree still fast-forwarded" "$(cd "$R" && git rev-parse HEAD)" "$(cd "$R" && git rev-parse origin/main)"
 
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
