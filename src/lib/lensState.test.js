@@ -50,7 +50,14 @@ test('every lens mode maps to a mode the agent actually accepts', () => {
 
 test('the utterance latency field is the one the agent publishes', () => {
   const src = readFileSync(join(REPO, 'agent', 'tts_engine.py'), 'utf8');
-  const notice = src.slice(src.indexOf('"type": "tts_utterance"'));
+  // Guard the index. indexOf returns -1 when the marker is gone, and
+  // src.slice(-1) is the file's last character — the assertion below would then
+  // fail with "no longer publishes tail_latency_ms" when the real drift is that
+  // the whole notice was renamed. A test that fails for the wrong reason sends
+  // the next person to the wrong file.
+  const at = src.indexOf('"type": "tts_utterance"');
+  assert.notEqual(at, -1, 'tts_engine.py no longer publishes a tts_utterance notice');
+  const notice = src.slice(at);
   assert.ok(
     /"tail_latency_ms"/.test(notice.slice(0, 800)),
     'tts_engine.py no longer publishes tail_latency_ms on tts_utterance',

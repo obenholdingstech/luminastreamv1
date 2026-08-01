@@ -7,11 +7,15 @@ import { startMicLevelMeter } from './micLevelMeter.js';
 // rather than assumed — the failure path is the one nobody exercises by hand,
 // and it is exactly where a leaked AudioContext hides.
 function fakeAudio({ amplitude = 0, throwAt = null, closeThrows = false } = {}) {
-  const log = { disconnects: 0, closes: 0, resumes: 0, contexts: 0 };
+  const log = { disconnects: 0, closes: 0, resumes: 0, contexts: 0, reads: 0 };
 
   const analyser = {
     fftSize: 0,
     getFloatTimeDomainData(buffer) {
+      log.reads += 1;
+      // `frame` throws on the Nth read, simulating the graph dying under us
+      // mid-animation-frame rather than during setup.
+      if (throwAt === 'frame' && log.reads >= 2) throw new Error('context invalidated');
       buffer.fill(amplitude);
     },
   };
@@ -208,6 +212,31 @@ test('a throw before any context exists is survivable and closes nothing', () =>
   assert.equal(log.closes, 0);
   assert.equal(levels.at(-1), 0);
   assert.doesNotThrow(stop);
+});
+
+// The setup try/catch cannot see this one. tick runs from the browser's own
+// animation-frame callback, so a throw there escapes to the browser, schedules
+// no next frame, and would never reach teardown — the same leaked context,
+// arriving by a route the setup guard cannot reach.
+test('a throw INSIDE an animation frame tears the graph down', () => {
+  const levels = [];
+  const { deps, log, pump } = fakeAudio({ amplitude: 0.5, throwAt: 'frame' });
+  startMicLevelMeter(TRACK, (l) => levels.push(l), deps);
+
+  pump(1); // healthy frame
+  assert.equal(log.closes, 0, 'a good frame must not tear anything down');
+
+  assert.doesNotThrow(() => pump(1), 'the throw must not escape the frame');
+  assert.equal(log.closes, 1, 'the context must be closed, not leaked');
+  assert.equal(log.disconnects, 1);
+  assert.equal(levels.at(-1), 0, 'and the ring told to settle');
+});
+
+test('a frame that died stops scheduling more frames', () => {
+  const { deps, pump, pending } = fakeAudio({ amplitude: 0.5, throwAt: 'frame' });
+  startMicLevelMeter(TRACK, () => {}, deps);
+  pump(2); // one good frame, then the throw
+  assert.equal(pending(), 0, 'no further frame may be queued after the graph died');
 });
 
 test('setup failure never throws at the caller', () => {

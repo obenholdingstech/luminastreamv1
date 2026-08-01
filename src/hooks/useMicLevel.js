@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 
 import { startMicLevelMeter } from '@/lib/micLevelMeter';
 
@@ -21,8 +21,14 @@ export function useMicLevel(track, onLevel) {
   // Latest callback without restarting the audio graph when the caller
   // re-creates its closure — tearing down and rebuilding an AudioContext on
   // every render would be both expensive and audibly glitchy.
+  // Written in a layout effect, not in the render body: React may discard a
+  // render, and a bare assignment would persist a callback from a tree that
+  // never committed. Layout effects run before passive effects on mount, so the
+  // meter below still sees the current callback on its very first frame.
   const onLevelRef = useRef(onLevel);
-  onLevelRef.current = onLevel;
+  useLayoutEffect(() => {
+    onLevelRef.current = onLevel;
+  });
 
   useEffect(
     // startMicLevelMeter always returns a callable, including when setup

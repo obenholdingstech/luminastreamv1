@@ -339,6 +339,7 @@ export default function Studio() {
             return (
               <button
                 key={mode.id}
+                type="button"
                 onClick={() => chooseMode(mode.id)}
                 aria-pressed={selected}
                 className="relative px-6 py-2 rounded-full text-[11px] tracking-[0.14em] uppercase transition-colors"
@@ -352,14 +353,23 @@ export default function Studio() {
                     transition={{ duration: reduceMotion ? 0 : 0.28, ease: [0.32, 0.72, 0, 1] }}
                   />
                 )}
+                {/* aria-pressed reports the REQUEST. The agent's confirmation
+                    has to be in the accessible name too, or a screen-reader
+                    user hears their own request read back as though the agent
+                    had agreed — the exact applied-vs-requested conflation this
+                    page exists to avoid. A title on a span is not reliably
+                    announced, and is invisible to keyboard and touch users. */}
                 <span className="relative flex items-center gap-1.5">
                   {mode.label}
                   {confirmed && !isDisconnected && (
-                    <span
-                      className="w-1 h-1 rounded-full"
-                      style={{ backgroundColor: '#10B981' }}
-                      title="confirmed by the agent"
-                    />
+                    <>
+                      <span
+                        aria-hidden
+                        className="w-1 h-1 rounded-full"
+                        style={{ backgroundColor: '#10B981' }}
+                      />
+                      <span className="sr-only">, confirmed by the agent</span>
+                    </>
                   )}
                 </span>
               </button>

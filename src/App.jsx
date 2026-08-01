@@ -1,8 +1,8 @@
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 
 import ScrollToTop from './components/ScrollToTop';
-import PageNotFound from './lib/PageNotFound';
 import LiveKitTest from './pages/LiveKitTest';
+import PageNotFound from './pages/PageNotFound';
 import Studio from './pages/Studio';
 
 // Two surfaces, one engine.

@@ -142,15 +142,26 @@ export function startMicLevelMeter(track, onLevel, deps = {}) {
 
     const tick = () => {
       if (stopped) return;
-      analyser.getFloatTimeDomainData(samples);
-      let sum = 0;
-      for (const s of samples) sum += s * s;
-      const rms = Math.sqrt(sum / samples.length);
-      const target = Math.min(1, rms * GAIN);
-      const coefficient = target > smoothed ? ATTACK : RELEASE;
-      smoothed += (target - smoothed) * coefficient;
-      report(smoothed);
-      frame = raf(tick);
+      // The catch below is not belt-and-braces. tick runs from the browser's
+      // animation-frame callback, NOT from anything the setup try/catch can
+      // see — so a throw here (the context or the track invalidated mid-frame)
+      // escapes to the browser, schedules no next frame, and never reaches
+      // teardown. That is the same leaked AudioContext the failure path
+      // already guards, arriving by a route the failure path cannot reach.
+      try {
+        analyser.getFloatTimeDomainData(samples);
+        let sum = 0;
+        for (const s of samples) sum += s * s;
+        const rms = Math.sqrt(sum / samples.length);
+        const target = Math.min(1, rms * GAIN);
+        const coefficient = target > smoothed ? ATTACK : RELEASE;
+        smoothed += (target - smoothed) * coefficient;
+        report(smoothed);
+        frame = raf(tick);
+      } catch {
+        // The graph died under us. Release it rather than leaking it.
+        teardown();
+      }
     };
     frame = raf(tick);
   } catch {
