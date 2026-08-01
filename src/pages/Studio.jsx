@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { ConnectionState, Track } from 'livekit-client';
+import { ConnectionState, RoomEvent, Track } from 'livekit-client';
 import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Volume2 } from 'lucide-react';
 
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
@@ -178,6 +178,10 @@ export default function Studio() {
   const [lensMode, setLensMode] = useState('converted');
 
   const isDisconnected = connectionState === ConnectionState.Disconnected;
+  // Not the same question as "not disconnected". The room object exists during
+  // Connecting and Reconnecting, so anything that publishes on the data channel
+  // must ask this, not the negation above.
+  const isConnected = connectionState === ConnectionState.Connected;
   const hasCredentials = Boolean(url && token);
 
   const status = useMemo(
@@ -188,9 +192,33 @@ export default function Studio() {
 
   // ── the lens ring's amplitude source ──────────────────────────────────
   const levelHostRef = useRef(null);
-  const micTrack = room?.localParticipant
-    ?.getTrackPublication(Track.Source.Microphone)
-    ?.audioTrack?.mediaStreamTrack;
+
+  // Track publications are not React state. `room` is set once at connect, so
+  // reading getTrackPublication() during render captures whatever was published
+  // at that moment and nothing re-renders when it changes later. A mic that is
+  // unpublished mid-session — device lost, permission revoked — would leave the
+  // meter animating a stopped track and the readout still saying "live". Held
+  // in state and refreshed from the SDK's own publish/unpublish events instead.
+  const [micTrack, setMicTrack] = useState(null);
+  useEffect(() => {
+    if (!room) {
+      setMicTrack(null);
+      return undefined;
+    }
+    const read = () =>
+      setMicTrack(
+        room.localParticipant?.getTrackPublication(Track.Source.Microphone)?.audioTrack
+          ?.mediaStreamTrack ?? null,
+      );
+    read();
+    room.on(RoomEvent.LocalTrackPublished, read);
+    room.on(RoomEvent.LocalTrackUnpublished, read);
+    return () => {
+      room.off(RoomEvent.LocalTrackPublished, read);
+      room.off(RoomEvent.LocalTrackUnpublished, read);
+    };
+  }, [room]);
+
   const reduceMotion = useReducedMotion();
   const paintLevel = useCallback((level) => {
     levelHostRef.current?.style.setProperty('--level', String(level));
@@ -199,7 +227,7 @@ export default function Studio() {
   // than by building it and discarding every frame. A viewer who asked for a
   // still interface should not also pay for an AudioContext and a 60 Hz
   // animation frame loop to produce a number nothing reads.
-  useMicLevel(reduceMotion ? null : (micTrack ?? null), paintLevel);
+  useMicLevel(reduceMotion ? null : micTrack, paintLevel);
 
   const unlock = async (event) => {
     event?.preventDefault();
@@ -234,7 +262,11 @@ export default function Studio() {
   // is remembered and sent once the agent confirms it has joined.
   const chooseMode = (id) => {
     setLensMode(id);
-    if (!isDisconnected) {
+    // Connected, not merely not-disconnected: the room object already exists
+    // during Connecting and Reconnecting, so publishing here would throw the
+    // request into a data channel that is not open yet. The effect below picks
+    // it up once the agent speaks.
+    if (isConnected) {
       const wire = agentModeFor(id);
       if (wire) requestAgentMode(wire);
     }
@@ -249,11 +281,11 @@ export default function Studio() {
       pushedRef.current = false;
       return;
     }
-    if (pushedRef.current || !agentMode) return;
+    if (pushedRef.current || !isConnected || !agentMode) return;
     pushedRef.current = true;
     const wire = agentModeFor(lensMode);
     if (wire && wire !== agentMode) requestAgentMode(wire);
-  }, [isDisconnected, agentMode, lensMode, requestAgentMode]);
+  }, [isDisconnected, isConnected, agentMode, lensMode, requestAgentMode]);
 
   const tone = TONE[status.tone] ?? TONE.idle;
   const activeMode = LENS_MODES.find((m) => m.id === lensMode) ?? LENS_MODES[0];
@@ -287,7 +319,10 @@ export default function Studio() {
       <main className="relative flex-1 flex flex-col items-center justify-center px-6 pb-16">
         <Lens
           tone={status.tone}
-          spinning={status.tone === 'working'}
+          // status.id, not status.tone: 'waiting for the agent' shares the
+          // 'working' tone, and a ring that spins forever reads as "almost
+          // there" when the truth may be that no agent is running at all.
+          spinning={status.id === 'connecting'}
           reduceMotion={reduceMotion}
           levelHostRef={levelHostRef}
         />
@@ -412,6 +447,11 @@ export default function Studio() {
                 <input
                   id="access-key"
                   type="password"
+                  // Locked while the exchange is in flight: the submit handler
+                  // captured the old value, so a mid-request edit would either
+                  // be silently discarded on success or blamed in the error on
+                  // failure.
+                  disabled={unlocking}
                   autoComplete="current-password"
                   value={accessKey}
                   onChange={(e) => setAccessKey(e.target.value)}
