@@ -185,7 +185,11 @@ test('a caller may shorten the deadline', async () => {
 test('a runtime without AbortSignal.timeout still gets a real deadline', async () => {
   // The fallback matters most on exactly the older runtimes that would
   // otherwise be handed the one code path with no deadline at all.
-  const realTimeout = AbortSignal.timeout;
+  // The whole descriptor, not just the value. Restoring with
+  // `{ value, configurable }` leaves `writable` at its default of false, so
+  // AbortSignal.timeout would stay non-writable after this test and a future
+  // test that assigns to it would fail pointing at the wrong file.
+  const realDescriptor = Object.getOwnPropertyDescriptor(AbortSignal, 'timeout');
   // eslint-disable-next-line no-undef
   Object.defineProperty(AbortSignal, 'timeout', { value: undefined, configurable: true });
   try {
@@ -196,9 +200,6 @@ test('a runtime without AbortSignal.timeout still gets a real deadline', async (
       'the AbortController fallback did not fire',
     );
   } finally {
-    Object.defineProperty(AbortSignal, 'timeout', {
-      value: realTimeout,
-      configurable: true,
-    });
+    Object.defineProperty(AbortSignal, 'timeout', realDescriptor);
   }
 });
