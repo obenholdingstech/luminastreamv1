@@ -272,6 +272,85 @@ npx wrangler dev                 # → http://localhost:8787
 npm test                         # node --test (offline, no secrets)
 ```
 
+## Voice Agent (VPS) — pull-based deploy
+
+The VPS was the last hand-driven surface. Every merge touching `agent/` needed
+someone to remember to SSH in and pull, and the failure mode was **silent**: the
+box quietly ran stale code while a fix appeared to have shipped. That cost a
+full session of wrong conclusions once.
+
+### Why pull and not push
+
+The box checks the repo itself on a timer. GitHub never reaches in.
+
+| | Push (CI opens a shell) | **Pull (box checks)** |
+| --- | --- | --- |
+| Credential | private SSH key **with login as `lumina`**, held by CI | **none** — the repo is public, so `git fetch` is anonymous |
+| Blast radius if leaked | total: that key owns `secrets.env` | no key exists to leak |
+| Inbound access | CI can open a shell on production | nothing reaches in |
+| If GitHub is down | no deploys | deploys still work |
+
+If the repo ever goes private this needs a **read-only** deploy key on the box —
+still outbound-only, still unable to log in. A push key can always log in.
+
+### The procedure
+
+[`scripts/deploy-agent.sh`](scripts/deploy-agent.sh), run identically by the
+timer, by a human, or by hand. **The ordering is the safety property:**
+
+1. `git fetch`; stop immediately if `origin/main` has not moved.
+2. `git pull --ff-only` — a diverged checkout stops the deploy, never merges on production.
+3. **Build a *new* venv for this release.** The live agent's venv is never touched, so a half-finished `pip install` cannot poison a running process.
+4. **Preflight the new build in a throwaway LiveKit room** (`--room preflight-$$ --identity echo-preflight-$$`). The default room and identity would collide with the live agent — LiveKit evicts on duplicate identity, so a careless preflight would kick the very agent it exists to protect.
+5. Only if `STT READY` / `TTS READY` / `PREFLIGHT OK` all appear: swap the venv symlink (atomic rename) and `systemctl --user restart`.
+6. Verify the new agent cleared the same gates in the journal; report loudly if not.
+
+The live agent serves untouched through steps 1–4. A failure before step 5
+leaves it running on the old code **and** the old venv.
+
+### Freeze, and deploy on demand
+
+```bash
+touch ~/luminastreamv1/agent/.deploy-hold      # block swaps during a drill
+rm    ~/luminastreamv1/agent/.deploy-hold      # unblock
+bash  ~/luminastreamv1/scripts/deploy-agent.sh # deploy now
+cat   ~/luminastreamv1/agent/.deploy-state     # what happened, and when
+```
+
+With the hold file present, code and the new venv are still built **and
+verified** — only the swap is skipped, and the deploy says so rather than
+pretending it succeeded.
+
+### One-time setup on the box
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp ~/luminastreamv1/scripts/systemd/lumina-agent.service   ~/.config/systemd/user/
+cp ~/luminastreamv1/scripts/systemd/lumina-deploy.service  ~/.config/systemd/user/
+cp ~/luminastreamv1/scripts/systemd/lumina-deploy.timer    ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now lumina-agent.service
+systemctl --user enable --now lumina-deploy.timer
+
+# Survive logout and start at boot (the one command needing sudo):
+sudo loginctl enable-linger lumina
+```
+
+User services, so no root and no sudoers rule for the restart. `enable-linger`
+is what makes them start at boot rather than at login.
+
+### Tests
+
+```bash
+bash scripts/test-deploy-agent.sh
+```
+
+Runs the real deploy script against a throwaway repo and a stub python — no
+VPS, no network, no systemd. It pins the properties that matter: a failed
+preflight swaps nothing, the hold file blocks the swap, `--poll` is silent when
+nothing changed, a legacy `.venv` directory is migrated rather than deleted, and
+statically that no restart can precede the gates.
+
 ## Use The Hosted Backend
 
 For frontend-only development, create or update `.env.local` in the project root:

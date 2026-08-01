@@ -82,7 +82,8 @@ every current latency number was measured on.
 - Agent venv: `agent/.venv` on **Python 3.12**. This is why the VPS gets
   patched aiohttp via environment markers. **The Python 3.9 venv is the
   Mac harness — never confuse the two.**
-- Agent runs in tmux session `agent`.
+- Agent runs as a **systemd user service** (`lumina-agent`), not in tmux — see
+  "Agent process & deploys" below. tmux is only for attaching to watch.
 - Secrets: `~/luminastreamv1/secrets.env` (repo root, gitignored) holding
   the LiveKit and ElevenLabs values.
 
@@ -93,40 +94,94 @@ guide her through them and verify the pasted output. Never ask for the
 box's credentials; never propose a command that would print secrets.
 
 ## Fire-up runbook (CEO executes, Claude verifies)
+
+Routine deploys are automatic (see "Agent process & deploys"). This is the
+bootstrap, and the recovery path.
+
 ```sh
 ssh lumina@<vps-host>
 
-# code FIRST — and the branch check is the doctrine, not a formality:
-# a plain `git pull` deploys whatever branch the box happens to be on.
+# code FIRST — and the branch check is doctrine, not formality: a plain
+# `git pull` deploys whatever branch the box happens to be on.
 cd ~/luminastreamv1 && git switch main && git pull --ff-only origin main
 
-# deps SECOND
-cd agent && ./.venv/bin/python -m pip install -r requirements.txt
+# STOP ANY HAND-STARTED AGENT *BEFORE* ENABLING THE SERVICE.
+# systemd cannot see a process someone launched in tmux, so enabling the unit
+# would start a SECOND agent. Both join the same room under the same default
+# identity, LiveKit evicts on duplicate identity, and they fight over the slot
+# — which presents as a flaky connection, not as a configuration error.
+pgrep -af convert_agent.py          # expect NOTHING before the unit is enabled
+tmux attach -t agent                # Ctrl-C the agent, then Ctrl-B D to detach
+pgrep -af convert_agent.py          # confirm it is gone
 
-./.venv/bin/python lk_smoke.py            # GATE: must print CONNECTED OK
+# Install the units (idempotent):
+mkdir -p ~/.config/systemd/user
+cp ~/luminastreamv1/scripts/systemd/*.service ~/.config/systemd/user/
+cp ~/luminastreamv1/scripts/systemd/*.timer   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now lumina-agent.service
+systemctl --user enable --now lumina-deploy.timer
+sudo loginctl enable-linger lumina  # start at boot, not just at login
 
-# attach-or-create: plain `tmux new -s agent` errors if the session exists
-tmux attach -t agent 2>/dev/null || tmux new -s agent
-
-# optional session-cap raise for a long tuning session:
-#   export SPIKE_MAX_TTS_CHARS=20000
-#   export SPIKE_MAX_STT_SECONDS=1800
-
-./.venv/bin/python convert_agent.py --engine tts --mode convert \
-    --capture-dir captures/<session_name>      # add --room <name> for a second room
-
-# detach: Ctrl-B then D
+systemctl --user status lumina-agent
+journalctl --user -u lumina-agent -n 50 --no-pager
 ```
 
-**One agent process per room.** If the `agent` session already exists and
-has a live agent in it, stop that agent (Ctrl-C) before launching another
-against the same room — two processes sharing the default identity collide
-on LiveKit. A *second* room is fine and is the supported pattern: launch it
-with `--room <name>` (and give it its own `--identity` if you also override
-the default).
+**Checking for strays later.** Once systemd owns the agent, do not just count
+`convert_agent.py` processes — a deploy in progress runs its own preflight
+under `echo-preflight-*`, which is expected. Compare against the service PID:
+
+```sh
+systemctl --user show -p MainPID --value lumina-agent.service
+pgrep -af convert_agent.py    # anything that is neither MainPID nor a preflight
+```
 
 **Startup gates, in this order — do not proceed past a missing one:**
 `STT READY` → `TTS READY (TTFB …ms)` → `PREFLIGHT OK` → connected to room.
+
+**One agent per room.** A *second* room is the supported concurrency pattern:
+`--room <name>`, plus its own `--identity` if the default is also in use.
+
+## Agent process & deploys (systemd, pull-based)
+
+The agent is a **systemd user service**, not a process in someone's tmux. tmux
+is for attaching to watch; it is not what keeps the agent alive.
+
+```sh
+systemctl --user status  lumina-agent      # is it up, on what, since when
+systemctl --user restart lumina-agent      # SIGTERM → clean aclose()
+systemctl --user stop    lumina-agent
+journalctl --user -u lumina-agent -f       # follow the log
+journalctl --user -u lumina-agent -n 100 --no-pager
+
+systemctl --user list-timers lumina-deploy.timer   # when the next poll fires
+journalctl --user -u lumina-deploy -n 50 --no-pager
+```
+
+**Deploys are pull-based.** The box polls `origin/main` every two minutes and
+deploys itself when the SHA moves. Nothing outside reaches in — the repo is
+public, so this needs **no credential at all**, and there is no deploy key to
+leak onto a machine holding `secrets.env`.
+
+```sh
+bash ~/luminastreamv1/scripts/deploy-agent.sh          # deploy now, on demand
+touch ~/luminastreamv1/agent/.deploy-hold              # FREEZE (mid-drill)
+rm    ~/luminastreamv1/agent/.deploy-hold              # unfreeze
+cat   ~/luminastreamv1/agent/.deploy-state             # what happened, and when
+```
+
+**A crash loop is a spend leak, not just noise.** Every agent start fires a
+real warm-up synthesis, and the governor is per-process — a hundred restarts is
+a hundred fresh budgets. `StartLimitBurst=5` / `StartLimitIntervalSec=300` make
+systemd give up and park the unit in `failed` rather than bill all night. If
+you see `failed`, that limit did its job; fix the cause, then
+`systemctl --user reset-failed lumina-agent`.
+
+**Blue/green venvs.** `agent/.venv` is a **symlink** into `agent/.venvs/<sha>`.
+Never `pip install` into a venv a live agent is using — a half-written package
+only explodes on a later lazy import, which looks like a working agent with a
+landmine in it. The deploy builds a new venv, proves it, then swaps the link;
+the running process keeps its own by inode.
 
 ## Doctrines
 - **pull-then-pip.** `git pull` BEFORE `pip install`, always. `pip` alone
