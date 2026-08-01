@@ -157,6 +157,11 @@ export function startMicLevelMeter(track, onLevel, deps = {}) {
         const coefficient = target > smoothed ? ATTACK : RELEASE;
         smoothed += (target - smoothed) * coefficient;
         report(smoothed);
+        // report() hands control to the consumer, which is allowed to call
+        // stop() — a React effect tearing down mid-frame does exactly that.
+        // Without this re-check the line below would overwrite the null that
+        // teardown just wrote and queue a frame nobody will ever cancel.
+        if (stopped) return;
         frame = raf(tick);
       } catch {
         // The graph died under us. Release it rather than leaking it.

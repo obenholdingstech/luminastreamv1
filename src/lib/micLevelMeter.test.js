@@ -239,6 +239,19 @@ test('a frame that died stops scheduling more frames', () => {
   assert.equal(pending(), 0, 'no further frame may be queued after the graph died');
 });
 
+test('stopping from inside onLevel does not queue another frame', () => {
+  // report() hands control to the consumer mid-frame, and a React effect
+  // tearing down at that moment calls stop() from exactly there. The frame
+  // scheduled afterward would outlive teardown with nothing left to cancel it.
+  const { deps, pump, pending, log } = fakeAudio({ amplitude: 0.5 });
+  let stop = () => {};
+  stop = startMicLevelMeter(TRACK, () => stop(), deps);
+
+  pump(1);
+  assert.equal(pending(), 0, 'no frame may be queued after a stop from inside the callback');
+  assert.equal(log.closes, 1);
+});
+
 test('setup failure never throws at the caller', () => {
   for (const throwAt of ['context', 'source', 'analyser']) {
     const { deps } = fakeAudio({ throwAt });

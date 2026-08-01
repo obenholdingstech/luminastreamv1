@@ -48,6 +48,13 @@ function Lens({ tone, spinning, reduceMotion, levelHostRef }) {
       className="relative flex items-center justify-center"
       // A CSS custom property is not in React's CSSProperties map; the cast
       // is the standard way to set one without loosening the whole style.
+      //
+      // `--level` must stay a CONSTANT LITERAL here. React only rewrites a
+      // style property when its value changed since the last render, and that
+      // is the entire reason paintLevel can own this property imperatively.
+      // Derive it from state or a prop and every render will clobber the
+      // current animation frame — the ring would stutter, not break, which is
+      // the kind of bug nobody traces back to this line.
       style={/** @type {any} */ ({ '--level': 0, width: 260, height: 260 })}
     >
       {/* Amplitude halo — scale and opacity both ride --level so a quiet room
@@ -411,8 +418,18 @@ export default function Studio() {
             );
           })}
         </div>
+        {/* The blurb describes the mode the user PICKED. While a switch is in
+            flight the status line above still reports the mode the agent
+            confirmed, so the two disagree — and an unlabelled blurb would read
+            as a description of what is happening rather than of what was
+            asked for. Say which one it is. */}
         <p className="mt-3 text-[11px] text-[#4A5568] text-center max-w-xs leading-relaxed">
           {activeMode.blurb}
+          {isConnected && agentMode && agentMode !== activeMode.agentMode && (
+            <span className="block mt-1 text-[#F59E0B]">
+              Requested — waiting for the agent to confirm.
+            </span>
+          )}
         </p>
 
         {/* Action */}
@@ -509,6 +526,7 @@ export default function Studio() {
         <AnimatePresence>
           {!isDisconnected && (
             <motion.div
+              key="live-strip"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}

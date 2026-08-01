@@ -15,6 +15,27 @@ import {
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+/**
+ * The dict literal containing `from`, brace-matched.
+ *
+ * Counting braces rather than taking the first `}`: the payload is flat today,
+ * but a nested dict would make the naive search truncate mid-notice and produce
+ * exactly the wrong-reason failure this whole test guards against.
+ */
+function sliceBracedLiteral(src, from) {
+  const open = src.lastIndexOf('{', from);
+  assert.notEqual(open, -1, 'no opening brace before the marker');
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  assert.fail('unbalanced braces around the notice payload');
+}
+
 // ── the two couplings this module cannot check by reasoning ────────────────
 // lensState.js hardcodes strings that belong to somebody else: livekit-client's
 // ConnectionState enum, and the agent's own wire vocabulary. Both are silent
@@ -57,9 +78,13 @@ test('the utterance latency field is the one the agent publishes', () => {
   // the next person to the wrong file.
   const at = src.indexOf('"type": "tts_utterance"');
   assert.notEqual(at, -1, 'tts_engine.py no longer publishes a tts_utterance notice');
-  const notice = src.slice(at);
+  // Bounded by the payload's own braces rather than a byte count. A fixed
+  // window has the same defect as the unguarded indexOf above: let the notice
+  // grow past it and the test reports "no longer publishes tail_latency_ms"
+  // while the field is right there, four lines further down.
+  const notice = sliceBracedLiteral(src, at);
   assert.ok(
-    /"tail_latency_ms"/.test(notice.slice(0, 800)),
+    /"tail_latency_ms"/.test(notice),
     'tts_engine.py no longer publishes tail_latency_ms on tts_utterance',
   );
 });
@@ -204,6 +229,22 @@ test('only the newest sampleSize utterances count', () => {
     { tail_latency_ms: 9000 },
   ];
   assert.equal(medianTailMs(utterances, 3), 100);
+});
+
+// sampleSize bounds the TIMED samples, not the positional window. A burst of
+// drops must widen the scan, not empty the readout — going blank during a bad
+// patch is exactly when a latency number is most worth having.
+test('a burst of drops widens the scan instead of blanking the readout', () => {
+  const utterances = [
+    { dropped: true },
+    { dropped: true },
+    { dropped: true },
+    { tail_latency_ms: 700 },
+    { tail_latency_ms: 640 },
+    { tail_latency_ms: 660 },
+    { tail_latency_ms: 9999 }, // beyond the three timed samples we asked for
+  ];
+  assert.equal(medianTailMs(utterances, 3), 660);
 });
 
 test('dropped utterances are skipped, not counted as zero', () => {

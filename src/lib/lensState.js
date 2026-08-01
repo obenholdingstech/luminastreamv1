@@ -160,8 +160,11 @@ export function deriveLensStatus({
  * session is in fact fine. The mean has the same problem in slower motion.
  *
  * Dropped utterances carry no timing and are excluded rather than counted as
- * zero. Returns null when there is nothing to measure — never 0, which would
- * render as an impossibly good number.
+ * zero. `sampleSize` bounds the number of TIMED samples used, not how far back
+ * the scan reaches — a burst of drops widens the scan rather than emptying the
+ * window, so the readout survives a bad patch instead of blanking during it.
+ * Returns null when there is nothing to measure — never 0, which would render
+ * as an impossibly good number.
  *
  * The field name is the agent's, not ours: tts_engine.py publishes
  * `tail_latency_ms` on its `tts_utterance` notice.
