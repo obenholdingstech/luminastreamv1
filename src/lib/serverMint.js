@@ -1,17 +1,67 @@
 // Client for the API Worker's admin gate + LiveKit token mint (workers/api).
-// Only used by /livekit-test when VITE_API_BASE is set. Manual token paste
-// stays the dev fallback, so none of this is on the critical drill path.
+// Used by the lens at `/` to unlock a session, and by /livekit-test, where
+// manual token paste stays the dev fallback so a drill never depends on the
+// Worker being up.
 
 import { API_BASE } from './apiBase.js';
 
+// fetch() has NO timeout of its own. A request that hangs — a blackholed DNS
+// lookup, a TCP connection that opens and then goes quiet — never settles, so
+// a caller awaiting it waits forever with its button disabled and no error to
+// show. On this project that is not a hypothetical: the CEO's Starlink link
+// intermittently blackholes DNS, which is documented as a drill hazard.
+//
+// Every request therefore carries a deadline, and mintViaServer applies ONE
+// deadline across its whole exchange rather than per hop, so a flow that needs
+// four round trips still fails inside a span a person will actually wait out.
+export const DEFAULT_TIMEOUT_MS = 15_000;
+
+/** True for the DOMException fetch raises when a signal fires. */
+function isAbort(err) {
+  return err?.name === 'TimeoutError' || err?.name === 'AbortError';
+}
+
+/**
+ * A signal that fires after `ms`.
+ *
+ * AbortSignal.timeout is the direct route, but falling back to `null` when it
+ * is missing would hand exactly the older runtimes that most need a deadline
+ * the one code path that has none. AbortController plus a timer is universally
+ * available and gives the same guarantee, so the fallback is a real deadline
+ * rather than an absent one. Returns null only if even that fails, because a
+ * missing convenience must never become a thrown request.
+ */
+function deadline(ms = DEFAULT_TIMEOUT_MS) {
+  try {
+    if (typeof AbortSignal?.timeout === 'function') return AbortSignal.timeout(ms);
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new DOMException('signal timed out', 'TimeoutError'));
+    }, ms);
+    // Never hold a Node process (or a test runner) open on a deadline that is
+    // only there in case something else stalls. In the browser setTimeout
+    // returns a number with no unref, which is why the call is guarded rather
+    // than typed — the DOM lib types this as `number`.
+    /** @type {any} */ (timer)?.unref?.();
+    return controller.signal;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * @param {string} url
- * @param {{ body?: unknown, adminToken?: string }} [opts]
+ * @param {{ body?: unknown, adminToken?: string, signal?: AbortSignal|null }} [opts]
  */
-async function postJson(url, { body, adminToken } = {}) {
+async function postJson(url, { body, adminToken, signal } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (adminToken) headers['X-Admin-Token'] = adminToken;
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body ?? {}) });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body ?? {}),
+    ...(signal ? { signal } : {}),
+  });
   let data = null;
   try {
     data = await res.json();
@@ -21,11 +71,26 @@ async function postJson(url, { body, adminToken } = {}) {
   return { status: res.status, data };
 }
 
+/** Turn an aborted request into something worth showing a person. */
+function asTimeoutError(err) {
+  if (!isAbort(err)) return err;
+  return new Error('the server did not respond — check your connection and retry');
+}
+
 // Exchange the admin password for a ~12h session token (sent back as
 // X-Admin-Token). Throws a human-readable Error on failure.
-export async function verifyAdmin(password, base = API_BASE) {
+export async function verifyAdmin(password, base = API_BASE, signal = deadline()) {
   if (!base) throw new Error('server API not configured (VITE_API_BASE unset)');
-  const { status, data } = await postJson(`${base}/api/admin/verify`, { body: { password } });
+  let status;
+  let data;
+  try {
+    ({ status, data } = await postJson(`${base}/api/admin/verify`, {
+      body: { password },
+      signal,
+    }));
+  } catch (err) {
+    throw asTimeoutError(err);
+  }
   if (status === 200 && data?.token) return data.token;
   if (status === 401) throw new Error('wrong admin password');
   if (status === 429) throw new Error('too many attempts — wait a minute and retry');
@@ -34,12 +99,24 @@ export async function verifyAdmin(password, base = API_BASE) {
 
 // Mint a LiveKit token with a valid admin session. On a 401 the returned Error
 // carries `.status = 401` so the caller can re-verify and retry once.
-export async function mintToken(adminToken, { room, identity }, base = API_BASE) {
+export async function mintToken(
+  adminToken,
+  { room, identity },
+  base = API_BASE,
+  signal = deadline(),
+) {
   if (!base) throw new Error('server API not configured (VITE_API_BASE unset)');
-  const { status, data } = await postJson(`${base}/api/livekit/token`, {
-    adminToken,
-    body: { room, identity },
-  });
+  let status;
+  let data;
+  try {
+    ({ status, data } = await postJson(`${base}/api/livekit/token`, {
+      adminToken,
+      body: { room, identity },
+      signal,
+    }));
+  } catch (err) {
+    throw asTimeoutError(err);
+  }
   if (status === 200 && data?.token) return { token: data.token, url: data.url ?? '' };
   const err = /** @type {Error & { status?: number }} */ (
     new Error(
@@ -57,16 +134,24 @@ export async function mintToken(adminToken, { room, identity }, base = API_BASE)
 // Full flow: reuse an existing session if we have one, transparently
 // re-authenticating with the password once if it has expired. Returns
 // { token, url, adminToken } — adminToken is the (possibly refreshed) session.
-export async function mintViaServer({ password, adminToken, room, identity }, base = API_BASE) {
+//
+// The deadline is created ONCE and shared by every hop. A per-hop timeout would
+// let the worst case stack to four times the budget, which is long enough that
+// a person concludes the app is broken rather than slow.
+export async function mintViaServer(
+  { password, adminToken, room, identity, timeoutMs = DEFAULT_TIMEOUT_MS },
+  base = API_BASE,
+) {
+  const signal = deadline(timeoutMs);
   let session = adminToken;
-  if (!session) session = await verifyAdmin(password, base);
+  if (!session) session = await verifyAdmin(password, base, signal);
   try {
-    const { token, url } = await mintToken(session, { room, identity }, base);
+    const { token, url } = await mintToken(session, { room, identity }, base, signal);
     return { token, url, adminToken: session };
   } catch (err) {
     if (err.status === 401 && password) {
-      session = await verifyAdmin(password, base);
-      const { token, url } = await mintToken(session, { room, identity }, base);
+      session = await verifyAdmin(password, base, signal);
+      const { token, url } = await mintToken(session, { room, identity }, base, signal);
       return { token, url, adminToken: session };
     }
     throw err;
