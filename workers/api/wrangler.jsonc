@@ -39,8 +39,9 @@
     // agent's room exactly: a test parses convert_agent.py to enforce it.
     "SESSION_ROOMS": "luminastream-test",
     // Policy ceiling on top of the pool. Effective capacity is
-    // min(pool size, this), so it can only ever admit FEWER sessions than
-    // there are agents, never more.
+    // min(pool size, this), so it can never admit MORE sessions than there
+    // are agents. It may equal that number — min permits equality — it just
+    // cannot exceed it.
     "MAX_CONCURRENT_SESSIONS": "1",
     // 2h. Simultaneously the maximum session length and the maximum time an
     // abandoned slot stays held. Hard-capped by the 6h LiveKit grant ceiling.

@@ -33,9 +33,10 @@ to it as shipped would have broken the thing the CEO tested and liked.
 Rooms are now allocated from a **pool** of rooms an agent is actually serving.
 Two limits, deliberately distinct: `SESSION_ROOMS` is physical (how many rooms
 have an agent), `MAX_CONCURRENT_SESSIONS` is policy (how many we admit).
-Effective capacity is `min(pool, policy)`, so the knob can only ever admit
-*fewer* sessions than there are agents — the audio governor's shape, an
-adjustable cap under a hard ceiling.
+Effective capacity is `min(pool, policy)`, so the knob can never admit **more**
+sessions than there are agents — the audio governor's shape, an adjustable cap
+under a hard ceiling. (`min` permits equality, and with one agent and a cap of
+1 it *is* equality; "fewer" would have been the wrong inequality.)
 
 **P1c got smaller as a result.** Growing capacity is now one command on the box
 and one config line: `convert_agent.py --room <name>`, then that name in the

@@ -82,7 +82,7 @@ So there are two limits, and they are different things:
 | `MAX_CONCURRENT_SESSIONS` | **policy** — how many we choose to admit |
 
 Effective capacity is `min(pool size, MAX_CONCURRENT_SESSIONS)`, so the policy
-knob can only ever admit *fewer* sessions than there are agents, never more —
+knob can never admit **more** sessions than there are agents —
 the same shape as the audio governor's adjustable cap under a hard ceiling. The
 capacity endpoint reports both, so an operator can tell "we are holding capacity
 down" apart from "we ran out of agents".

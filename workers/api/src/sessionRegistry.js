@@ -102,8 +102,9 @@ const MAX_ROOM_NAME_LENGTH = 128;
 const MAX_POOL_SIZE = 1_000;
 
 // A policy ceiling on top of the physical one. Effective capacity is
-// min(pool size, MAX_CONCURRENT_SESSIONS), so this knob can only ever admit
-// FEWER sessions than there are agents — never more. Same shape as the audio
+// min(pool size, MAX_CONCURRENT_SESSIONS), so this knob can never admit MORE
+// sessions than there are agents. It may equal that number — min permits
+// equality, and at one agent it does — it just cannot exceed it. The audio
 // governor: an adjustable cap that cannot breach the hard limit above it.
 export const DEFAULT_MAX_CONCURRENT_SESSIONS = 1;
 const MAX_ALLOWED_CONCURRENT_SESSIONS = 10_000;
