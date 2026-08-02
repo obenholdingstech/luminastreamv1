@@ -157,6 +157,33 @@ test('ORACLE abandonment costs the same whether it is noticed in a minute or a w
   );
 });
 
+test('ORACLE many abandoned sessions sharing an expiry cost ONE alarm between them', async () => {
+  // The single-session row asserts "exactly 1", which is the tightest case and
+  // not the general rule. One wakeup reaps everything that has expired, so the
+  // real bound is the number of DISTINCT pending expiries — never the number of
+  // sessions, and never the elapsed time. Worth a test rather than a sentence:
+  // it is the claim the prose in sessionRegistry.js and ROADMAP.md now makes,
+  // and it is stronger than "one alarm each", so it is the one that would be
+  // quietly lost if #rearm ever armed per session.
+  const N = 5;
+  const { env, h } = setup({ capacity: N });
+  const token = await adminToken(env);
+  h.resetCounts();
+
+  for (let i = 0; i < N; i += 1) {
+    assert.equal((await (await createSession(env, token)).json()).ok, true);
+  }
+  // All created at the same instant on the harness clock, so all five leases
+  // fall due together.
+  await h.advanceBy((LEASE_SECONDS + 1) * 1000);
+
+  const { requests, alarms } = h.counts();
+  assert.equal(requests, N, 'one create each, nothing more');
+  assert.equal(alarms, 1, `${N} sessions expiring together must cost ONE wakeup, not ${N}`);
+  assert.equal(h.pendingAlarm(), null);
+  assert.equal((await (await readCapacity(env, token)).json()).available, N, 'all reclaimed');
+});
+
 // ─── row 3: THE DURATION-SCALING DETECTOR ──────────────────────────────────
 
 test('ORACLE short vs long: a 30-second and a full-lease session cost exactly the same', async () => {

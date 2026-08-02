@@ -32,11 +32,17 @@
 // The whole object is therefore three storage-touching operations and one
 // alarm handler, all built from the same two primitives (#liveSessions and
 // #rearm). A clean session costs 3 requests and 0 alarms; an abandoned one
-// costs 1 request and exactly 1 alarm — no matter how far into its lease it was
-// abandoned, and no matter how long the object then sits idle afterwards. It
-// cannot be abandoned "after a day", because it cannot outlive its lease; what
-// can last a day is the silence that follows, which is exactly what a
-// fixed-interval reaper would bill for.
+// costs 1 request and AT MOST 1 alarm — no matter how far into its lease it was
+// abandoned, and no matter how long the object then sits idle afterwards.
+//
+// At most, not exactly, and the slack is in our favour: one wakeup reaps
+// everything expired, so sessions sharing an expiry instant cost one alarm
+// between them rather than one each. The bound is the number of distinct
+// pending expiries — never the number of sessions, and never the elapsed time.
+//
+// A session cannot be abandoned "after a day" either, because it cannot outlive
+// its lease; what can last a day is the silence that follows, which is exactly
+// what a fixed-interval reaper would bill for.
 
 import { base64UrlEncode, base64UrlDecode, sha256, timingSafeEqual } from './crypto.js';
 import { MAX_LIVEKIT_TTL_SECONDS } from './livekit.js';
