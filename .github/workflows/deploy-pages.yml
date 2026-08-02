@@ -57,6 +57,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Gate the deploy on the same checks CI runs, exactly as deploy-worker.yml
+      # gates on the Worker's tests. Yes, ci.yml has already run these on the
+      # push to main — but a deploy that trusts another workflow's result is a
+      # deploy that ships whatever `main` holds when THIS job starts. The
+      # duplicate minute is the price of the deploy job being self-contained.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: node --test src/lib/*.test.js
+
       # Fail the job LOUDLY if the API base is missing, before we build. An
       # empty VITE_API_BASE bakes a frontend that silently talks to same-origin
       # /api with no backend behind it — the exact regression the repo already
