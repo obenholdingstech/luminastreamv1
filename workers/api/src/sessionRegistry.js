@@ -81,10 +81,30 @@ export const MIN_LEASE_SECONDS = 60;
 // and importing it here is the coupling that keeps the two honest.
 export const MAX_LEASE_SECONDS = MAX_LIVEKIT_TTL_SECONDS;
 
-// One, because that is the truth today: one agent, one room. The registry's
-// job at this capacity is already worth having — the second caller is refused
-// with a reason instead of being silently ignored by a busy agent. P1c
-// measures the real capacity constant on the VPS and this becomes that number.
+// ─── the room pool ─────────────────────────────────────────────────────────
+//
+// **A session slot IS a room with an agent in it.** Nothing else is a slot.
+//
+// The first cut of this file invented a room name per session — `lumina-<uuid>`
+// — which reads fine and is wrong: no agent joins a name we made up a moment
+// ago, so the browser would connect to an empty room, publish its microphone,
+// and wait forever for a reply. The registry would report a healthy session the
+// whole time. That is capacity as an assertion rather than a fact.
+//
+// So rooms are ALLOCATED from a pool of rooms an agent is actually serving.
+// Today the pool has one entry, because there is one agent. P1c grows it by
+// running more (`convert_agent.py --room <name>`, already a first-class flag)
+// and listing them here. Capacity stops being a number we assert and becomes a
+// consequence of how many agents are running — which is the only version of it
+// that can be trusted.
+export const DEFAULT_SESSION_ROOMS = 'luminastream-test';
+const MAX_ROOM_NAME_LENGTH = 128;
+const MAX_POOL_SIZE = 1_000;
+
+// A policy ceiling on top of the physical one. Effective capacity is
+// min(pool size, MAX_CONCURRENT_SESSIONS), so this knob can only ever admit
+// FEWER sessions than there are agents — never more. Same shape as the audio
+// governor: an adjustable cap that cannot breach the hard limit above it.
 export const DEFAULT_MAX_CONCURRENT_SESSIONS = 1;
 const MAX_ALLOWED_CONCURRENT_SESSIONS = 10_000;
 
@@ -109,14 +129,89 @@ function parseCount(raw, { name, fallback, min, max }) {
   return value;
 }
 
+// The pool, parsed strictly for the same reason the counts are.
+//
+// The duplicate check is the one that earns its keep. A room listed twice would
+// let the registry hand the same room to two sessions, and LiveKit evicts on
+// duplicate identity — so the second speaker would silently kick the first out
+// of a call they were mid-sentence in. It presents as a flaky connection, never
+// as a configuration error, which is exactly the failure this repo has already
+// paid to learn once (see sessionIdentity.js).
+function parseRooms(raw, { name, fallback }) {
+  const text = raw === undefined || raw === null || String(raw).trim() === ''
+    ? fallback
+    : String(raw);
+  const rooms = text.split(',').map((entry) => entry.trim());
+
+  for (const room of rooms) {
+    if (!room) {
+      throw new RegistryConfigError(
+        `${name} has an empty entry — check for a stray or trailing comma`,
+      );
+    }
+    if (room.length > MAX_ROOM_NAME_LENGTH) {
+      throw new RegistryConfigError(
+        `${name} has a room name longer than ${MAX_ROOM_NAME_LENGTH} characters`,
+      );
+    }
+  }
+  if (new Set(rooms).size !== rooms.length) {
+    throw new RegistryConfigError(
+      `${name} lists the same room twice — two sessions would be handed one room, ` +
+        'and LiveKit evicts on duplicate identity',
+    );
+  }
+  if (rooms.length > MAX_POOL_SIZE) {
+    throw new RegistryConfigError(`${name} lists more than ${MAX_POOL_SIZE} rooms`);
+  }
+  return rooms;
+}
+
+// Whether this environment can hand out sessions at all.
+//
+// A pool is a promise that an agent is listening. An environment where that is
+// not true must say so, rather than issue valid credentials for a room nobody
+// serves — which is the exact failure the pool replaced, reintroduced through
+// configuration instead of code. Staging has no agent, so staging says no.
+//
+// Doubles as an operational kill switch: sessions can be stopped for
+// maintenance with one variable and no code deploy.
+function parseEnabled(raw, { name, fallback }) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const text = String(raw).trim().toLowerCase();
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  // Strict on purpose. A typo'd "flase" read as falsy would silently take
+  // sessions offline, and read as truthy would silently promise agents that do
+  // not exist. Neither may happen quietly.
+  throw new RegistryConfigError(`${name} must be "true" or "false", got ${JSON.stringify(raw)}`);
+}
+
 export function readRegistryConfig(env = {}) {
+  const enabled = parseEnabled(env.SESSIONS_ENABLED, {
+    name: 'SESSIONS_ENABLED',
+    fallback: true,
+  });
+  const rooms = parseRooms(env.SESSION_ROOMS, {
+    name: 'SESSION_ROOMS',
+    fallback: DEFAULT_SESSION_ROOMS,
+  });
+  const maxConcurrentSessions = parseCount(env.MAX_CONCURRENT_SESSIONS, {
+    name: 'MAX_CONCURRENT_SESSIONS',
+    fallback: DEFAULT_MAX_CONCURRENT_SESSIONS,
+    min: 1,
+    max: MAX_ALLOWED_CONCURRENT_SESSIONS,
+  });
+
   return {
-    capacity: parseCount(env.MAX_CONCURRENT_SESSIONS, {
-      name: 'MAX_CONCURRENT_SESSIONS',
-      fallback: DEFAULT_MAX_CONCURRENT_SESSIONS,
-      min: 1,
-      max: MAX_ALLOWED_CONCURRENT_SESSIONS,
-    }),
+    enabled,
+    rooms,
+    maxConcurrentSessions,
+    // The physical limit and the policy limit, resolved into one number, and
+    // zero when this environment has no agents at all. The pool can never be
+    // exceeded — there is no slot without an agent — and the policy cap can
+    // only lower it further.
+    capacity: enabled ? Math.min(rooms.length, maxConcurrentSessions) : 0,
     leaseSeconds: parseCount(env.SESSION_LEASE_SECONDS, {
       name: 'SESSION_LEASE_SECONDS',
       fallback: DEFAULT_LEASE_SECONDS,
@@ -253,13 +348,36 @@ export class SessionRegistry {
   }
 
   async #create(config) {
+    // Checked before anything else, and reported as its own error rather than
+    // as at_capacity. "There are no agents here" and "the agents are all busy"
+    // are different facts, and a caller that cannot tell them apart will retry
+    // the first one forever.
+    if (!config.enabled) {
+      return json({ ok: false, error: 'sessions_disabled' }, 503);
+    }
+
     const now = this.now();
     const live = await this.#liveSessions(now);
 
-    if (live.length >= config.capacity) {
+    // Allocate a room nobody is holding. Two checks, not one, and they are
+    // meant to agree: with each live session holding a distinct pool room,
+    // `live.length < capacity` implies a free room exists. Asking the pool
+    // directly anyway means a state that somehow disagrees refuses the session
+    // rather than handing out an occupied room — the failure that would evict
+    // whoever was already in it.
+    const held = new Set(live.map((record) => record.room));
+    const room = config.rooms.find((candidate) => !held.has(candidate));
+
+    if (live.length >= config.capacity || !room) {
       await this.#rearm(live);
       return json(
-        { ok: false, error: 'at_capacity', live: live.length, capacity: config.capacity },
+        {
+          ok: false,
+          error: 'at_capacity',
+          live: live.length,
+          capacity: config.capacity,
+          pool: config.rooms.length,
+        },
         503,
       );
     }
@@ -272,10 +390,11 @@ export class SessionRegistry {
 
     const record = {
       id,
-      room: `lumina-${id}`,
-      // LiveKit evicts on duplicate identity. Each session gets its own room so
-      // a collision across rooms would be harmless anyway, but deriving from
-      // the uuid makes one impossible rather than merely unlikely.
+      // From the pool — a room an agent is in — never a name invented here.
+      room,
+      // LiveKit evicts on duplicate identity, and pool rooms are reused across
+      // sessions, so this genuinely has to be unique rather than merely tidy.
+      // Deriving it from the uuid makes a collision impossible.
       identity: `speaker-${id.slice(0, 8)}`,
       // Stored hashed. This is our own storage, but a hash costs one SHA-256
       // and makes a leaked dump useless for taking over sessions.
@@ -303,9 +422,15 @@ export class SessionRegistry {
     await this.#rearm(live);
     return json({
       ok: true,
+      enabled: config.enabled,
       live: live.length,
       capacity: config.capacity,
       available: Math.max(0, config.capacity - live.length),
+      // Reported separately so an operator can tell the two limits apart:
+      // `pool` is how many rooms have an agent, `capacity` is what policy
+      // allows. When they differ, capacity is being held down deliberately —
+      // not because we ran out of agents.
+      pool: config.rooms.length,
     });
   }
 

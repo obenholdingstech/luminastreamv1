@@ -31,8 +31,16 @@
   // operational limits, not credentials. Both are parsed STRICTLY — a
   // malformed value is fatal at request time (500), never a silent default.
   "vars": {
-    // The truth today: one agent, one room. P1c measures the real capacity
-    // constant on the VPS and this becomes that number.
+    // The rooms an agent is ACTUALLY serving, comma-separated. A session slot
+    // is a room with an agent in it — nothing else is a slot — so this is the
+    // physical capacity limit and `MAX_CONCURRENT_SESSIONS` can only lower it.
+    // One entry today because one agent runs; P1c adds more by starting more
+    // (`convert_agent.py --room <name>`) and listing them here. Must match the
+    // agent's room exactly: a test parses convert_agent.py to enforce it.
+    "SESSION_ROOMS": "luminastream-test",
+    // Policy ceiling on top of the pool. Effective capacity is
+    // min(pool size, this), so it can only ever admit FEWER sessions than
+    // there are agents, never more.
     "MAX_CONCURRENT_SESSIONS": "1",
     // 2h. Simultaneously the maximum session length and the maximum time an
     // abandoned slot stays held. Hard-capped by the 6h LiveKit grant ceiling.
@@ -54,9 +62,23 @@
         { "name": "SESSION_LIMITER", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } }
       ],
       "vars": {
-        // Staging carries more capacity than production on purpose: it is
-        // where concurrency gets exercised, and it has no agent behind it to
-        // over-admit onto.
+        // NO AGENT RUNS FOR STAGING, so staging hands out no sessions.
+        //
+        // A pool is a promise that someone is listening. Listing rooms nobody
+        // serves would issue valid credentials for silence — the exact failure
+        // the room pool replaced, reintroduced through configuration instead of
+        // code. Staging says so plainly instead.
+        //
+        // The rooms below are what a staging agent WOULD join. To turn staging
+        // on: start `convert_agent.py --room staging-room-1` (and friends) on a
+        // box, flip this to "true", and update the tripwire in
+        // test/sessionRegistry.test.js in the SAME commit — it exists to make
+        // this a deliberate act rather than a one-character edit.
+        //
+        // Never point staging at a room production is serving: two registries
+        // handing out one room is the same eviction bug through another door.
+        "SESSIONS_ENABLED": "false",
+        "SESSION_ROOMS": "staging-room-1,staging-room-2,staging-room-3,staging-room-4",
         "MAX_CONCURRENT_SESSIONS": "4",
         "SESSION_LEASE_SECONDS": "7200"
       },

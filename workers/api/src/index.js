@@ -231,9 +231,21 @@ function registryRefusal(payload, origin) {
     console.error('session registry misconfigured:', payload.detail);
     return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
   }
+  // Distinct from at_capacity on purpose: "this environment serves no
+  // sessions" is a permanent fact a client should stop retrying, while
+  // at_capacity is a queue that will clear.
+  if (payload?.error === 'sessions_disabled') {
+    return json({ ok: false, error: 'sessions_disabled' }, { status: 503, origin });
+  }
   if (payload?.error === 'at_capacity') {
     return json(
-      { ok: false, error: 'at_capacity', live: payload.live, capacity: payload.capacity },
+      {
+        ok: false,
+        error: 'at_capacity',
+        live: payload.live,
+        capacity: payload.capacity,
+        pool: payload.pool,
+      },
       { status: 503, origin },
     );
   }
@@ -346,9 +358,11 @@ async function handleSessionCapacity(request, env, origin) {
   return json(
     {
       ok: true,
+      enabled: capacity.enabled,
       live: capacity.live,
       capacity: capacity.capacity,
       available: capacity.available,
+      pool: capacity.pool,
     },
     { status: 200, origin, headers: { 'Cache-Control': 'private, max-age=5' } },
   );

@@ -11,9 +11,15 @@ take, replacing the DEV-ONLY `scripts/generate-livekit-token.js`.
 | GET    | `/api/health`            | none              | `{ ok, version }` liveness check                         |
 | POST   | `/api/admin/verify`      | none (hard limit) | `{ password }` → `{ ok, token, expiresAt }` (~12h)       |
 | POST   | `/api/livekit/token`     | `X-Admin-Token`   | `{ room, identity }` → LiveKit access token (≤6h)        |
-| POST   | `/api/session/create`    | `X-Admin-Token`   | allocates a room + identity + grant, or `503 at_capacity` |
+| POST   | `/api/session/create`    | `X-Admin-Token`   | → `{ sessionId, endToken, room, identity, token, url, expiresAt }` |
 | POST   | `/api/session/end`       | `X-Admin-Token`   | `{ sessionId, endToken }` → releases the slot            |
-| GET    | `/api/session/capacity`  | `X-Admin-Token`   | `{ live, capacity, available }`                          |
+| GET    | `/api/session/capacity`  | `X-Admin-Token`   | `{ enabled, live, capacity, available, pool }`            |
+
+`/api/session/create` refuses with **503** and one of two distinct errors:
+`at_capacity` (every agent is busy — a queue that will clear) or
+`sessions_disabled` (this environment serves no sessions at all — permanent, do
+not retry). A client that cannot tell them apart retries the permanent one
+forever, which is why they are separate codes rather than one.
 
 - The admin password is checked with a **constant-time** comparison (SHA-256
   both sides via Web Crypto, digests compared — never `===`).
@@ -56,6 +62,51 @@ with duration.
 stub and every alarm: **≤ 3 requests / 0 alarms** for a clean session, **≤ 2 / 1**
 for an abandoned one, and — the row that catches a poll hiding inside the budget
 — **identical counts for a short and a long session**.
+
+### The room pool — a slot is a room with an agent in it
+
+`SESSION_ROOMS` is a comma-separated list of the rooms an **agent is actually
+serving**, and `create` allocates from it. It never invents a room name.
+
+That distinction is the whole point. An invented room (`lumina-<uuid>`) reads
+fine and is wrong: no agent joins a name we made up a moment ago, so the browser
+would connect, publish its microphone, and wait forever for a reply — while the
+registry reported a perfectly healthy session. Capacity has to be a *fact about
+how many agents are running*, not a number we assert.
+
+So there are two limits, and they are different things:
+
+| | meaning |
+|---|---|
+| `SESSION_ROOMS` | **physical** — how many rooms have an agent |
+| `MAX_CONCURRENT_SESSIONS` | **policy** — how many we choose to admit |
+
+Effective capacity is `min(pool size, MAX_CONCURRENT_SESSIONS)`, so the policy
+knob can only ever admit *fewer* sessions than there are agents, never more —
+the same shape as the audio governor's adjustable cap under a hard ceiling. The
+capacity endpoint reports both, so an operator can tell "we are holding capacity
+down" apart from "we ran out of agents".
+
+Growing capacity in P1c is therefore one operation on the box and one config
+line: start another agent with `convert_agent.py --room <name>` (already a
+first-class flag) and add that name here.
+
+**An environment with no agent must say so.** `SESSIONS_ENABLED` (default
+`true`) exists because a pool is a *promise that someone is listening*. Staging
+runs no agent, so staging sets it `false` and refuses with `sessions_disabled`
+rather than issuing valid credentials for silence — which would be this exact
+bug reintroduced through configuration instead of code. A test asserts the
+committed staging config keeps it off, so turning it on is a deliberate act with
+a review attached rather than a one-character edit. It doubles as an operational
+kill switch: sessions stop with one variable and no code deploy.
+
+The pool is parsed strictly, and the **duplicate check earns its keep**: a room
+listed twice would hand one room to two sessions, and LiveKit evicts on
+duplicate identity — so the second speaker silently kicks the first out of a
+call they are mid-sentence in. It presents as a flaky connection, never as a
+configuration error. A test also parses `agent/convert_agent.py` and asserts the
+default pool equals the agent's `DEFAULT_ROOM`, so a rename on one side cannot
+quietly hand out a room nobody serves.
 
 ### The lease
 
