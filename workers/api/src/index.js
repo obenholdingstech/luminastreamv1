@@ -39,22 +39,61 @@ function clientIp(request) {
   );
 }
 
-// Returns true when the request should be rejected as over-limit. When the
-// binding is absent (pure `node --test`, or a misconfigured deploy) we fail
-// OPEN rather than brick the endpoint — the binding is declared in
-// wrangler.jsonc, so it is always present in `wrangler dev` and production.
-async function isRateLimited(limiter, key) {
-  if (!limiter || typeof limiter.limit !== 'function') return false;
-  const { success } = await limiter.limit({ key });
-  return !success;
+// Rate-limit outcomes. Three, not two: "the limiter said no" and "there is no
+// limiter" are different facts and must produce different behaviour.
+const LIMIT_OK = 'ok';
+const LIMIT_EXCEEDED = 'exceeded';
+const LIMIT_UNAVAILABLE = 'unavailable';
+
+// FAILS CLOSED. This previously returned "not limited" when the binding was
+// missing, so that a dependency-free `node --test` run could exercise the
+// endpoints. The cost of that convenience: a deploy that drops the
+// `ratelimits` block from wrangler.jsonc turns /api/admin/verify — a password
+// oracle — into an unthrottled one, with nothing anywhere reporting an error.
+// A silent loss of a security control is the worst shape a bug can take.
+//
+// The tests now inject a permissive limiter instead (see test/http.test.js),
+// which is more honest anyway: a test of the non-throttled path should say so
+// rather than rely on a production fallback.
+//
+// A limiter that THROWS is treated the same as a missing one. Cloudflare's
+// binding can fail transiently, and "the throttle broke" must never resolve to
+// "so let everything through".
+async function checkRateLimit(limiter, key) {
+  if (!limiter || typeof limiter.limit !== 'function') return LIMIT_UNAVAILABLE;
+  try {
+    const { success } = await limiter.limit({ key });
+    return success ? LIMIT_OK : LIMIT_EXCEEDED;
+  } catch {
+    return LIMIT_UNAVAILABLE;
+  }
+}
+
+// The refusal for a non-OK outcome, or null to proceed.
+//
+// 429 and 503 are deliberately distinct. 429 says "you did too much" and is
+// the client's problem; 503 says "we cannot safely serve this" and is ours. A
+// missing binding reported as 429 would look like ordinary throttling in the
+// logs, which is exactly how it would go unnoticed for a month.
+function rateLimitRefusal(state, origin) {
+  if (state === LIMIT_OK) return null;
+  if (state === LIMIT_EXCEEDED) {
+    return json({ ok: false, error: 'rate_limited' }, { status: 429, origin });
+  }
+  return json(
+    { ok: false, error: 'rate_limiter_unavailable' },
+    { status: 503, origin },
+  );
 }
 
 async function handleVerify(request, env, origin) {
   // Rate-limit BEFORE touching the password path — this endpoint is a password
   // oracle, so throttle by source IP hard (5 / 60s per colo, see wrangler.jsonc).
-  if (await isRateLimited(env.VERIFY_LIMITER, clientIp(request))) {
-    return json({ ok: false, error: 'rate_limited' }, { status: 429, origin });
-  }
+  const verifyLimit = rateLimitRefusal(
+    await checkRateLimit(env.VERIFY_LIMITER, clientIp(request)),
+    origin,
+  );
+  if (verifyLimit) return verifyLimit;
   if (!env.ADMIN_PASSWORD || !env.ADMIN_SESSION_SECRET) {
     return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
   }
@@ -80,9 +119,11 @@ async function handleToken(request, env, origin) {
   // Throttle by IP BEFORE the crypto path. Otherwise anonymous garbage-token
   // spam forces an HMAC verify on every request without ever reaching the
   // limiter — the same reason /api/admin/verify rate-limits first.
-  if (await isRateLimited(env.TOKEN_LIMITER, clientIp(request))) {
-    return json({ ok: false, error: 'rate_limited' }, { status: 429, origin });
-  }
+  const tokenLimit = rateLimitRefusal(
+    await checkRateLimit(env.TOKEN_LIMITER, clientIp(request)),
+    origin,
+  );
+  if (tokenLimit) return tokenLimit;
 
   // Gate: no valid admin session, no token. A public repo plus an open mint
   // endpoint equals strangers in our rooms burning our GPU.

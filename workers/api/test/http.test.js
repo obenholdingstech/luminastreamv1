@@ -10,16 +10,28 @@ import worker, { VERSION } from '../src/index.js';
 const ADMIN_PASSWORD = 'correct horse battery staple';
 const STUDIO = 'https://studio.luminastream.live';
 
+const allowLimiter = { async limit() { return { success: true }; } };
+const denyLimiter = { async limit() { return { success: false }; } };
+const throwingLimiter = {
+  async limit() {
+    throw new Error('binding unavailable');
+  },
+};
+
+// The limiters are part of BASE_ENV now. They used to be absent, and the Worker
+// treated a missing binding as "not limited" so these tests could run — which
+// meant the fail-open path was load-bearing for the suite and therefore could
+// never be removed without breaking it. Injecting a permissive limiter says the
+// true thing instead: these tests exercise the NOT-throttled path.
 const BASE_ENV = {
   ADMIN_PASSWORD,
   ADMIN_SESSION_SECRET: 'unit-test-session-secret',
   LIVEKIT_API_KEY: 'APIkey',
   LIVEKIT_API_SECRET: 'secretsecretsecret',
   LIVEKIT_URL: 'wss://proj.livekit.cloud',
+  VERIFY_LIMITER: allowLimiter,
+  TOKEN_LIMITER: allowLimiter,
 };
-
-const allowLimiter = { async limit() { return { success: true }; } };
-const denyLimiter = { async limit() { return { success: false }; } };
 function countingLimiter(max) {
   let n = 0;
   return {
@@ -202,5 +214,91 @@ test('rate limit: token endpoint throttles anonymous spam BEFORE verifying (429,
 });
 
 test('misconfigured server (no secrets) → 500', async () => {
-  assert.equal((await call(req('/api/admin/verify', { method: 'POST', body: { password: 'x' } }), {})).status, 500);
+  // Limiters supplied deliberately. Rate-limiting runs BEFORE the secret check
+  // (that ordering is the point — the endpoint is a password oracle), so an
+  // entirely empty env now refuses at the limiter with 503 and never reaches
+  // the 500. Isolate the thing this test names: missing SECRETS, not a missing
+  // binding, which has its own tests below.
+  const noSecrets = { VERIFY_LIMITER: allowLimiter, TOKEN_LIMITER: allowLimiter };
+  assert.equal(
+    (await call(req('/api/admin/verify', { method: 'POST', body: { password: 'x' } }), noSecrets))
+      .status,
+    500,
+  );
+});
+
+test('an empty env refuses at the limiter, before the secret check', async () => {
+  // The corollary, pinned so the ordering cannot quietly invert: with nothing
+  // configured at all, the first thing to say no is the throttle.
+  const res = await call(req('/api/admin/verify', { method: 'POST', body: { password: 'x' } }), {});
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'rate_limiter_unavailable');
+});
+
+// ── the rate limiter fails CLOSED ──────────────────────────────────────────
+// The endpoint this guards is a password oracle. A deploy that drops the
+// `ratelimits` block from wrangler.jsonc used to leave it unthrottled with no
+// error anywhere — a security control disappearing in silence.
+
+test('a MISSING verify limiter refuses the request, and says why', async () => {
+  const env = { ...BASE_ENV, VERIFY_LIMITER: undefined };
+  const res = await call(
+    req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+    env,
+  );
+  assert.equal(res.status, 503, 'a missing limiter must not fall through to the password check');
+  const body = await res.json();
+  assert.equal(body.error, 'rate_limiter_unavailable');
+});
+
+test('a MISSING token limiter refuses the mint', async () => {
+  const token = await mintSession();
+  const env = { ...BASE_ENV, TOKEN_LIMITER: undefined };
+  const res = await call(
+    req('/api/livekit/token', {
+      method: 'POST',
+      token,
+      body: { room: 'r', identity: 'i' },
+    }),
+    env,
+  );
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'rate_limiter_unavailable');
+});
+
+test('a limiter that THROWS is treated as unavailable, not as permission', async () => {
+  // Cloudflare's binding can fail transiently. "The throttle broke" must never
+  // resolve to "so let everything through".
+  const env = { ...BASE_ENV, VERIFY_LIMITER: throwingLimiter };
+  const res = await call(
+    req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+    env,
+  );
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'rate_limiter_unavailable');
+});
+
+test('a MALFORMED limiter binding is unavailable, not silently ignored', async () => {
+  const env = { ...BASE_ENV, VERIFY_LIMITER: { notLimit: () => {} } };
+  const res = await call(
+    req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+    env,
+  );
+  assert.equal(res.status, 503);
+});
+
+test('503 (ours) and 429 (theirs) stay distinguishable', async () => {
+  // A missing binding reported as 429 would read as ordinary throttling in the
+  // logs, which is exactly how it would go unnoticed for a month.
+  const missing = await call(
+    req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+    { ...BASE_ENV, VERIFY_LIMITER: undefined },
+  );
+  const throttled = await call(
+    req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+    { ...BASE_ENV, VERIFY_LIMITER: denyLimiter },
+  );
+  assert.equal(missing.status, 503);
+  assert.equal(throttled.status, 429);
+  assert.notEqual((await missing.json()).error, (await throttled.json()).error);
 });
