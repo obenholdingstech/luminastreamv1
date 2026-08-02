@@ -2,6 +2,18 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 2 August 2026 — P1b SHIPPED: the lens takes a real session (#34, #35 merged)
+
+- **CEO decision: the admin password stays as the lens door for now** (3 options offered; gate retires in P4 when accounts exist). So P1b was plumbing, not a door change.
+- **#34 — "a session slot is a room with an agent in it."** Found while wiring the lens: `/api/session/create` was inventing room names, and **no agent joins a name we made up**. The browser would have connected, published its mic and waited forever while the registry reported a healthy session. Rooms now come from a **pool**; two limits kept distinct — `SESSION_ROOMS` (physical: rooms with an agent) and `MAX_CONCURRENT_SESSIONS` (policy), capacity = `min(pool, policy)` so the knob can never admit **more** than there are agents (`min` permits equality — with one agent and a cap of 1 it *is* equality). **P1c is now one command plus one config line**, not a design problem. `SESSIONS_ENABLED=false` on staging, because no agent serves it and issuing credentials for silence is the same bug through a config door.
+- **#35 — the lens.** Server picks room + identity + grant; client picks nothing. Slot held **Start → Stop**, released on Stop, unmount, and `pagehide` (`fetch` + `keepalive`, not `sendBeacon`, which cannot set the auth header). Refusals say something true: `at_capacity` (retry) vs `sessions_disabled` (do not). A busy lens no longer costs the user their access key.
+- **Five review rounds, 11 findings — 4 of the 6 real bugs were in code written to fix an earlier round.** That is the number worth remembering, not the total.
+- **Three defects were in my own tests.** One asserted the bug as correct behaviour (early return on a hidden failure → Start button dead until reload). One replacement test hid the page *after* the failure, so it never touched the path it named. One asserted messages were "different" when a regression still produced a different — but useless — message. All three found by mutation, not by reading.
+- **CodeRabbit cited our own `AGENTS.md` rule** — logic belongs in `src/lib/`, tested without a browser — against lifecycle code I had put in `Studio.jsx` and shipped with a note saying it was untested. **That note is what the rule exists to prevent.** Extracting to `sessionHolder.js` (22 tests) then *found* a bug: a bfcached page returns holding credentials for a room since given to someone else.
+- **Declined with reasoning:** server-side abort-reclaim when the browser dies mid-create. The abort can fire after a success is already in flight, turning a rare 2h stall into a rare mid-call eviction. Known window; revisit in P1c.
+- **Verified:** 132 frontend / 100 worker / 224 agent; lint, typecheck, build, both deploys green, `check-live.sh` PASS ×3. **NOT verified: no live drill yet** — Start→Stop→Start and Start→navigate-away→Start are precisely what no test reaches. Awaiting the CEO; logged same day per convention.
+- **Next: P1c** (CEO's hands) — second agent via `--room`, add to `SESSION_ROOMS`, measure the **capacity constant**.
+
 ## 2 August 2026 — P1a SHIPPED: the session layer, O(1) enforced (#32 merged)
 
 - **`SessionRegistry` DO + three endpoints** (`/api/session/create|end|capacity`) live in production. Coordination state only, **not** the database (P4). Server-side only — nothing user-visible changed yet.

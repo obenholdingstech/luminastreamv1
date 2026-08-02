@@ -4,6 +4,146 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 2 August 2026 — P1b: the lens takes a real session (#34, #35 merged)
+
+### Task (verbatim)
+
+> "okay lets move ahead with p1"
+
+and, after P1a shipped:
+
+> "okay lets continue with the Next"
+
+### CEO decision taken this session
+
+Asked what replaces the admin password once the lens uses `/api/session/create`,
+given the repo is public and the endpoint mints LiveKit grants. Three options
+put up; **"Keep the password for now"** chosen. So P1b is a plumbing change, not
+a door change — the gate retires in P4 when accounts exist to replace it with.
+
+### What I did
+
+**#34 — a session slot is a room with an agent in it.** Found while wiring the
+lens, and the reason P1b took two PRs. `/api/session/create` invented a room name
+per session (`lumina-<uuid>`), and **no agent joins a name we made up a moment
+ago.** The browser would connect, publish its microphone and wait forever for a
+reply, while the registry reported a perfectly healthy session. Wiring the lens
+to it as shipped would have broken the thing the CEO tested and liked.
+
+Rooms are now allocated from a **pool** of rooms an agent is actually serving.
+Two limits, deliberately distinct: `SESSION_ROOMS` is physical (how many rooms
+have an agent), `MAX_CONCURRENT_SESSIONS` is policy (how many we admit).
+Effective capacity is `min(pool, policy)`, so the knob can never admit **more**
+sessions than there are agents — the audio governor's shape, an adjustable cap
+under a hard ceiling. (`min` permits equality, and with one agent and a cap of
+1 it *is* equality; "fewer" would have been the wrong inequality.)
+
+**P1c got smaller as a result.** Growing capacity is now one command on the box
+and one config line: `convert_agent.py --room <name>`, then that name in the
+list. It was going to be a design problem; it is now an operation.
+
+**#35 — the lens.** The server allocates room, identity and grant; the client
+picks nothing. The slot is held **from Start to Stop**, not from unlock — a slot
+claimed at unlock is held by someone reading the page and deciding, while the
+person who actually wants to talk is refused. Released on Stop, on unmount (the
+in-app navigation `pagehide` cannot see), and on `pagehide` via `fetch` with
+`keepalive` — not `sendBeacon`, which cannot set the `X-Admin-Token` header the
+endpoint is gated on.
+
+### Key findings / surprises
+
+**1. Five review rounds, eleven findings — and four of the six real bugs were in
+code written to fix an earlier round.** That is the number worth recording, not
+the total. Each fix was correct about the thing it fixed and wrong about
+something adjacent, which is the shape of the whole session.
+
+**2. I shipped a test that asserted a bug as correct behaviour.** `a failure
+after the page is gone publishes nothing` checked exactly the early return that
+wedges the phase: press Start, hide the tab, let the claim fail, and the Start
+button is dead until a reload. The root cause was collapsing two states that
+were never the same — **a disposed holder is never read again; a hidden one can
+come back**. Then my *first* replacement test hid the page *after* the failure
+had been handled, so it never touched the wedge path and passed against the bug
+too. Caught by mutation, not by reading.
+
+**3. The extraction found a bug rather than relocating one.** CodeRabbit cited
+this project's own rule — `AGENTS.md`: *"anything with real logic belongs in
+`src/lib/` rather than inside a component, because this is the part that can be
+tested without a browser"* — against four lifecycle decisions I had put in
+`Studio.jsx` and then shipped with a PR note saying they were untested. **That
+note is what the rule exists to prevent.** I flagged the gap instead of closing
+it, which felt like honesty and was really documenting a shortcut.
+
+Extracting them into `src/lib/sessionHolder.js` (22 tests where there were none)
+surfaced a case I would not have found by re-reading: a bfcached page comes
+*back* holding credentials for a room the registry has since given to somebody
+else. Reconnecting would have dropped that tab into a stranger's session.
+`restored()` clears them now. That is the argument for the rule, stated better
+than the rule states it.
+
+**4. A mutation that reddened nothing exposed a weak assertion of mine.** I had
+asserted that the two 503 refusals produce *different* messages. Collapsing the
+branch still produced a different message — the bare code `sessions_disabled` —
+which a difference check accepts while showing a person a machine token. I
+strengthened it to demand prose across the three named codes, and **did not then
+ask what happens to a code that is not in the list.** CodeRabbit did. Same
+defect, one door further along.
+
+**5. Declined, with reasoning: reclaiming a slot when the browser dies
+mid-create.** No client code runs, so the lease is the only backstop — two hours
+on a one-agent system. The suggested server-side fix (abort-triggered release
+via `request.signal`) is not obviously safe: the abort can fire *after* a
+successful response is on its way, converting a rare 2h stall into a rare
+mid-call eviction. Recorded as a known window, to be revisited in P1c where
+agent topology and lease length both change anyway.
+
+**6. The through-line.** Every finding this session reduced to the same
+sentence: **the slot is the scarce thing, and everything else is housekeeping.**
+A failed local teardown, a dead tab, a restored page, a request landing after
+the user navigated away — each was a route by which a slot could stay held while
+nobody was using it. On a one-agent deployment that is not untidiness; it is the
+product being unavailable to everyone for two hours.
+
+### Files changed
+
+- **New** `src/lib/sessionHolder.js` + tests — the lifecycle authority. No React,
+  no DOM, every collaborator injected, so a test can resolve a create in the
+  middle of an unmount and assert what happened to the slot.
+- **New** `src/lib/sessionClient.js` + tests — `/api/session/*` client.
+- **New** `src/lib/apiFetch.js` — the deadline and JSON POST shared with
+  `serverMint.js`. One implementation, because `deadline()` is what stands
+  between the app and a request that never settles.
+- `src/pages/Studio.jsx` — publishes holder state and renders; browser lifecycle
+  events go in one side. No room constant, no client-side identity.
+- `workers/api/src/sessionRegistry.js` — the room pool, `SESSIONS_ENABLED`.
+- `workers/api/wrangler.jsonc` — `SESSION_ROOMS` per environment; staging
+  disabled because no agent serves it.
+- `README.md`, `workers/api/README.md`, `src/lib/sessionIdentity.js` — the lens
+  no longer chooses its room; the console still does, deliberately.
+
+### Verification
+
+- **132** frontend tests (was 89), **100** worker, **224** agent — all green
+- lint, typecheck, build, markdown guard, `wrangler --dry-run` both environments
+- **Eleven mutations run across both PRs**, each reddening exactly its guard;
+  two reddened nothing and were themselves the finding.
+- **Production:** both deploys succeeded; `scripts/check-live.sh` PASS on all
+  three layers. Route probes confirm `/api/session/*` exists and is gated.
+
+**Not verified:** no live drill has been run against the new flow. The paths
+that matter most — Start → Stop → Start again, and Start → navigate away →
+Start again — are exactly the ones no automated test reaches. Requested from
+the CEO; **this entry will be updated with the result the same day it is run**,
+per the CEO-run drill convention.
+
+### Next
+
+**P1c** — a second agent on the VPS with `--room`, added to `SESSION_ROOMS`, and
+the **capacity constant** measured for the first time. Needs the CEO's hands on
+the box.
+
+---
+
 ## 2 August 2026 — P1a: the session layer, with the O(1) invariant enforced (#32 merged)
 
 ### Task (verbatim)
