@@ -4,6 +4,190 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 2 August 2026 — P1a: the session layer, with the O(1) invariant enforced (#32 merged)
+
+### Task (verbatim)
+
+> "okay lets move ahead with p1"
+
+Preceded in the same session by the CEO's answer on the Cloudflare plan and her
+cost concern:
+
+> "The Cloudflare account is currently on the free tier thou theres a concer,
+> The CTO noted that Durable Objects are metered on paid Cloudflare plans. Even
+> if you are on the Free plan right now, you will eventually upgrade as Lumina
+> Stream grows. Durable Objects can be highly 'chatty' (making thousands of
+> micro-requests per minute to check room status). If not engineered carefully,
+> a chatty DO on a paid plan will rack up a massive Cloudflare bill overnight.
+> that being said we move on with p1 or?"
+
+### What I did
+
+**PR #32 — `SessionRegistry`, three endpoints, and the oracle.** The Worker
+gained `POST /api/session/create`, `POST /api/session/end` and
+`GET /api/session/capacity`, backed by a SQLite-backed Durable Object holding
+coordination state: which sessions are live, which room and identity each holds,
+when each claim expires. Server-side only — nothing user-visible changed. This
+is the project's first server-side storage and explicitly **not** the database
+(P4).
+
+**The design decision that made the invariant affordable is the lease, not the
+code.** `SESSION_LEASE_SECONDS` (2h, hard-capped by the 6h LiveKit ceiling
+imported from `livekit.js`) is deliberately two things at once: the maximum
+session length, and the maximum time an *abandoned* slot stays held. The LiveKit
+grant is minted for the same span, so slot and credential expire together and
+cannot drift apart. That is what removes the need for a heartbeat — nothing has
+to check in to stay alive, so rule 2 ("no heartbeats through the DO") costs
+nothing to obey. `create` likewise returns everything the client needs in one
+response, so nothing ever comes back to ask, which is what makes rule 1 free.
+
+Cleanup is one demand-driven `alarm()` at the earliest pending expiry, re-armed
+on wake. A clean session costs 3 requests / 0 alarms; an abandoned one costs
+1 / 1, whether abandoned after a minute or a week.
+
+Fail-closed throughout, matching the rate limiter: a missing or throwing DO
+binding refuses with 503 rather than handing out uncounted rooms; a malformed
+`MAX_CONCURRENT_SESSIONS` fails the request with 500 rather than serving a
+silent default; a wrong `endToken` (stored hashed) never frees someone else's
+slot; a failed LiveKit mint gives the slot back rather than leaking capacity for
+a full lease.
+
+`MAX_CONCURRENT_SESSIONS` is **1** in production — one agent, one room, the
+truth today. The second caller now gets `503 at_capacity` *with a reason*
+instead of being silently ignored by a busy agent, which is already a product
+improvement over `agent_busy`. Staging carries 4, where concurrency gets
+exercised with no agent to over-admit onto.
+
+### Key findings / surprises
+
+**1. My own loop guard caught a defect in my own test, on the first run.** The
+harness throws after 100 chained alarms, on the reasoning that a reaper
+re-arming to the instant it woke for would spin an object awake forever — the
+most expensive bug the file could contain, since a permanently awake DO bills
+128 MB of wall clock and never hibernates. It fired immediately. Not on the
+production code: I had written `h.instance.now = () => T0 + 60_000` in a test to
+mean "a minute later", which froze the clock at a constant, so nothing ever
+expired and `#rearm` re-armed to the same instant forever. Fixed by adding
+`warpTo()` to the harness — moving the clock *without* running what came due,
+which is a genuinely distinct real state (delayed alarm delivery), not a
+shortcut around `advanceTo`.
+
+**2. I claimed a mutation result more strongly than my own output supported, and
+CodeRabbit caught it by deriving the contradiction from the shipped
+assertions.** I wrote in `ROADMAP.md` that the short-vs-long row was *"the only
+one that convicted the duration-scaling mutation"*. Review pointed out that the
+abandoned row asserts `alarms === 1` and a 60-second sweep produces ~120 over a
+2h lease, so row 2 must redden too. Re-ran both mutations; it was right. The
+real table, now in §P1:
+
+| Row | A: extra request on create | B: fixed 60s sweep |
+|---|---|---|
+| 1 · Clean | **red** | green |
+| 2 · Abandoned | green | **red** |
+| 3 · Short vs long | **red** | **red** |
+| 4 · N concurrent | **red** | green |
+
+Rows 1 and 4 never advance the clock far enough to wake a fixed-interval reaper.
+Row 2 makes one request, so its ≤ 2 budget absorbs an extra one silently. **Row
+3 is the only row red under both** — a weaker claim than I made, and a better
+reason to keep the row than the one I gave.
+
+Review also observed, correctly, that under mutation A row 3 fails on the
+absolute pin (`requests === 3`) and *not* the `deepEqual` — both sessions gain
+the same extra request, so the comparison sees nothing. Verified from the
+failure message (`Expected values to be strictly equal`). The consequence is
+worth keeping: the pins bound the constant, the comparison is the only thing in
+the suite that detects cost tracking elapsed time, and neither is redundant.
+
+The pattern is the same one this file has recorded before, in a new costume. It
+was not a wrong number — it was a *true-sounding summary of evidence I did not
+re-read*. The correction cost nothing; leaving it would have handed the next
+person a tidier story than the evidence supports.
+
+**3. Another test that could not fail on the thing it named.** My wrangler check
+grepped the whole file for one occurrence of `class_name` and one of
+`new_sqlite_classes`. Named environments inherit **neither** `durable_objects`
+**nor** `migrations`, so it would have passed happily with `env.staging` missing
+both — the top-level match alone satisfied it. It now parses the JSONC and walks
+every scope, proves the parse before trusting it (`config.name` asserted first,
+so a broken comment-stripper cannot make everything below vacuous), requires at
+least one named environment, and checks *membership* rather than identity in
+`new_sqlite_classes` so P2's `SpendLedger` can join that list without a rewrite.
+Discrimination-tested by deleting staging's binding: exactly one test red.
+
+**4. `storage.delete()` caps at 128 keys and throws above it.** Raised by review
+with a doc citation, confirmed. `MAX_ALLOWED_CONCURRENT_SESSIONS` is 10,000, so
+a valid configuration could put far more than 128 keys in one sweep — and it
+would fail on the one occasion it matters most: every lease expiring together,
+with the reaper as the only thing that can clear them. Now batched. The **test
+harness was changed to enforce the real 128 limit**, because a fake that quietly
+swallowed 10,000 would leave the chunking untestable, and untested chunking gets
+deleted by whoever next finds it fussy.
+
+**5. The authenticated capacity read was cacheable by shared proxies.**
+`Cache-Control: max-age=5` with `X-Admin-Token` not in `Vary` lets a shared
+cache key on the URL alone. Now `private, max-age=5`. Worth recording *why*
+adding the header to `Vary` was not the fix here: `json()` merges
+`corsHeaders(origin)` **last** so an extra header can never displace
+`Access-Control-Allow-Origin`, and `corsHeaders` sets `Vary: Origin` — a `Vary`
+passed through the extra-headers bag would be silently overwritten.
+
+**6. The invariant's boundary is now stated rather than implied.** A session
+cannot outlive its lease, so "constant regardless of duration" is not literally
+true. The shipped claim is **no request is made as a function of elapsed time
+within a lease**, and a lease is hours. Renewal, if longer sessions are ever
+needed, is O(duration ÷ 2h) — bounded, and not O(seconds). An invariant with an
+unstated boundary is one someone finds out about the hard way.
+
+### Files changed
+
+- **New** `workers/api/src/sessionRegistry.js` — the Durable Object.
+- **New** `workers/api/test/sessionOracle.test.js` — the O(1) oracle, through
+  the real HTTP surface.
+- **New** `workers/api/test/sessionRegistry.test.js` — DO correctness, config
+  fatality, the no-timer/no-WebSocket structural scan, per-environment wrangler
+  assertions.
+- **New** `workers/api/testkit/registryHarness.js` — the counting fake DO
+  runtime. In `testkit/` rather than `test/` because `node --test` treats every
+  file under a `test/` directory as a test file, and a helper reported as a
+  passing test with nothing in it is a small lie in the output.
+- `workers/api/src/index.js` — three routes, `sessionGate`, `callRegistry`
+  (fail-closed), `registryRefusal`, the DO re-export, `json()` extra headers.
+- `workers/api/wrangler.jsonc` — DO binding, `v1` SQLite migration,
+  `SESSION_LIMITER`, and both config vars, in **both** environments.
+- `workers/api/README.md` — the session-layer section and the lease rationale.
+- `ROADMAP.md` — P1a marked shipped, the corrected mutation table, the lease
+  boundary made explicit.
+
+### Verification
+
+- **88** worker tests (was 46), **89** frontend, **224** agent — all green
+  locally and in CI on Linux.
+- `npm run lint`, `npm run typecheck`, `npm run build`, markdown heading guard.
+- `wrangler deploy --dry-run` on **both** environments before the PR.
+- CodeRabbit: **5 findings, all 5 accepted, fixed, and confirmed resolved**;
+  full re-review of the fix commit passed with no new findings.
+- Four discrimination mutations run and recorded (extra request, fixed sweep,
+  unchunked delete, staging missing its binding) — each reddened exactly the
+  intended tests.
+- **Production after merge:** deploy succeeded; the log shows
+  `env.SESSION_REGISTRY (SessionRegistry) Durable Object` and
+  `MAX_CONCURRENT_SESSIONS ("1")`. `scripts/check-live.sh` PASS on all three
+  layers. Unauthenticated probes confirm the routes exist and the gates work —
+  `/api/session/capacity` → **401** (not 503, so the new rate-limit binding
+  deployed too), `/api/session/create` GET → **405**, control
+  `/api/session/nope` → **404**. The DO binding itself could not be exercised
+  end-to-end without the admin password, which is the CEO's to hold; what is
+  observed is the deploy log and the routing, not a live session.
+
+### Next
+
+**P1b** — the lens wired to `/api/session/create`, admin-password gate retired.
+Then **P1c**, which needs the CEO's hands: agent-per-session on the VPS and the
+capacity constant, never yet measured.
+
+---
+
 ## 2 August 2026 — P0 CLOSED: canon, CI, and the last owed fixes (#26, #27, #28 merged)
 
 ### Task (verbatim)
