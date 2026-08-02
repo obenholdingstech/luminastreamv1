@@ -65,6 +65,17 @@ not lie) while the deployed pool is 1; the proving run happens post-merge.
 
 Pre-merge run against production: 5 passed, multi-user skipped, as designed.
 
+### Post-merge result — 6/6
+
+> ✓ TWO people at once — the first multi-user moment, proven (27.3s)
+
+Two browser contexts pressed Start CONCURRENTLY (Promise.all); the registry
+serialized the overlap and allocated two different rooms — luminastream-test
+and luminastream-2, each with a live agent — both held at once (server:
+live 2), both released (server: live 0). Against production, artifacts
+retained. **P1 — the session layer — is closed, 2 August 2026.** Planned at
+~1½ weeks; landed in one continuous day, at the cost the review record shows.
+
 ### Next
 
 Post-merge: `npm run e2e` must show 6/6 — the first multi-user moment, proven.

@@ -2,6 +2,11 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 (small hours) — P1 CLOSED: 6/6, two people at once (#40 merged)
+
+- **The multi-user run passed against production:** two contexts, concurrent Starts, two DIFFERENT rooms (`luminastream-test` + `luminastream-2`), live 2 → both released → live 0. `check-live.sh` PASS ×3. **P1 closed** — planned ~1½ weeks, done in a day.
+- **Open debts, unchanged:** CEO's scored voice drill (same-day log when run); concurrent-CPU `top` drill before the pool grows past 6; staging agent → E2E-in-CI; `phase='stopping'` polish → P7. **Next phase: P2 — video, spend wall FIRST, Decart key only after it merges.**
+
 ## 2 August 2026 (night) — P1c: TWO AGENTS LIVE, capacity constant measured (#39, #40)
 
 - **#39 (zero findings — first clean pass):** systemd template `lumina-agent@<room>`; deploys restart + gate EVERY agent unit by name; harness 39→50 assertions. CEO ran the runbook cleanly; her paste showed the deploy had already restarted the primary itself.

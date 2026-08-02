@@ -80,7 +80,7 @@ Clearing the debt that would otherwise be paid at a worse time.
   venv floor is Python 3.10+ for a patched `aiohttp`, and shutdown has the
   regression test it never had.
 
-### P1 — The session layer *(~1½ weeks)* ⟵ **NEXT** — **this is where audio becomes multi-user**
+### P1 — The session layer — **CLOSED 2 Aug 2026** *(planned ~1½ weeks; done in one day — see devlog for what that cost)* — **audio became multi-user here**
 
 Today one agent serves one speaker in one fixed room. A second person is ignored
 and told so. That is the single largest functional limit in the product.
