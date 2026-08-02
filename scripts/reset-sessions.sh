@@ -59,19 +59,36 @@ TOKEN="$(
 unset ADMIN_PASSWORD
 [ -n "$TOKEN" ] || { echo "error: admin verify failed (wrong password, or rate-limited)" >&2; exit 1; }
 
+# Every call below FAILS CLOSED. `curl -sS` alone exits 0 on a 502 or 503 — the
+# body is simply an error document — so without `-f` this script would print
+# "released: ?" and exit 0, reporting a successful recovery having released
+# nothing. A recovery tool that lies about recovering is worse than no tool:
+# the operator walks away, and the product is still down.
+#
+# `-f` makes curl exit non-zero on an HTTP error, `pipefail` (set at the top)
+# propagates that through the pipe, and the jq guards additionally require
+# `ok: true` in the body — because a 200 carrying `{"ok": false}` is also a
+# failure, and only the body knows that.
+capacity_snapshot() {
+  curl -fsS "$API/api/session/capacity" -H "X-Admin-Token: $TOKEN" \
+    | jq -ce 'if .ok == true
+              then {enabled, live, capacity, available, pool}
+              else error(.error // "capacity request failed") end'
+}
+
 # 2. Report the state BEFORE, so the output says what was actually stuck rather
 #    than only what was cleared.
 echo -n "  before: "
-curl -sS "$API/api/session/capacity" -H "X-Admin-Token: $TOKEN" \
-  | jq -c '{enabled, live, capacity, available, pool}'
+capacity_snapshot
 
 # 3. Release everything.
 RELEASED="$(
-  curl -sS -X POST "$API/api/session/reset" -H "X-Admin-Token: $TOKEN" \
-    | jq -r '.released // "?"'
+  curl -fsS -X POST "$API/api/session/reset" -H "X-Admin-Token: $TOKEN" \
+    | jq -er 'if (.ok == true and (.released | type == "number"))
+              then .released
+              else error(.error // "session reset failed") end'
 )"
 echo "  released: $RELEASED slot(s)"
 
 echo -n "  after:  "
-curl -sS "$API/api/session/capacity" -H "X-Admin-Token: $TOKEN" \
-  | jq -c '{enabled, live, capacity, available, pool}'
+capacity_snapshot
