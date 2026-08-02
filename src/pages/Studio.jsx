@@ -295,15 +295,23 @@ export default function Studio() {
 
   const stop = useCallback(async () => {
     setPendingConnect(false);
-    try {
-      await disconnect();
-    } finally {
-      // The slot is the scarce thing, and tearing down the local room is not.
-      // A failed disconnect must not keep a room held until its lease expires
-      // — with one agent, that is everyone locked out for two hours because a
-      // WebSocket close threw.
-      await holder.stop();
-    }
+    // Release FIRST, teardown second — and never sequence the release behind
+    // the teardown. The previous version awaited disconnect() before
+    // holder.stop() inside a try/finally, which protects against a disconnect
+    // that REJECTS but not one that HANGS — and a LiveKit teardown wedged in a
+    // mid-connect retry loop (the Starlink DNS blackhole, observed live on
+    // 2 Aug) hangs. The release then never fired and the slot stayed held for
+    // the full lease. Proven by the E2E drill: Stop clicked, zero
+    // /api/session/end requests on the wire, server still counting the slot.
+    //
+    // There is no data dependency between the two: endSession talks to the
+    // Worker, disconnect tears down this tab's room object. The only coupling
+    // was the accident of sequencing. A lingering room briefly overlapping a
+    // reallocated slot is harmless — identities are unique per session, so no
+    // eviction (see sessionRegistry.js).
+    const released = holder.stop();
+    disconnect().catch(() => {});
+    await released;
   }, [disconnect, holder]);
 
   // Publish the holder's credentials into the hook, then connect.
@@ -513,25 +521,38 @@ export default function Studio() {
         {/* Action */}
         <div className="mt-10 w-full max-w-sm">
           {hasCredentials ? (
-            <button
-              // Start reconnects with the slot we already hold; Stop gives it
-              // back. There is no path here that connects without a slot.
-              onClick={isDisconnected ? () => setPendingConnect(true) : stop}
-              disabled={connectionState === ConnectionState.Connecting}
-              className="w-full flex items-center justify-center gap-2.5 rounded-full py-3.5 text-[11px] tracking-[0.2em] uppercase transition-all disabled:opacity-50"
-              style={
-                isDisconnected
-                  ? { backgroundColor: '#FFFFFF', color: '#08080F' }
-                  : { border: '1px solid #1A1A2E', color: '#94A3B8' }
-              }
-            >
-              {connectionState === ConnectionState.Connecting ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : (
-                <Power size={13} />
+            /* A slot is held. Stop must be reachable from EVERY state of this
+               block — the previous version disabled the button while
+               Connecting, which meant a person wedged mid-connect (the
+               Starlink DNS blackhole) had no way to release their own slot: an
+               unreleasable hold on the only agent, by design. The scarce thing
+               must always have a give-it-back button. */
+            <div className="flex flex-col gap-2.5">
+              {isDisconnected && (
+                /* Holding but not connected — the connect failed (bad network,
+                   DNS). The slot and grant are still valid, so retrying is
+                   free and does not touch the registry. */
+                <button
+                  onClick={() => setPendingConnect(true)}
+                  className="w-full flex items-center justify-center gap-2.5 rounded-full py-3.5 text-[11px] tracking-[0.2em] uppercase transition-all"
+                  style={{ backgroundColor: '#FFFFFF', color: '#08080F' }}
+                >
+                  <Power size={13} /> Reconnect
+                </button>
               )}
-              {isDisconnected ? 'Start the lens' : 'Stop'}
-            </button>
+              <button
+                onClick={stop}
+                className="w-full flex items-center justify-center gap-2.5 rounded-full py-3.5 text-[11px] tracking-[0.2em] uppercase transition-all"
+                style={{ border: '1px solid #1A1A2E', color: '#94A3B8' }}
+              >
+                {connectionState === ConnectionState.Connecting ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Power size={13} />
+                )}
+                Stop
+              </button>
+            </div>
           ) : adminToken ? (
             /* Unlocked, holding no slot — after a Stop, or after a refusal.
                The access key has already been exchanged, so asking for it

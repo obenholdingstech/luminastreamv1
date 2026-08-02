@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 2 August 2026 (late) — INCIDENT: stuck slot → reset tool, root cause, E2E harness (#37 merged, #38)
+
+- **CEO's drill hit `503 at_capacity` with no session visible** — one stuck slot holding the only room. Unblocked by running the new `scripts/reset-sessions.sh production` (`live:1 → released:1 → live:0`).
+- **Root cause found by instrumented E2E, not reading:** create 200 → LiveKit WS `ERR_NAME_NOT_RESOLVED` (**Starlink DNS blackhole, active** — host resolves via 1.1.1.1) → Stop clicked → **zero `/api/session/end` on the wire**. `stop()` sequenced the release behind `await disconnect()`; a teardown wedged mid-connect HANGS (the #35 try/finally only covered rejection). Second defect: Stop was `disabled` while Connecting — an unreleasable hold for anyone wedged mid-connect.
+- **Fix (#38):** release first, teardown in parallel; Stop reachable from every held state; Reconnect button when holding-but-disconnected (slot+grant still valid, retry is free).
+- **Playwright installed (CEO demand): `npm run e2e`** — her drill automated: start/stop/start-again/busy-in-words/leave-page, all asserting the SERVER agrees, screenshots+traces per run. Old bundle 3/5 red, fixed bundle **5/5 green** — that old-vs-new run is the discrimination. Not in CI (needs admin password, consumes the prod slot); on-demand like check-live.sh.
+- **CEO's Mac still needs the OS-level 1.1.1.1 DNS fix** before voice connects on Starlink. Capacity=1 = one agent exists, not policy; P1c multiplies agents.
+- **Next: merge #38, CEO retries after DNS fix, then P1c** (second agent + capacity constant, her hands).
+
 ## 2 August 2026 — P1b SHIPPED: the lens takes a real session (#34, #35 merged)
 
 - **CEO decision: the admin password stays as the lens door for now** (3 options offered; gate retires in P4 when accounts exist). So P1b was plumbing, not a door change.
