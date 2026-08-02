@@ -89,8 +89,16 @@ and told so. That is the single largest functional limit in the product.
   This is the project's first server-side storage, but it is **not** the
   database: a Durable Object here holds coordination state — which rooms exist,
   who holds them, how many are live — that must be consistent across
-  simultaneous requests. It is measured in kilobytes and it forgets. The user
-  database, the thing that remembers a person between sessions, is **P4**.
+  simultaneous requests.
+
+  **Durable Object storage is genuinely durable**, and it is worth being precise
+  because the opposite is easy to assume. It survives eviction and restart; the
+  name is not marketing. What separates it from P4 is *purpose and lifetime*,
+  not permanence: these are session records that `/api/session/create` writes
+  and the session-end path deletes, so the store stays small by being cleaned
+  up, not by expiring on its own. It is **not the system of record for user
+  history** — nothing here should be the only copy of anything a person would
+  miss. That is **P4**.
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
@@ -126,7 +134,7 @@ Decart Lucy 2.5 in the browser studio, spend-walled.
 **This is the database phase.** Accounts, voice clones, reference images,
 session history — the first storage whose job is to remember a person between
 sessions, as opposed to P1's coordination state, which exists to keep concurrent
-requests honest and is allowed to forget. Voice cloning becomes a user-facing
+requests honest and is deleted when the session it describes ends. Voice cloning becomes a user-facing
 flow rather than a step someone performs in a vendor dashboard.
 
 Everything downstream waits on this: billing needs an account to charge, and the
