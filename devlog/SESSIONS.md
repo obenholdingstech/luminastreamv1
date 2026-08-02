@@ -4,7 +4,7 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 2 August 2026 (night) — P1c: two agents, and the capacity constant exists (#39 merged, #40 open)
+## 2 August 2026 (night) — P1c: two agents, and the capacity constant exists (#39, #40 merged)
 
 ### Task (verbatim)
 

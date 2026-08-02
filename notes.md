@@ -2,7 +2,7 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
-## 3 August 2026 (small hours) — P1 CLOSED: 6/6, two people at once (#40 merged)
+## 2 August 2026 (overnight close) — P1 CLOSED: 6/6, two people at once (#40, #41 merged)
 
 - **The multi-user run passed against production:** two contexts, concurrent Starts, two DIFFERENT rooms (`luminastream-test` + `luminastream-2`), live 2 → both released → live 0. `check-live.sh` PASS ×3. **P1 closed** — planned ~1½ weeks, done in a day.
 - **Open debts, unchanged:** CEO's scored voice drill (same-day log when run); concurrent-CPU `top` drill before the pool grows past 6; staging agent → E2E-in-CI; `phase='stopping'` polish → P7. **Next phase: P2 — video, spend wall FIRST, Decart key only after it merges.**
