@@ -45,7 +45,13 @@ const denyLimiter = { async limit() { return { success: false }; } };
 // The harness clock starts at the real one so the Worker's own Date.now() —
 // used only to size the LiveKit grant — agrees with it at the outset.
 function setup({ capacity = 1, lease = LEASE_SECONDS, startAt = Date.now() } = {}) {
+  // A slot is a room with an agent in it, so a test that wants N concurrent
+  // sessions needs N rooms in the pool as well as a policy cap of N. Deriving
+  // the pool from `capacity` here keeps the two from drifting apart in a way
+  // that would show up as a confusing at_capacity rather than a clear failure.
+  const rooms = Array.from({ length: capacity }, (_, i) => `oracle-room-${i}`);
   const env = {
+    SESSION_ROOMS: rooms.join(','),
     ADMIN_PASSWORD,
     ADMIN_SESSION_SECRET: 'unit-test-session-secret',
     LIVEKIT_API_KEY: 'APIkey',

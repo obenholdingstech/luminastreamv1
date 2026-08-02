@@ -233,7 +233,13 @@ function registryRefusal(payload, origin) {
   }
   if (payload?.error === 'at_capacity') {
     return json(
-      { ok: false, error: 'at_capacity', live: payload.live, capacity: payload.capacity },
+      {
+        ok: false,
+        error: 'at_capacity',
+        live: payload.live,
+        capacity: payload.capacity,
+        pool: payload.pool,
+      },
       { status: 503, origin },
     );
   }
@@ -349,6 +355,7 @@ async function handleSessionCapacity(request, env, origin) {
       live: capacity.live,
       capacity: capacity.capacity,
       available: capacity.available,
+      pool: capacity.pool,
     },
     { status: 200, origin, headers: { 'Cache-Control': 'private, max-age=5' } },
   );
