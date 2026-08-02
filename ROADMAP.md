@@ -1,6 +1,6 @@
 # LuminaStream — Roadmap & Canon
 
-**v2.3 · 2 August 2026**
+**v2.4 · 2 August 2026**
 
 This is the canonical description of what LuminaStream is, what state it is in,
 and what order the remaining work happens in. It exists because the previous
@@ -50,6 +50,7 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
 | Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
+| Cloudflare plan | **Workers Free** (2 Aug 2026), which includes SQLite-backed Durable Objects within daily quotas. P1's **O(1) invariant** protects both: on Free it keeps us under a quota whose breach *fails operations*, and on Paid it keeps cost proportional to sessions **served** rather than to hours **streamed**. It does not make usage free — cost still grows with session count, and both quotas can still be exceeded at volume. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
@@ -101,12 +102,129 @@ and told so. That is the single largest functional limit in the product.
   history** — nothing here should be the only copy of anything a person would
   miss. That is **P4**.
 
-  **Cost, conditionally.** SQLite-backed Durable Objects are available on the
-  Workers **Free** plan, so on Free and within its documented limits P1 adds no
-  incremental Cloudflare charge. On Workers **Paid** they are metered — requests,
-  duration and storage — on top of that plan's monthly minimum. Which plan this
-  account is on has not been checked, so *"P1 is free"* is a claim this document
-  is not entitled to make until it has been.
+  **Cost.** The account is on Workers **Free** (CEO, 2 Aug 2026), where
+  SQLite-backed Durable Objects are included — **within daily quotas of 100,000
+  DO requests and 13,000 GB-s, reset at 00:00 UTC.** Exceeding either does not
+  produce a bill; **further operations of that type fail with an error**. On the
+  free tier, a wasteful DO is an availability problem before it is ever a cost
+  problem.
+
+#### The O(1) invariant — a P1 requirement
+
+**DO requests per session must be a constant, independent of how long the
+session lasts.** Never O(session duration).
+
+Written here, before the code, because the DO's *shape* is the expensive thing
+to change later — not its implementation. Raised by the CEO on 2 Aug 2026 as a
+future paid-plan cost risk. It is that — but the arithmetic says it bites on the
+plan we are on **today**, and harder: on Free the failure mode is refused
+operations, not an invoice. The invariant protects both plans, which is why it
+is a requirement now rather than a migration task later.
+
+A DO is billed for its allocated **128 MB** whenever awake, and hibernates after
+**10 s** with no request or event. That single fact drives everything below.
+
+**On Workers Free — where we are now.** 13,000 GB-s/day is 28.9 awake-hours/day.
+
+| Design | Per session | Sessions/day before operations start failing |
+|---|---|---|
+| Browser polls the DO once a second | 1800 req, 1800 s awake | **55** |
+| Create + capacity read + end | 3 req, ~30 ms **billable** | **33,333** |
+
+**Fifty-five against thirty-three thousand.** For polling, the request quota
+binds first (100,000 ÷ 1800 = 55.5, floored — a partial session is not a
+session); duration would allow 57. For the O(1) design, requests bind at 33,333
+and duration allows millions.
+
+The asymmetry comes from *what is actually billable*. **A DO eligible for
+hibernation accrues no duration charge at all** — not even during the ten
+seconds before the runtime hibernates it. So an O(1) session bills only its
+active execution: three requests of single-digit-to-tens of milliseconds. A
+polled session bills 128 MB of continuous wall clock, because it never becomes
+eligible.
+
+And the consequence on Free is not a surprising invoice. It is a product that
+**stops creating sessions**, at a scale we would pass in the first week of
+having real users.
+
+**On Workers Paid — where we are going.** Requests $0.15/M (1M included),
+duration $12.50/M GB-s (400,000 included). At 100,000 sessions/month of 30
+minutes:
+
+| Design | Requests | GB-s | Incremental DO charge |
+|---|---|---|---|
+| Polling once a second | 180,000,000 | 22,500,000 | **~$303** |
+| Create + capacity read + end | 300,000 | **~375** | **$0** |
+
+That column is **incremental Durable Object usage only**. Workers Paid carries a
+**$5/month minimum** either way; the difference between the rows is what the
+coordination layer adds on top of it.
+
+~375 GB-s is three requests × ~10 ms of active execution × 128 MB × 100,000
+sessions. Only active time counts, because a hibernation-eligible object is not
+billed for the window before it hibernates.
+
+The conclusion is robust to that estimate being wrong. Even under the
+deliberately pessimistic reading — every request somehow holding the object
+awake for a full 10-second window, none overlapping — it comes to 375,000 GB-s,
+which is *still* inside the 400,000 included. Three orders of magnitude of
+modelling error, same answer.
+
+**Duration is ~90% of the paid-plan bill, not requests.** A DO polled every
+second never reaches the 10-second threshold, so it bills 128 MB of wall clock
+for the entire session — which makes cost track **how long people stream**,
+precisely the axis this product intends to grow along. The lesson is not "don't
+call it too much". It is **"don't keep it awake"**.
+
+Five rules follow, all cheap now and all expensive to retrofit:
+
+1. **No polling.** The browser is told its room once, at create. Everything after
+   — agent ready, mode confirmed, session ending — travels over the LiveKit data
+   channel we already pay for and which is the right transport for it anyway.
+2. **No heartbeats through the DO.** Agent liveness is not the DO's business.
+   Routing a 10-second health check through it converts liveness monitoring into
+   a permanently-awake object.
+3. **No non-hibernating WebSocket to the DO.** A standard WebSocket bills
+   duration for its entire connected life. The **Hibernation API** is the only
+   acceptable form, and Cloudflare's own worked example takes a case from $138.65
+   to $10.00.
+4. **No `setTimeout`/`setInterval` inside a DO.** The subtle one: a pending timer
+   makes the object **ineligible for hibernation altogether**, so a single stray
+   line silently bills full wall clock with no other symptom. Deferred work uses
+   `alarm()`.
+5. **The reaper alarm is demand-driven, never fixed-interval.** A reaper that
+   wakes every N minutes while any session is open makes alarm invocations —
+   which bill as requests — scale with session duration, **breaking the very
+   invariant this section exists to state**. Instead the DO keeps **one** alarm,
+   always set to the *earliest pending expiry*; on wake it reaps what expired and
+   re-arms to the next one, or to nothing. A session that ends cleanly costs zero
+   alarm wakeups; an abandoned one costs exactly one, whether it was abandoned
+   after a minute or after a day.
+
+#### The test oracle
+
+"Constant" is not a test. P1 ships `SessionRegistry` with a lifecycle test that
+counts **every `fetch()` into the DO stub plus every `alarm()` invocation**, and
+asserts:
+
+| Case | Budget |
+|---|---|
+| Clean session: create → capacity read → end | **≤ 3** requests, **0** alarms |
+| Abandoned session: create → reaped | **≤ 2** requests, **exactly 1** alarm |
+| **Short vs long session** | counts **identical** — a 1-minute and a 10-hour session must cost the same |
+| N concurrent sessions | **≤ N × budget** — linear in sessions is expected and fine |
+
+The rows do different jobs, and it matters which. The first two **bound the
+constant** — a poll heavy enough to push past 3 requests trips them. The third
+is the **duration-scaling detector**, and it is the one that survives a poll
+being added *within* the budget: a request that fires twice in a short session
+and two hundred times in a long one keeps every per-case count plausible while
+breaking the invariant outright. Only comparing a short session against a long
+one convicts that.
+
+Discrimination-tested like everything else: adding a poll to the session path,
+or converting the reaper to a fixed interval, must turn that row red.
+
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
@@ -498,7 +616,6 @@ pasted output.
 | `DECART_API_KEY` via `wrangler secret put` | **Only after** the P2 spend wall is merged and verified. |
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
-| Confirm the **Cloudflare Workers plan** | Free vs Paid decides whether P1's Durable Object is free or metered. See P1. |
 
 ---
 
