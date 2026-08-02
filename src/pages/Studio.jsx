@@ -295,8 +295,15 @@ export default function Studio() {
 
   const stop = useCallback(async () => {
     setPendingConnect(false);
-    await disconnect();
-    await holder.stop();
+    try {
+      await disconnect();
+    } finally {
+      // The slot is the scarce thing, and tearing down the local room is not.
+      // A failed disconnect must not keep a room held until its lease expires
+      // — with one agent, that is everyone locked out for two hours because a
+      // WebSocket close threw.
+      await holder.stop();
+    }
   }, [disconnect, holder]);
 
   // Publish the holder's credentials into the hook, then connect.

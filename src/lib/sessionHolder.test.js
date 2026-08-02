@@ -248,7 +248,7 @@ test('a 401 drops the admin session rather than keeping what just failed', async
   assert.equal(holder.snapshot().adminToken, '');
 });
 
-test('a failure after the page is gone publishes nothing', async () => {
+test('a failure after UNMOUNT publishes nothing', async () => {
   const { holder, hold, finish, calls } = harness({ fail: new Error('network down') });
   hold();
   const starting = holder.start({ password: 'pw' });
@@ -260,6 +260,116 @@ test('a failure after the page is gone publishes nothing', async () => {
   // show an error to either.
   assert.equal(calls.ends.length + calls.beacons.length, 0);
   assert.equal(holder.snapshot().error, '');
+});
+
+test('a failure while HIDDEN still returns the phase to idle', async () => {
+  // The Start button would otherwise be permanently inert. `restored()` only
+  // resets state when a slot was surrendered, and a failed claim surrenders
+  // nothing — so an early return leaves `starting` published forever, and the
+  // guard at the top of start() then refuses every later attempt.
+  //
+  // This case previously had a test that asserted the BUG: it checked that
+  // nothing was published after the page went away, which is exactly what
+  // wedges the phase. Splitting unmount from hidden is the fix — an unmounted
+  // holder is never read again, a hidden one can come back.
+  const { holder, hold, finish } = harness({ fail: new Error('network down') });
+  hold();
+  const starting = holder.start({ password: 'pw' });
+  holder.hide();
+  finish();
+  await starting;
+
+  assert.equal(holder.snapshot().phase, PHASE.idle, 'a hidden failure must not wedge the phase');
+  assert.equal(holder.snapshot().error, '', 'and there is nobody to show an error to');
+});
+
+test('a hidden failure leaves the lens startable again after a restore', async () => {
+  // The consequence the phase reset exists for, end to end — and the failure
+  // must land WHILE hidden, which is the whole point. An earlier version of
+  // this test hid the page after the failure had already been handled, so it
+  // never touched the wedge path and passed against the bug.
+  let attempt = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  const holder = createSessionHolder({
+    async open() {
+      attempt += 1;
+      if (attempt === 1) {
+        await gate;
+        throw new Error('network down');
+      }
+      return GRANT;
+    },
+    async end() {},
+    beacon() {},
+  });
+
+  const failing = holder.start({ password: 'pw' });
+  holder.hide(); // hidden BEFORE the claim fails
+  release();
+  await failing;
+
+  holder.restored();
+  await holder.start({ password: 'pw' });
+
+  assert.equal(holder.snapshot().phase, PHASE.held, 'the Start control must still work');
+  assert.equal(attempt, 2, 'the second attempt must actually be made');
+});
+
+test('a rejecting release never escapes as an unhandled rejection', async () => {
+  // hide() and dispose() cannot await, so a rejection there has nobody to
+  // catch it — fatal in some Node and worker contexts, noise in browser error
+  // reporting. Today's endSession never rejects, but this helper must not
+  // depend on a collaborator's internal politeness when the collaborator is
+  // injected.
+  const rejections = [];
+  const onUnhandled = (err) => rejections.push(err);
+  process.on('unhandledRejection', onUnhandled);
+
+  try {
+    const holder = createSessionHolder({
+      async open() {
+        return GRANT;
+      },
+      async end() {
+        throw new Error('end failed');
+      },
+      async beacon() {
+        throw new Error('beacon failed');
+      },
+    });
+
+    await holder.start({ password: 'pw' });
+    holder.hide(); // fire-and-forget beacon that rejects
+    holder.dispose(); // fire-and-forget end that rejects
+
+    // Let any unhandled rejection surface before asserting.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(rejections, [], 'a failed release must not crash the page');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('stop still resolves when the release rejects', async () => {
+  const holder = createSessionHolder({
+    async open() {
+      return GRANT;
+    },
+    async end() {
+      throw new Error('end failed');
+    },
+    beacon() {},
+  });
+
+  await holder.start({ password: 'pw' });
+  // stop() awaits the release, so a rejection here IS observable — and must
+  // not leave the UI stuck showing a session the user already ended.
+  await assert.rejects(() => holder.stop());
+  assert.equal(holder.snapshot().phase, PHASE.idle, 'the state was cleared before the release');
 });
 
 test('a failed start can be retried', async () => {

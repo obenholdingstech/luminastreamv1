@@ -66,12 +66,21 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
     onChange?.(state);
   }
 
-  /** Hand a slot back through whichever channel is still available. */
-  function surrender(adminToken, session, { viaBeacon }) {
+  /**
+   * Hand a slot back through whichever channel is still available.
+   *
+   * `awaited: false` is the fire-and-forget path — `hide()` and `dispose()`
+   * cannot await, so a rejection there has nobody to catch it and becomes an
+   * unhandled rejection: fatal in some Node and worker contexts, noise in
+   * browser error reporting. Today's `endSession` never rejects, but a helper
+   * must not depend on a collaborator's internal politeness, and the
+   * collaborator is injected.
+   */
+  function surrender(adminToken, session, { viaBeacon, awaited = false }) {
     if (!session) return undefined;
-    // A hidden page may not survive long enough to await anything, so the
-    // beacon path is fire-and-forget by design.
-    return viaBeacon ? beacon(adminToken, session) : end(adminToken, session);
+    const result = viaBeacon ? beacon(adminToken, session) : end(adminToken, session);
+    if (awaited) return result;
+    return Promise.resolve(result).catch(() => undefined);
   }
 
   return {
@@ -92,9 +101,18 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
       try {
         opened = await open({ password, adminToken: state.adminToken });
       } catch (err) {
-        // The page went away mid-request and no slot was ever allocated —
-        // there is nothing to release and nobody to show an error to.
-        if (disposed || hidden) return;
+        // Nothing was allocated, so there is nothing to release.
+        if (disposed) return;
+        if (hidden) {
+          // But the PHASE still has to come back. A hidden page can be
+          // restored, and `restored()` only resets state when a slot was
+          // surrendered — which never happened here, because the claim failed.
+          // Returning early would leave `starting` published forever, and the
+          // guard at the top of start() would then refuse every later attempt:
+          // a Start button that is permanently inert until a reload.
+          publish({ ...state, phase: PHASE.idle, error: '' });
+          return;
+        }
         publish({
           ...state,
           phase: PHASE.idle,
@@ -116,7 +134,7 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
       // the full lease.
       if (disposed || hidden) {
         if (hidden) releasedWhileHidden = true;
-        await surrender(opened.adminToken, session, { viaBeacon: hidden });
+        await surrender(opened.adminToken, session, { viaBeacon: hidden, awaited: true });
         return;
       }
 
@@ -135,7 +153,7 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
     async stop() {
       const { adminToken, session } = state;
       publish({ ...EMPTY, adminToken });
-      if (session) await surrender(adminToken, session, { viaBeacon: false });
+      if (session) await surrender(adminToken, session, { viaBeacon: false, awaited: true });
     },
 
     /**
