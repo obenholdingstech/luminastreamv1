@@ -9,6 +9,7 @@ import { useMicLevel } from '@/hooks/useMicLevel';
 import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
+import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -173,35 +174,25 @@ export default function Studio() {
   // never holds a LiveKit API secret, before or after that change.
   const apiConfigured = Boolean(API_BASE);
   const [accessKey, setAccessKey] = useState('');
-  const [adminToken, setAdminToken] = useState('');
-  const [unlocking, setUnlocking] = useState(false);
-  const [unlockError, setUnlockError] = useState('');
 
-  // The slot this tab is holding, or null. Held from the moment the lens starts
-  // until it stops — NOT from unlock, because a slot claimed at unlock would be
-  // held by someone reading the page and deciding, while the person who
-  // actually wants to talk is refused.
-  const [session, setSession] = useState(null);
-  // What the server handed us, for display only. Kept apart from `session` so
-  // nothing that releases a slot can accidentally read a room name off the UI.
-  const [allocation, setAllocation] = useState(null);
-  // Read by the unload handler, which cannot see React state. A ref, because
-  // `pagehide` fires long after the render that would have closed over it.
-  const releaseRef = useRef({ adminToken: '', session: null });
-  useEffect(() => {
-    releaseRef.current = { adminToken, session };
-  }, [adminToken, session]);
+  // Every decision about WHEN a slot is claimed and released lives in
+  // sessionHolder.js — including the races that made this untestable while it
+  // lived here (AGENTS.md: "anything with real logic belongs in src/lib/,
+  // because this is the part that can be tested without a browser"). What
+  // remains in this component is publishing that state into React and
+  // rendering it.
+  const [holder] = useState(() =>
+    createSessionHolder({
+      open: openSession,
+      end: endSession,
+      beacon: releaseOnUnload,
+      onChange: (next) => setHeld(next),
+    }),
+  );
+  const [held, setHeld] = useState(() => holder.snapshot());
 
-  // Whether this component is still on screen, readable from an async callback
-  // that resolved after the user navigated away. `start` needs it: a slot that
-  // arrives for a page nobody is looking at still has to be given back.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const { adminToken, allocation, error: unlockError } = held;
+  const unlocking = held.phase === PHASE.starting;
 
   const [lensMode, setLensMode] = useState('converted');
   // Set when credentials arrive, cleared when the connect fires. See `start`.
@@ -291,102 +282,58 @@ export default function Studio() {
   // (sessionClient.DEFAULT_TIMEOUT_MS). Without it a hung request would never
   // settle, `finally` would never run, and the only control on the page would
   // sit disabled with nothing to show.
+  // Claim a slot and connect.
+  //
+  // The old flow unlocked and connected in one step because the room was a
+  // constant. Now the server owns the room, so this is a claim on a scarce
+  // thing and it happens when the person actually wants to talk.
   const start = async (event) => {
     event?.preventDefault();
-    if (unlocking) return;
-    setUnlocking(true);
-    setUnlockError('');
-    try {
-      const opened = await openSession({ password: accessKey, adminToken });
-      const held = { sessionId: opened.sessionId, endToken: opened.endToken };
-
-      // Record the slot SYNCHRONOUSLY, before any setState. The effect that
-      // normally mirrors state into releaseRef only runs on the next commit,
-      // and if this tab is already unmounting there will not be one — leaving a
-      // slot nobody can release until its 2h lease expires.
-      releaseRef.current = { adminToken: opened.adminToken, session: held };
-
-      // And the other half of the same window: if the unmount happened WHILE
-      // this request was in flight, the cleanup has already run and found
-      // nothing to release. Writing the ref above does not help then, because
-      // nothing will read it again. Give the slot back here instead.
-      // Up to DEFAULT_TIMEOUT_MS wide — following the console link right after
-      // pressing Start is enough to land in it.
-      if (!mountedRef.current) {
-        releaseRef.current = { adminToken: '', session: null };
-        await endSession(opened.adminToken, held);
-        return;
-      }
-
-      setAdminToken(opened.adminToken);
-      setSession(held);
-      setAllocation({ room: opened.room, identity: opened.identity });
-      setUrl(opened.url);
-      setToken(opened.token);
-      setAccessKey(''); // exchanged — no reason to keep it in memory
-      // Cannot call connect() here: it reads the url and token from refs that
-      // only update on render, and this render has not happened yet. The effect
-      // below fires once they have.
-      setPendingConnect(true);
-    } catch (err) {
-      if (err.status === 401) setAdminToken('');
-      // A busy lens must not also cost the user their access key. openSession
-      // hands back the verified admin session on any failure that is not an
-      // auth failure, so "try again" is one button rather than a re-login.
-      else if (err.adminToken) setAdminToken(err.adminToken);
-      setUnlockError(err.message || 'could not start the lens');
-    } finally {
-      setUnlocking(false);
-    }
+    await holder.start({ password: accessKey });
+    setAccessKey(''); // exchanged — no reason to keep it in memory
   };
 
-  // Give the slot back.
-  //
-  // Best-effort on purpose: `endSession` never throws, and the lease reaps the
-  // slot regardless. Stopping is something the user has already finished doing,
-  // so there is nothing useful to tell them if the release itself failed.
   const stop = useCallback(async () => {
     setPendingConnect(false);
     await disconnect();
-    const held = releaseRef.current;
-    setSession(null);
-    setAllocation(null);
-    setUrl('');
-    setToken('');
-    if (held.session) await endSession(held.adminToken, held.session);
-  }, [disconnect]);
+    await holder.stop();
+  }, [disconnect, holder]);
 
-  // Connect once React has published the new credentials into the hook's refs.
-  // Guarded on url AND token so a partial update can never dial with one of
-  // them empty, which LiveKit reports as a generic connection failure.
+  // Publish the holder's credentials into the hook, then connect.
+  //
+  // connect() cannot be called from the click handler: it reads the url and
+  // token from refs that only update on render. Guarded on both so a partial
+  // update never dials with one empty, which LiveKit reports as a generic
+  // connection failure.
+  useEffect(() => {
+    setUrl(held.url);
+    setToken(held.token);
+    if (held.phase === PHASE.held && held.url && held.token) setPendingConnect(true);
+  }, [held]);
+
   useEffect(() => {
     if (!pendingConnect || !url || !token) return;
     setPendingConnect(false);
     connect();
   }, [pendingConnect, url, token, connect]);
 
-  // The tab is closing, the laptop is sleeping, the user navigated away.
-  //
-  // Without this the slot stays held for the full two-hour lease, and on a
-  // one-agent system that means one closed tab locks everyone else out for the
-  // afternoon. `pagehide` rather than `unload`: unload is unreliable and blocks
-  // the back/forward cache.
+  // Browser lifecycle in, holder decisions out. `pagehide` rather than
+  // `unload`: unload is unreliable and blocks the back/forward cache. The
+  // unmount case is the in-app navigation pagehide never sees — following the
+  // link to /livekit-test does not touch the document.
   useEffect(() => {
-    const release = () => {
-      const held = releaseRef.current;
-      if (held.session) releaseOnUnload(held.adminToken, held.session);
+    const hide = () => holder.hide();
+    const show = (event) => {
+      if (event?.persisted) holder.restored();
     };
-    globalThis.addEventListener?.('pagehide', release);
+    globalThis.addEventListener?.('pagehide', hide);
+    globalThis.addEventListener?.('pageshow', show);
     return () => {
-      globalThis.removeEventListener?.('pagehide', release);
-      // Unmount is the in-app case `pagehide` cannot see: following the link to
-      // /livekit-test never touches the document, so without this the slot
-      // survives leaving the page that was using it. Safe to release here
-      // because this component is not rendered under StrictMode, which would
-      // otherwise double-invoke the cleanup in development.
-      release();
+      globalThis.removeEventListener?.('pagehide', hide);
+      globalThis.removeEventListener?.('pageshow', show);
+      holder.dispose();
     };
-  }, []);
+  }, [holder]);
 
   // The agent is the source of truth for mode, so the selector only ever
   // REQUESTS. While connected, a click goes on the wire; while disconnected it
