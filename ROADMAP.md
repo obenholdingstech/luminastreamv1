@@ -85,9 +85,17 @@ Clearing the debt that would otherwise be paid at a worse time.
 Today one agent serves one speaker in one fixed room. A second person is ignored
 and told so. That is the single largest functional limit in the product.
 
+P1 ships in three parts. **P1a is done** (PR #32): `POST /api/session/create`,
+`/api/session/end`, `/api/session/capacity`, the `SessionRegistry` Durable
+Object, and the O(1) oracle below. **P1b** wires the lens to it and retires the
+admin-password gate. **P1c** puts an agent behind each session on the VPS and
+measures the capacity constant.
+
 - `POST /api/session/create` in the Worker: allocates a room, an identity, and an
-  agent, and returns a scoped LiveKit grant.
-- A Durable Object ledger — the Worker currently has **zero** storage bindings.
+  agent, and returns a scoped LiveKit grant. **Shipped in P1a** — the agent half
+  arrives with P1c; until then the registry counts sessions against
+  `MAX_CONCURRENT_SESSIONS`, which is **1**, the honest truth today.
+- A Durable Object ledger — the Worker previously had **zero** storage bindings.
   This is the project's first server-side storage, but it is **not** the
   database: a Durable Object here holds coordination state — which rooms exist,
   who holds them, how many are live — that must be consistent across
@@ -211,8 +219,18 @@ asserts:
 |---|---|
 | Clean session: create → capacity read → end | **≤ 3** requests, **0** alarms |
 | Abandoned session: create → reaped | **≤ 2** requests, **exactly 1** alarm |
-| **Short vs long session** | counts **identical** — a 1-minute and a 10-hour session must cost the same |
+| **Short vs long session** | counts **identical** — a 30-second and a full-lease session must cost the same |
 | N concurrent sessions | **≤ N × budget** — linear in sessions is expected and fine |
+
+**What "long" means, precisely.** A session cannot outlive its **lease**
+(`SESSION_LEASE_SECONDS`, 2h by default), because the LiveKit grant is minted
+for exactly that span — slot and credential expire together, which is what
+removes the need for a heartbeat. So the shipped guarantee is not "duration is
+free forever"; it is **no request is made as a function of elapsed time within a
+lease**, and a lease is hours, not seconds. Supporting longer sessions later
+means renewal, which is O(duration ÷ 2h) — bounded, and emphatically not
+O(seconds). Stated here rather than left implied, because an invariant with an
+unstated boundary is one someone will later find out about the hard way.
 
 The rows do different jobs, and it matters which. The first two **bound the
 constant** — a poll heavy enough to push past 3 requests trips them. The third
@@ -224,6 +242,33 @@ one convicts that.
 
 Discrimination-tested like everything else: adding a poll to the session path,
 or converting the reaper to a fixed interval, must turn that row red.
+
+**Shipped, and it does** (PR #32, `workers/api/test/sessionOracle.test.js`).
+Two mutations were run against the suite. **A**: a capacity read added to the
+create path — an extra request per session. **B**: `#rearm` converted to a fixed
+60-second sweep — wakeups that scale with duration.
+
+| Row | A: extra request | B: fixed sweep |
+|---|---|---|
+| 1 · Clean (≤ 3 req, 0 alarms) | **red** | green |
+| 2 · Abandoned (≤ 2 req, 1 alarm) | green | **red** |
+| 3 · Short vs long | **red** | **red** |
+| 4 · N concurrent | **red** | green |
+
+Rows 1, 2 and 4 each have a blind spot. Row 1 never advances the clock far
+enough to wake a fixed-interval reaper. Row 2 makes only one request, so its
+≤ 2 budget absorbs an extra one without complaint. Row 4 shares row 1's
+blindness. **Row 3 is the only row red under both** — which is what earns it its
+place, and it is not the claim an earlier draft of this section made (that row 3
+alone convicted the sweep; row 2 convicted it too).
+
+The two assertions inside row 3 also do different jobs, and the mutations
+separate them cleanly. Under **A** it fails on the absolute pin
+(`requests === 3`): both sessions gain the same extra request, so the comparison
+stays equal and sees nothing. Under **B** it fails on the `deepEqual` comparison
+itself. The pin bounds the constant; the comparison is the duration detector.
+Neither is redundant, and only the comparison catches cost that tracks elapsed
+time.
 
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero

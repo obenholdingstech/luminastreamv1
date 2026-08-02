@@ -9,8 +9,10 @@
   //   - env.staging = "luminastream-api-staging", the default target for
   //     manual/agent deploys (`npm run deploy` → wrangler deploy --env staging).
   //
-  // ratelimits + observability are NON-inheritable by named environments, so
-  // staging repeats them with its own namespace_ids (isolated counters).
+  // ratelimits, vars, durable_objects, migrations and observability are all
+  // NON-inheritable by named environments, so staging repeats every one of them
+  // with its own ids (isolated counters, and its own Durable Object namespace —
+  // a staging deploy must never be able to fill production's capacity).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "luminastream-api",
   "main": "src/index.js",
@@ -18,16 +20,50 @@
   "observability": { "enabled": true },
   "ratelimits": [
     { "name": "VERIFY_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
-    { "name": "TOKEN_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+    { "name": "TOKEN_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } },
+    // Session routes: create/end/capacity. Looser than the password oracle,
+    // tighter than the mint — every call here reaches the Durable Object, and
+    // on Workers Free the DO's daily request quota is a shared, exhaustible
+    // resource (ROADMAP.md §P1).
+    { "name": "SESSION_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ],
+  // Non-secret configuration, deliberately visible in a public repo: these are
+  // operational limits, not credentials. Both are parsed STRICTLY — a
+  // malformed value is fatal at request time (500), never a silent default.
+  "vars": {
+    // The truth today: one agent, one room. P1c measures the real capacity
+    // constant on the VPS and this becomes that number.
+    "MAX_CONCURRENT_SESSIONS": "1",
+    // 2h. Simultaneously the maximum session length and the maximum time an
+    // abandoned slot stays held. Hard-capped by the 6h LiveKit grant ceiling.
+    "SESSION_LEASE_SECONDS": "7200"
+  },
+  // The session layer's coordination state. SQLite-backed, which is the only
+  // Durable Object class available on Workers Free.
+  "durable_objects": {
+    "bindings": [{ "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] }],
   "env": {
     "staging": {
       "name": "luminastream-api-staging",
       "observability": { "enabled": true },
       "ratelimits": [
         { "name": "VERIFY_LIMITER", "namespace_id": "2001", "simple": { "limit": 5, "period": 60 } },
-        { "name": "TOKEN_LIMITER", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } }
-      ]
+        { "name": "TOKEN_LIMITER", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } },
+        { "name": "SESSION_LIMITER", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } }
+      ],
+      "vars": {
+        // Staging carries more capacity than production on purpose: it is
+        // where concurrency gets exercised, and it has no agent behind it to
+        // over-admit onto.
+        "MAX_CONCURRENT_SESSIONS": "4",
+        "SESSION_LEASE_SECONDS": "7200"
+      },
+      "durable_objects": {
+        "bindings": [{ "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] }]
     }
   }
   // Secrets (ADMIN_PASSWORD, ADMIN_SESSION_SECRET, LIVEKIT_API_KEY,
