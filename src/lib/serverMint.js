@@ -2,80 +2,16 @@
 // Used by the lens at `/` to unlock a session, and by /livekit-test, where
 // manual token paste stays the dev fallback so a drill never depends on the
 // Worker being up.
-
-import { API_BASE } from './apiBase.js';
-
-// fetch() has NO timeout of its own. A request that hangs — a blackholed DNS
-// lookup, a TCP connection that opens and then goes quiet — never settles, so
-// a caller awaiting it waits forever with its button disabled and no error to
-// show. On this project that is not a hypothetical: the CEO's Starlink link
-// intermittently blackholes DNS, which is documented as a drill hazard.
 //
-// Every request therefore carries a deadline, and mintViaServer applies ONE
+// The deadline, the JSON POST and the timeout message live in apiFetch.js —
+// one implementation, shared with sessionClient.js. mintViaServer applies ONE
 // deadline across its whole exchange rather than per hop, so a flow that needs
 // four round trips still fails inside a span a person will actually wait out.
-export const DEFAULT_TIMEOUT_MS = 15_000;
 
-/** True for the DOMException fetch raises when a signal fires. */
-function isAbort(err) {
-  return err?.name === 'TimeoutError' || err?.name === 'AbortError';
-}
+import { API_BASE } from './apiBase.js';
+import { DEFAULT_TIMEOUT_MS, deadline, postJson, asTimeoutError } from './apiFetch.js';
 
-/**
- * A signal that fires after `ms`.
- *
- * AbortSignal.timeout is the direct route, but falling back to `null` when it
- * is missing would hand exactly the older runtimes that most need a deadline
- * the one code path that has none. AbortController plus a timer is universally
- * available and gives the same guarantee, so the fallback is a real deadline
- * rather than an absent one. Returns null only if even that fails, because a
- * missing convenience must never become a thrown request.
- */
-function deadline(ms = DEFAULT_TIMEOUT_MS) {
-  try {
-    if (typeof AbortSignal?.timeout === 'function') return AbortSignal.timeout(ms);
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort(new DOMException('signal timed out', 'TimeoutError'));
-    }, ms);
-    // Never hold a Node process (or a test runner) open on a deadline that is
-    // only there in case something else stalls. In the browser setTimeout
-    // returns a number with no unref, which is why the call is guarded rather
-    // than typed — the DOM lib types this as `number`.
-    /** @type {any} */ (timer)?.unref?.();
-    return controller.signal;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {string} url
- * @param {{ body?: unknown, adminToken?: string, signal?: AbortSignal|null }} [opts]
- */
-async function postJson(url, { body, adminToken, signal } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (adminToken) headers['X-Admin-Token'] = adminToken;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body ?? {}),
-    ...(signal ? { signal } : {}),
-  });
-  let data = null;
-  try {
-    data = await res.json();
-  } catch {
-    // non-JSON body (e.g. an SPA-shell 200 when the API base is misconfigured)
-  }
-  return { status: res.status, data };
-}
-
-/** Turn an aborted request into something worth showing a person. */
-function asTimeoutError(err) {
-  if (!isAbort(err)) return err;
-  return new Error('the server did not respond — check your connection and retry');
-}
+export { DEFAULT_TIMEOUT_MS };
 
 // Exchange the admin password for a ~12h session token (sent back as
 // X-Admin-Token). Throws a human-readable Error on failure.
