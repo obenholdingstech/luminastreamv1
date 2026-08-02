@@ -177,6 +177,12 @@ test('ORACLE many abandoned sessions sharing an expiry cost ONE alarm between th
   // fall due together.
   await h.advanceBy((LEASE_SECONDS + 1) * 1000);
 
+  // Asserted BEFORE any request goes in. #capacity sweeps too, so a capacity
+  // read is enough to clean up after an alarm that reaped nothing — checking
+  // only at the end would let this test pass over a broken reaper, which is
+  // precisely the class of defect it exists to catch.
+  assert.equal(h.stored().size, 0, 'the ALARM must be what reaped, not a later request');
+
   const { requests, alarms } = h.counts();
   assert.equal(requests, N, 'one create each, nothing more');
   assert.equal(alarms, 1, `${N} sessions expiring together must cost ONE wakeup, not ${N}`);

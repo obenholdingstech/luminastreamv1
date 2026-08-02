@@ -35,10 +35,15 @@
 // costs 1 request and AT MOST 1 alarm — no matter how far into its lease it was
 // abandoned, and no matter how long the object then sits idle afterwards.
 //
-// At most, not exactly, and the slack is in our favour: one wakeup reaps
-// everything expired, so sessions sharing an expiry instant cost one alarm
-// between them rather than one each. The bound is the number of distinct
-// pending expiries — never the number of sessions, and never the elapsed time.
+// At most, not exactly: one wakeup reaps everything expired, so sessions
+// sharing an expiry instant cost one alarm between them rather than one each.
+// The bound is the number of DISTINCT PENDING EXPIRIES — at most one per
+// session, and often exactly that, since a lease runs from creation and
+// sessions started at different moments expire at different moments.
+//
+// The half that carries the invariant is that the bound does not grow with
+// ELAPSED TIME: alarm count is bounded by how many sessions were abandoned,
+// never by how long anything ran or how long this object then sat idle.
 //
 // A session cannot be abandoned "after a day" either, because it cannot outlive
 // its lease; what can last a day is the silence that follows, which is exactly

@@ -143,6 +143,38 @@ within a lease**, and a lease is hours. Renewal, if longer sessions are ever
 needed, is O(duration ÷ 2h) — bounded, and not O(seconds). An invariant with an
 unstated boundary is one someone finds out about the hard way.
 
+**7. The session-log PR (#33) then found three more, and one is the sharpest
+instance of the pattern yet.** Reviewing the *correction*, CodeRabbit pointed
+out that my new "N sessions expiring together cost ONE alarm" test ended with a
+capacity read — and `#capacity` sweeps too. So a reaper that reclaimed *nothing*
+would be cleaned up by that final request, and the test would still pass.
+
+Verified by construction rather than accepted on argument: with `alarm()` gutted
+to wake and reap nothing, and the new assertion removed, the test reports
+
+```
+✔ ORACLE many abandoned sessions sharing an expiry cost ONE alarm between them
+```
+
+A green tick over a completely broken reaper. The fix is one line —
+`assert.equal(h.stored().size, 0)` **before** any request goes in — and the
+lesson is one this file keeps recording in new costumes: *a test that observes
+state through a call which can repair that state is not observing it.*
+
+The same round corrected two over-claims. "The bound is the number of distinct
+expiries, **never the number of sessions**" is false — distinct expiries equal
+session count whenever creates do not coincide, which is the normal case. And I
+framed the shared-alarm saving as generally "in our favour" when it applies only
+to simultaneous creates. The half that actually carries the invariant is the
+other one: **the bound does not grow with elapsed time.**
+
+One finding was **rejected with evidence**: a request to change `afterwards` to
+`afterward`. The repo uses `afterwards` 9 times to `afterward` once and mixes
+BrE/AmE throughout (`cancelled` 6, `modelling` 2, `behaviour` 5 against
+`behavior` 22) with no linter rule. Adopting a spelling convention is a
+deliberate repo-wide decision, not a drive-by on two comment lines. CodeRabbit
+agreed.
+
 ### Files changed
 
 - **New** `workers/api/src/sessionRegistry.js` — the Durable Object.

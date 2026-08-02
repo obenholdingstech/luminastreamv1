@@ -210,12 +210,18 @@ Five rules follow, all cheap now and all expensive to retrofit:
    into its lease it was abandoned, and no matter how long the registry then
    sits idle before anything touches it again.
 
-   *At most*, not *exactly*, and the difference is in our favour: **one wakeup
-   reaps everything that has expired**, so abandoned sessions sharing an expiry
-   instant cost one alarm between them, not one each. The bound is therefore the
-   number of distinct pending expiries, never the number of sessions and never
-   the time elapsed. "Exactly one" is what the isolated single-session oracle
-   row asserts, which is the tightest case, not the general rule.
+   *At most*, not *exactly*: **one wakeup reaps everything that has expired**, so
+   abandoned sessions sharing an expiry instant cost one alarm between them
+   rather than one each. The bound is the number of **distinct pending
+   expiries** — at most one per session, and often exactly that, since a lease
+   runs from creation and sessions started at different moments expire at
+   different moments. The saving applies only when creates coincide.
+
+   The half that carries the invariant is the other one: **the bound does not
+   grow with elapsed time.** Alarm count is bounded by how many sessions were
+   abandoned, never by how long anything ran or how long the registry then sat
+   idle. "Exactly one" is what the isolated single-session oracle row asserts —
+   the tightest case, not the general rule.
 
    (A session cannot be abandoned "after a day" either: it cannot outlive its
    lease. What can run for a day is the *silence afterwards*, and that silence is
