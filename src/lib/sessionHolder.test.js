@@ -354,7 +354,12 @@ test('a rejecting release never escapes as an unhandled rejection', async () => 
   }
 });
 
-test('stop still resolves when the release rejects', async () => {
+test('stop clears the state and NEVER rejects, even when the release fails', async () => {
+  // stop() is reached from a click handler, so a rejection lands in exactly
+  // the place hide() and dispose() would have put one: an unhandled rejection
+  // React does not catch. A failed release is not actionable anywhere — the
+  // lease reclaims the slot regardless — so no path here propagates one. Same
+  // conclusion sessionClient.endSession reaches independently.
   const holder = createSessionHolder({
     async open() {
       return GRANT;
@@ -366,10 +371,30 @@ test('stop still resolves when the release rejects', async () => {
   });
 
   await holder.start({ password: 'pw' });
-  // stop() awaits the release, so a rejection here IS observable — and must
-  // not leave the UI stuck showing a session the user already ended.
-  await assert.rejects(() => holder.stop());
-  assert.equal(holder.snapshot().phase, PHASE.idle, 'the state was cleared before the release');
+  await holder.stop(); // must not throw
+  assert.equal(holder.snapshot().phase, PHASE.idle, 'and the state is cleared regardless');
+  assert.equal(holder.snapshot().session, null);
+});
+
+test('a collaborator that throws SYNCHRONOUSLY is survived too', async () => {
+  // Not the same case as a rejected promise, and the collaborator is injected.
+  const holder = createSessionHolder({
+    async open() {
+      return GRANT;
+    },
+    end() {
+      throw new Error('sync boom');
+    },
+    beacon() {
+      throw new Error('sync boom');
+    },
+  });
+
+  await holder.start({ password: 'pw' });
+  await holder.stop();
+  holder.hide();
+  holder.dispose();
+  assert.equal(holder.snapshot().phase, PHASE.idle);
 });
 
 test('a failed start can be retried', async () => {

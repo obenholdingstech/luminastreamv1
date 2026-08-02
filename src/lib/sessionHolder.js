@@ -69,18 +69,30 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
   /**
    * Hand a slot back through whichever channel is still available.
    *
-   * `awaited: false` is the fire-and-forget path — `hide()` and `dispose()`
-   * cannot await, so a rejection there has nobody to catch it and becomes an
-   * unhandled rejection: fatal in some Node and worker contexts, noise in
-   * browser error reporting. Today's `endSession` never rejects, but a helper
-   * must not depend on a collaborator's internal politeness, and the
-   * collaborator is injected.
+   * **Never rejects, on any path.** Not a convenience — the contract.
+   *
+   * `hide()` and `dispose()` cannot await, so a rejection there has nobody to
+   * catch it and becomes an unhandled rejection: fatal in some Node and worker
+   * contexts, noise in browser error reporting. And the paths that DO await —
+   * `stop()`, and the in-flight race in `start()` — are reached from a click
+   * handler and a submit handler, where a rejection lands in exactly the same
+   * place for exactly the same reason.
+   *
+   * Releasing is also best-effort by nature: the lease reclaims the slot
+   * regardless, and stopping is something the user has already finished doing.
+   * There is no caller anywhere for whom a failure here is actionable, which is
+   * the same conclusion `sessionClient.endSession` reaches independently.
    */
-  function surrender(adminToken, session, { viaBeacon, awaited = false }) {
+  function surrender(adminToken, session, { viaBeacon }) {
     if (!session) return undefined;
-    const result = viaBeacon ? beacon(adminToken, session) : end(adminToken, session);
-    if (awaited) return result;
-    return Promise.resolve(result).catch(() => undefined);
+    try {
+      const result = viaBeacon ? beacon(adminToken, session) : end(adminToken, session);
+      return Promise.resolve(result).catch(() => undefined);
+    } catch {
+      // A collaborator that throws synchronously rather than rejecting. The
+      // collaborator is injected, so this is not hypothetical politeness.
+      return undefined;
+    }
   }
 
   return {
@@ -134,7 +146,7 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
       // the full lease.
       if (disposed || hidden) {
         if (hidden) releasedWhileHidden = true;
-        await surrender(opened.adminToken, session, { viaBeacon: hidden, awaited: true });
+        await surrender(opened.adminToken, session, { viaBeacon: hidden });
         return;
       }
 
@@ -153,7 +165,7 @@ export function createSessionHolder({ open, end, beacon, onChange }) {
     async stop() {
       const { adminToken, session } = state;
       publish({ ...EMPTY, adminToken });
-      if (session) await surrender(adminToken, session, { viaBeacon: false, awaited: true });
+      if (session) await surrender(adminToken, session, { viaBeacon: false });
     },
 
     /**
