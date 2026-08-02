@@ -50,3 +50,7 @@ graphify-out/
 
 # Generated run reports from --report (evidence lives on the PR, not in git)
 agent/*report*.json
+
+# Playwright E2E artifacts (screenshots, traces, reports)
+/test-results/
+/playwright-report/

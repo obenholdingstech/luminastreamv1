@@ -4,6 +4,73 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 2 August 2026 (late) — INCIDENT: the stuck slot, reproduced, fixed, and pinned by E2E (#37 merged, #38 open)
+
+### Task (verbatim)
+
+> "i dont understand what you mean by you set the capacity to 1 [...] i also
+> demand that you intall tools that helps you through this project like that
+> playwright which gives you eyes to test uis and all that. i need everything
+> working and also you letting me know where we are on the roadmap now"
+
+### The incident
+
+The CEO's drill hit `503 at_capacity` with no visible session — the only slot
+held by a session no client could release. Two failures, in order of blame:
+
+1. **No operator recovery existed.** The lease (2h) was the only way out.
+   #37 shipped `/api/session/reset` + `scripts/reset-sessions.sh` (fail-closed
+   after review). Run against production: `before live:1 → released:1 → after
+   live:0`. Unblocked.
+2. **The leak itself — root cause found by instrumented E2E, not by reading.**
+   A wire-log run showed: create 200 → LiveKit WebSocket
+   `ERR_NAME_NOT_RESOLVED` (the documented Starlink DNS blackhole, active on
+   this Mac; host resolves fine via 1.1.1.1) → Stop clicked → **zero
+   `/api/session/end` requests ever sent**. `stop()` sequenced the release
+   BEHIND `await disconnect()`, and a teardown wedged mid-connect hangs — the
+   try/finally from #35 round 4 protected against a disconnect that REJECTS,
+   not one that HANGS. Second defect: the Stop button was `disabled` while
+   Connecting, so a person wedged mid-connect had NO way to release their own
+   slot. An unreleasable hold, by design.
+
+### The fix (#38)
+
+- `stop()` releases first and tears down in parallel — the release is never
+  hostage to LiveKit. No data dependency existed; only accidental sequencing.
+- **Stop is reachable from every held state.** Holding + disconnected now shows
+  Reconnect (slot and grant still valid — retrying is free) + Stop.
+
+### Playwright E2E — the CEO's demand, met
+
+`npm run e2e`: headless Chromium, fake mic, real Worker/DO/agent. Five tests =
+her drill, automated: start (server-allocated slot visible in UI **and**
+confirmed held server-side), stop (server agrees released), **start-again**
+(reuse is proof of release), busy-in-words (and one-click recovery, no
+re-login), leave-page (pagehide keepalive release). Deliberately not in CI: it
+needs the admin password and consumes the production slot; it is an on-demand
+instrument like check-live.sh. Password flows secrets.env → env var, never argv.
+
+**Discrimination, old-vs-new:** the same suite failed 3/5 against the deployed
+(pre-fix) bundle and passes **5/5** against the fixed build served locally on
+the CORS-allowed port. Screenshots + traces retained per run.
+
+Suite defects found while building it (pattern of the day, continued): tests
+lacked per-test isolation — test 1 deliberately ends while holding, poisoning
+everything after it with the very at_capacity it exists to detect; and the
+reuse test clicked faster than the release could land (UI says "Lens off"
+before the server agrees — known wart, phase='stopping' sketched for P7).
+
+### Still true / still owed
+
+- **The CEO's Mac needs the OS-level DNS fix** (1.1.1.1) before voice will
+  connect on Starlink — config is correct, network is the hazard. Runbook step.
+- Capacity=1 is the physical agent count, not a policy choice; P1c raises it.
+- A held-but-never-connectable slot self-releases only via Stop/leave; an
+  auto-release on terminal connect failure is P1c-adjacent polish.
+
+
+---
+
 ## 2 August 2026 — P1b: the lens takes a real session (#34, #35 merged)
 
 ### Task (verbatim)
