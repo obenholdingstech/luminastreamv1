@@ -187,19 +187,36 @@ echo "── T10 full happy path reaches the stray scan (zero matches) ──"
 # pgrep records `ok` rather than misfiring. (`pgrep -fc` prints 0 AND exits 1
 # on no match, which is exactly how the previous implementation went wrong.)
 mkdir -p "$ROOT/sbin"
+# The systemctl stub answers unit discovery from $SYSTEMCTL_UNITS (a file of
+# `list-unit-files`-shaped lines; defaults to just the primary) and logs every
+# invocation to $SYSTEMCTL_LOG so a test can assert exactly which units were
+# restarted — and, as important, which were NOT.
 cat > "$ROOT/sbin/systemctl" <<'SC'
 #!/usr/bin/env bash
+[ -n "${SYSTEMCTL_LOG:-}" ] && echo "$*" >> "$SYSTEMCTL_LOG"
 case "$*" in
   *"show -p MainPID"*) echo 0 ;;   # no live service in the test env
-  *) exit 0 ;;                     # list-unit-files / restart both succeed
+  *list-unit-files*|*list-units*)
+    if [ -n "${SYSTEMCTL_UNITS:-}" ]; then cat "$SYSTEMCTL_UNITS"
+    else echo "lumina-agent.service enabled enabled"; fi ;;
+  *) exit 0 ;;                     # restart / daemon-reload succeed
 esac
 SC
+# journalctl answers per-unit: the unit named in $JOURNAL_BAD_UNIT never
+# prints its gates, which is how a sick INSTANCE is simulated while its
+# siblings stay healthy.
 cat > "$ROOT/sbin/journalctl" <<'JC'
 #!/usr/bin/env bash
-printf 'STT READY
+unit=""; prev=""
+for a in "$@"; do [ "$prev" = "-u" ] && unit="$a"; prev="$a"; done
+case "$unit" in
+  *"${JOURNAL_BAD_UNIT:-/none/}"*) printf 'STT READY
+' ;;
+  *) printf 'STT READY
 TTS READY (TTFB 88ms)
 PREFLIGHT OK
-'
+' ;;
+esac
 JC
 chmod +x "$ROOT/sbin/systemctl" "$ROOT/sbin/journalctl"
 
@@ -234,6 +251,47 @@ grep -q "stray agent process" "$ROOT/out.txt"; chk "stray reported" "$?" "0"
 grep -q "$STRAY_PID" "$ROOT/out.txt"; chk "names the offending PID" "$?" "0"
 grep -q "result=ok-with-stray" "$R/agent/.deploy-state"; chk "recorded as ok-with-stray" "$?" "0"
 kill "$STRAY_PID" 2>/dev/null; wait "$STRAY_PID" 2>/dev/null
+
+echo "── T12 template instances: every agent unit restarted and gated ──"
+# One box, two agents: the primary plus lumina-agent@room-a. The deploy must
+# restart BOTH (all agents share one venv symlink, so a skipped instance runs
+# old code forever), gate each BY NAME, and never try to start the bare
+# template — `lumina-agent@.service` is a stencil, not a unit.
+UF="$ROOT/units12"; cat > "$UF" <<'U'
+lumina-agent.service enabled enabled
+lumina-agent@.service disabled disabled
+lumina-agent@room-a.service enabled enabled
+U
+R="$ROOT/r12"; build_repo "$R" "$GOOD"
+: > "$ROOT/sysctl12.log"
+rc=$(PATH="$ROOT/sbin:$PATH" ARGS_OUT="$ROOT/args.txt" PIP_LOG="$ROOT/pip.txt" \
+     SYSTEMCTL_UNITS="$UF" SYSTEMCTL_LOG="$ROOT/sysctl12.log" \
+     LUMINA_REPO="$R" LUMINA_PYTHON="$ROOT/bin/fakepython" LUMINA_SERVICE="lumina-agent" \
+     bash "$SCRIPT" >"$ROOT/out.txt" 2>&1; echo $?)
+chk "exit 0 with two live units" "$rc" "0"
+grep -q -- "restart lumina-agent.service" "$ROOT/sysctl12.log"; chk "primary restarted" "$?" "0"
+grep -q -- "restart lumina-agent@room-a.service" "$ROOT/sysctl12.log"; chk "instance restarted" "$?" "0"
+grep -q -- "restart lumina-agent@.service" "$ROOT/sysctl12.log"; chk "bare template NOT restarted" "$?" "1"
+grep -q "lumina-agent@room-a.service: PREFLIGHT OK" "$ROOT/out.txt"; chk "instance gated by name" "$?" "0"
+grep -q "$(printf '\tresult=ok\t')" "$R/agent/.deploy-state"; chk "recorded ok" "$?" "0"
+
+echo "── T13 a sick INSTANCE fails the deploy and is NAMED ──"
+# The primary is healthy; room-b never prints its gates. "An agent is down" is
+# not actionable; "lumina-agent@room-b is down" is — the deploy must fail AND
+# say which. LUMINA_BOOT_TIMEOUT=1 so the gate wait does not stall the suite.
+UF="$ROOT/units13"; cat > "$UF" <<'U'
+lumina-agent.service enabled enabled
+lumina-agent@room-b.service enabled enabled
+U
+R="$ROOT/r13"; build_repo "$R" "$GOOD"
+rc=$(PATH="$ROOT/sbin:$PATH" ARGS_OUT="$ROOT/args.txt" PIP_LOG="$ROOT/pip.txt" \
+     SYSTEMCTL_UNITS="$UF" JOURNAL_BAD_UNIT="room-b" LUMINA_BOOT_TIMEOUT=1 \
+     LUMINA_REPO="$R" LUMINA_PYTHON="$ROOT/bin/fakepython" LUMINA_SERVICE="lumina-agent" \
+     bash "$SCRIPT" >"$ROOT/out.txt" 2>&1; echo $?)
+chk "exit 1 when one instance is sick" "$rc" "1"
+grep -q "lumina-agent@room-b.service did not reach" "$ROOT/out.txt"; chk "the sick unit is NAMED" "$?" "0"
+grep -q "lumina-agent.service: PREFLIGHT OK" "$ROOT/out.txt"; chk "the healthy sibling passed first" "$?" "0"
+grep -q "restart-unhealthy" "$R/agent/.deploy-state"; chk "recorded restart-unhealthy" "$?" "0"
 
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"

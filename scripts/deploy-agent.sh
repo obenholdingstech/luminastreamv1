@@ -231,45 +231,72 @@ fi
 _swap_symlink "$NEW_VENV" "$VENV_LINK" || fail "could not swap the venv symlink"
 ok "venv symlink → .venvs/$SHORT_SHA"
 
-if systemctl --user list-unit-files "$SERVICE.service" >/dev/null 2>&1; then
-  # SIGTERM (systemd's default) is handled by the agent's own signal handlers,
-  # which close through aclose() and finalise capture WAV headers. Never a hard
-  # kill: that corrupts the evidence of whatever session was running.
-  systemctl --user restart "$SERVICE" || fail "systemctl --user restart $SERVICE failed"
-  ok "restarted $SERVICE"
-else
-  bad "systemd unit '$SERVICE' not installed"
-  note "Code and venv are updated and verified, but the process was not restarted."
+# ── discover every agent unit on this box ──────────────────────────────────
+# The primary service plus every template instance (lumina-agent@<room> — one
+# room per instance, scripts/systemd/lumina-agent@.service). The union of
+# list-unit-files (sees enabled-but-stopped) and list-units (sees
+# running-but-unenabled) is deliberate: a deploy must heal the first and must
+# not leave the second on old code. The bare template `@.service` is a
+# stencil, not a unit, and is filtered out. All instances share one venv
+# symlink, so one swap here means every agent runs the same SHA.
+AGENT_UNITS="$(
+  {
+    systemctl --user list-unit-files --plain --no-legend \
+      "$SERVICE.service" "$SERVICE@*.service" 2>/dev/null || true
+    systemctl --user list-units --all --plain --no-legend \
+      "$SERVICE@*.service" 2>/dev/null || true
+  } | awk 'NF {print $1}' | grep -vx "$SERVICE@.service" | sort -u
+)"
+
+if [ -z "$AGENT_UNITS" ]; then
+  bad "no systemd agent unit installed ($SERVICE.service or $SERVICE@<room>.service)"
+  note "Code and venv are updated and verified, but no process was restarted."
   note "Install the units (see scripts/systemd/README or the repo README), or"
   note "restart the agent by hand to pick up $SHORT_SHA."
   record "swapped-no-restart" "$SHORT_SHA" "systemd unit missing"
   exit 1
 fi
 
-# ── 7. verify it actually came up ───────────────────────────────────────────
-say "Waiting for the new agent to clear its gates"
-DEADLINE=$((SECONDS + BOOT_TIMEOUT))
+# SINCE is taken BEFORE any restart, so no unit's boot lines can predate the
+# window the gate check reads — with several units restarting in sequence,
+# taking it later would silently truncate the first one's journal.
 SINCE="$(date -u +%Y-%m-%d\ %H:%M:%S)"
-while [ $SECONDS -lt $DEADLINE ]; do
-  if journalctl --user -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
-      | grep -qF "PREFLIGHT OK"; then break; fi
-  sleep 2
+for UNIT in $AGENT_UNITS; do
+  # SIGTERM (systemd's default) is handled by the agent's own signal handlers,
+  # which close through aclose() and finalise capture WAV headers. Never a hard
+  # kill: that corrupts the evidence of whatever session was running.
+  systemctl --user restart "$UNIT" || fail "systemctl --user restart $UNIT failed"
+  ok "restarted $UNIT"
 done
 
-LOGS="$(journalctl --user -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null)"
-for gate in "${GATES[@]}"; do
-  if printf '%s' "$LOGS" | grep -qF "$gate"; then
-    ok "$gate"
-  else
-    echo "--- journal (tail) ---"; printf '%s\n' "$LOGS" | tail -30; echo "----------------------"
-    bad "the new agent did not reach: $gate"
-    record "restart-unhealthy" "$SHORT_SHA" "missing gate: $gate"
-    echo
-    echo "DEPLOY FAILED AFTER RESTART — the agent may be down."
-    echo "  systemctl --user status $SERVICE"
-    echo "  journalctl --user -u $SERVICE -n 100 --no-pager"
-    exit 1
-  fi
+# ── 7. verify EACH one actually came up ─────────────────────────────────────
+# Sequential on purpose: every unit gets the full BOOT_TIMEOUT rather than all
+# of them sharing one window, and a failure names its unit — "an agent is
+# down" is not actionable, "lumina-agent@luminastream-2 is down" is.
+for UNIT in $AGENT_UNITS; do
+  say "Waiting for $UNIT to clear its gates"
+  DEADLINE=$((SECONDS + BOOT_TIMEOUT))
+  while [ $SECONDS -lt $DEADLINE ]; do
+    if journalctl --user -u "$UNIT" --since "$SINCE" --no-pager 2>/dev/null \
+        | grep -qF "PREFLIGHT OK"; then break; fi
+    sleep 2
+  done
+
+  LOGS="$(journalctl --user -u "$UNIT" --since "$SINCE" --no-pager 2>/dev/null)"
+  for gate in "${GATES[@]}"; do
+    if printf '%s' "$LOGS" | grep -qF "$gate"; then
+      ok "$UNIT: $gate"
+    else
+      echo "--- journal (tail) ---"; printf '%s\n' "$LOGS" | tail -30; echo "----------------------"
+      bad "$UNIT did not reach: $gate"
+      record "restart-unhealthy" "$SHORT_SHA" "$UNIT missing gate: $gate"
+      echo
+      echo "DEPLOY FAILED AFTER RESTART — $UNIT may be down."
+      echo "  systemctl --user status $UNIT"
+      echo "  journalctl --user -u $UNIT -n 100 --no-pager"
+      exit 1
+    fi
+  done
 done
 
 # ── 8. keep the last few releases, drop the rest ────────────────────────────
@@ -289,13 +316,16 @@ done
 # one too, and a `pgrep -fc` with no match prints 0 AND exits 1, so a naive
 # `|| echo 0` yields "0\n0" and the numeric test silently misfires. Identify
 # the service's own process by PID and exclude preflights explicitly.
-MAIN_PID="$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null)"
-MAIN_PID="${MAIN_PID:-0}"
+MAIN_PIDS=" "
+for UNIT in $AGENT_UNITS; do
+  _pid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null)"
+  MAIN_PIDS="$MAIN_PIDS${_pid:-0} "
+done
 STRAYS=""
 while read -r pid rest; do
   [ -z "${pid:-}" ] && continue
   case "$rest" in *echo-preflight*) continue ;; esac   # our own preflight
-  [ "$pid" = "$MAIN_PID" ] && continue                 # the service itself
+  case "$MAIN_PIDS" in *" $pid "*) continue ;; esac    # one of our units
   STRAYS="$STRAYS $pid"
 done <<STRAY_EOF
 $(pgrep -af 'convert_agent\.py' 2>/dev/null)
