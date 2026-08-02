@@ -144,8 +144,10 @@ same span, so a slot and the credential that can occupy it expire together —
 which is exactly why no heartbeat is needed to keep a session alive. It is
 hard-capped by the 6h LiveKit ceiling in `livekit.js`.
 
-`MAX_CONCURRENT_SESSIONS` (default **1**) is the truth today: one agent, one
-room. P1c measures the real capacity constant on the VPS. Both variables are
+`MAX_CONCURRENT_SESSIONS` (default **1** — the safe floor; production sets the
+real number, **2** since 2 Aug 2026) is bounded by the measured constant:
+~350 MiB per agent ⇒ ~19 RAM-bound on the current box, held at ≤6 until CPU
+under concurrent load is measured (`ROADMAP.md` §P1). Both variables are
 parsed **strictly** — a malformed value fails the request with a 500, never a
 silent default, the same rule `agent/spend_governor.py` proves for audio spend.
 

@@ -92,9 +92,9 @@ admin-password gate. **P1c** puts an agent behind each session on the VPS and
 measures the capacity constant.
 
 - `POST /api/session/create` in the Worker: allocates a room, an identity, and an
-  agent, and returns a scoped LiveKit grant. **Shipped in P1a** — the agent half
-  arrives with P1c; until then the registry counts sessions against
-  `MAX_CONCURRENT_SESSIONS`, which is **1**, the honest truth today.
+  agent, and returns a scoped LiveKit grant. **Shipped in P1a**; the agent half
+  landed with P1c on 2 Aug 2026 — two agents (systemd template
+  `lumina-agent@<room>`), pool of two rooms, capacity **2**.
 - A Durable Object ledger — the Worker previously had **zero** storage bindings.
   This is the project's first server-side storage, but it is **not** the
   database: a Durable Object here holds coordination state — which rooms exist,
@@ -288,9 +288,15 @@ itself. The pin bounds the constant; the comparison is the duration detector.
 Neither is redundant, and only the comparison catches cost that tracks elapsed
 time.
 
-- Agent-per-session on the VPS, supervised, with a measured **capacity constant**
-  (concurrent rooms per box — never yet measured; each agent loads its own Silero
-  ONNX model, which dominates per-session memory).
+- Agent-per-room on the VPS, supervised — **done 2 Aug 2026**: systemd template
+  unit `lumina-agent@<room>`, deploys restart and health-gate every instance,
+  pool of two rooms live. And the **capacity constant, measured for the first
+  time** (7.8 GiB / 4-core box): **~350 MiB RSS per agent** (325–338 MiB
+  observed, Silero dominating), ~3 % lifetime-average CPU each ⇒ **⌊6963/350⌋ =
+  19 agents RAM-bound**. Caveat recorded, not glossed: `ps %cpu` is a lifetime
+  average, so CPU under several *simultaneous conversations* is unmeasured —
+  **hold the pool at ≤ 6** until that is measured with `top` during a
+  two-conversation drill. Floored, never rounded.
 - Rate limiting and caching on every new endpoint.
 - Retires: the shared `luminastream-test` room, the `agent_busy` state, and the
   admin-password gate on the lens.
