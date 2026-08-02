@@ -8,8 +8,8 @@ import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useMicLevel } from '@/hooks/useMicLevel';
 import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
-import { getSessionIdentity } from '@/lib/sessionIdentity';
-import { mintViaServer } from '@/lib/serverMint';
+import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
+import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -24,10 +24,10 @@ import { mintViaServer } from '@/lib/serverMint';
 // lensState.js, and latency is the agent's own measurement. When the agent has
 // not spoken, this page says so rather than guessing.
 
-// The room the VPS agent joins by default (convert_agent.py DEFAULT_ROOM).
-// Overridable at build time for a second concurrent session; per-session rooms
-// arrive with /api/session/create, which retires this constant.
-const ROOM = import.meta.env?.VITE_LIVEKIT_ROOM || 'luminastream-test';
+// There is no room constant here any more. The server allocates one — from a
+// pool of rooms an agent is actually serving — along with an identity that
+// cannot collide and a grant scoped to both. A room chosen by the client was
+// only ever workable while exactly one room existed.
 
 const TONE = {
   idle: { color: '#64748B', glow: 'rgba(100,116,139,0.18)' },
@@ -174,15 +174,29 @@ export default function Studio() {
   // never holds a LiveKit API secret, before or after that change.
   const apiConfigured = Boolean(API_BASE);
   const [accessKey, setAccessKey] = useState('');
-  const [adminToken, setAdminToken] = useState('');
-  const [unlocking, setUnlocking] = useState(false);
-  const [unlockError, setUnlockError] = useState('');
 
-  // Lazy initializer so sessionStorage is read once, not on every render. A
-  // literal shared identity is what made a second listener evict the first.
-  const [identity] = useState(() => getSessionIdentity('studio'));
+  // Every decision about WHEN a slot is claimed and released lives in
+  // sessionHolder.js — including the races that made this untestable while it
+  // lived here (AGENTS.md: "anything with real logic belongs in src/lib/,
+  // because this is the part that can be tested without a browser"). What
+  // remains in this component is publishing that state into React and
+  // rendering it.
+  const [holder] = useState(() =>
+    createSessionHolder({
+      open: openSession,
+      end: endSession,
+      beacon: releaseOnUnload,
+      onChange: (next) => setHeld(next),
+    }),
+  );
+  const [held, setHeld] = useState(() => holder.snapshot());
+
+  const { adminToken, allocation, error: unlockError } = held;
+  const unlocking = held.phase === PHASE.starting;
 
   const [lensMode, setLensMode] = useState('converted');
+  // Set when credentials arrive, cleared when the connect fires. See `start`.
+  const [pendingConnect, setPendingConnect] = useState(false);
 
   const isDisconnected = connectionState === ConnectionState.Disconnected;
   // Not the same question as "not disconnected". The room object exists during
@@ -257,37 +271,76 @@ export default function Studio() {
   // animation frame loop to produce a number nothing reads.
   useMicLevel(reduceMotion ? null : micTrack, paintLevel);
 
-  const unlock = async (event) => {
+  // Claim a slot and connect.
+  //
+  // The old flow unlocked and connected in one step because the room was a
+  // constant — unlocking was only ever "fetch a token for the room we already
+  // knew". Now the server owns the room, so this is a claim on a scarce thing
+  // and it happens when the person actually wants to talk.
+  //
+  // openSession applies ONE deadline across the whole exchange
+  // (sessionClient.DEFAULT_TIMEOUT_MS). Without it a hung request would never
+  // settle, `finally` would never run, and the only control on the page would
+  // sit disabled with nothing to show.
+  // Claim a slot and connect.
+  //
+  // The old flow unlocked and connected in one step because the room was a
+  // constant. Now the server owns the room, so this is a claim on a scarce
+  // thing and it happens when the person actually wants to talk.
+  const start = async (event) => {
     event?.preventDefault();
-    if (unlocking) return;
-    setUnlocking(true);
-    setUnlockError('');
-    try {
-      const {
-        token: lkToken,
-        url: lkUrl,
-        adminToken: session,
-        // mintViaServer applies one deadline across the whole exchange
-        // (serverMint.DEFAULT_TIMEOUT_MS). Without it a hung request would
-        // never settle, `finally` would never run, and this form — the only
-        // way into the lens — would sit disabled with nothing to show.
-      } = await mintViaServer({
-        password: accessKey,
-        adminToken,
-        room: ROOM,
-        identity,
-      });
-      setAdminToken(session);
-      setUrl(lkUrl);
-      setToken(lkToken);
-      setAccessKey(''); // exchanged — no reason to keep it in memory
-    } catch (err) {
-      if (err.status === 401) setAdminToken('');
-      setUnlockError(err.message || 'could not unlock');
-    } finally {
-      setUnlocking(false);
-    }
+    await holder.start({ password: accessKey });
+    setAccessKey(''); // exchanged — no reason to keep it in memory
   };
+
+  const stop = useCallback(async () => {
+    setPendingConnect(false);
+    try {
+      await disconnect();
+    } finally {
+      // The slot is the scarce thing, and tearing down the local room is not.
+      // A failed disconnect must not keep a room held until its lease expires
+      // — with one agent, that is everyone locked out for two hours because a
+      // WebSocket close threw.
+      await holder.stop();
+    }
+  }, [disconnect, holder]);
+
+  // Publish the holder's credentials into the hook, then connect.
+  //
+  // connect() cannot be called from the click handler: it reads the url and
+  // token from refs that only update on render. Guarded on both so a partial
+  // update never dials with one empty, which LiveKit reports as a generic
+  // connection failure.
+  useEffect(() => {
+    setUrl(held.url);
+    setToken(held.token);
+    if (held.phase === PHASE.held && held.url && held.token) setPendingConnect(true);
+  }, [held]);
+
+  useEffect(() => {
+    if (!pendingConnect || !url || !token) return;
+    setPendingConnect(false);
+    connect();
+  }, [pendingConnect, url, token, connect]);
+
+  // Browser lifecycle in, holder decisions out. `pagehide` rather than
+  // `unload`: unload is unreliable and blocks the back/forward cache. The
+  // unmount case is the in-app navigation pagehide never sees — following the
+  // link to /livekit-test does not touch the document.
+  useEffect(() => {
+    const hide = () => holder.hide();
+    const show = (event) => {
+      if (event?.persisted) holder.restored();
+    };
+    globalThis.addEventListener?.('pagehide', hide);
+    globalThis.addEventListener?.('pageshow', show);
+    return () => {
+      globalThis.removeEventListener?.('pagehide', hide);
+      globalThis.removeEventListener?.('pageshow', show);
+      holder.dispose();
+    };
+  }, [holder]);
 
   // The agent is the source of truth for mode, so the selector only ever
   // REQUESTS. While connected, a click goes on the wire; while disconnected it
@@ -461,7 +514,9 @@ export default function Studio() {
         <div className="mt-10 w-full max-w-sm">
           {hasCredentials ? (
             <button
-              onClick={isDisconnected ? connect : disconnect}
+              // Start reconnects with the slot we already hold; Stop gives it
+              // back. There is no path here that connects without a slot.
+              onClick={isDisconnected ? () => setPendingConnect(true) : stop}
               disabled={connectionState === ConnectionState.Connecting}
               className="w-full flex items-center justify-center gap-2.5 rounded-full py-3.5 text-[11px] tracking-[0.2em] uppercase transition-all disabled:opacity-50"
               style={
@@ -477,8 +532,36 @@ export default function Studio() {
               )}
               {isDisconnected ? 'Start the lens' : 'Stop'}
             </button>
+          ) : adminToken ? (
+            /* Unlocked, holding no slot — after a Stop, or after a refusal.
+               The access key has already been exchanged, so asking for it
+               again would be theatre. One button, and it is the only one that
+               can claim a slot. */
+            <div className="flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={start}
+                disabled={unlocking}
+                className="w-full flex items-center justify-center gap-2.5 rounded-full py-3.5 text-[11px] tracking-[0.2em] uppercase bg-white text-[#08080F] disabled:opacity-50 transition-opacity"
+              >
+                {unlocking ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Power size={13} />
+                )}
+                Start the lens
+              </button>
+              {unlockError && (
+                <p
+                  role="alert"
+                  className="flex items-center justify-center gap-1.5 text-[11px] text-[#EF4444]"
+                >
+                  <AlertTriangle size={11} /> {unlockError}
+                </p>
+              )}
+            </div>
           ) : apiConfigured ? (
-            <form onSubmit={unlock} className="flex flex-col gap-2.5">
+            <form onSubmit={start} className="flex flex-col gap-2.5">
               <label
                 htmlFor="access-key"
                 className="text-[9px] tracking-[0.2em] uppercase text-[#4A5568] text-center"
@@ -508,7 +591,7 @@ export default function Studio() {
                   className="flex items-center gap-2 rounded-full px-6 text-[11px] tracking-[0.16em] uppercase bg-white text-[#08080F] disabled:opacity-40 transition-opacity"
                 >
                   {unlocking ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-                  Unlock
+                  Start
                 </button>
               </div>
               {/* role="alert" rather than plain text: this form is the only
@@ -574,9 +657,19 @@ export default function Studio() {
         </AnimatePresence>
       </main>
 
+      {/* Both values are the SERVER's now, so the footer reports what was
+          allocated rather than what this tab decided. Blank until a slot is
+          held — showing a stale room after Stop would name one somebody else
+          may already be using. */}
       <footer className="relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide">
-        Session <span className="font-mono text-[#4A5568]">{identity}</span> · room{' '}
-        <span className="font-mono text-[#4A5568]">{ROOM}</span>
+        {allocation ? (
+          <>
+            Session <span className="font-mono text-[#4A5568]">{allocation.identity}</span> · room{' '}
+            <span className="font-mono text-[#4A5568]">{allocation.room}</span>
+          </>
+        ) : (
+          <>No session — the server allocates a room when the lens starts</>
+        )}
       </footer>
     </div>
   );

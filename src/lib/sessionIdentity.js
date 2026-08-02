@@ -15,8 +15,13 @@
 // This does NOT make the room multi-user. The agent adopts exactly one
 // speaker (convert_agent.py `_maybe_adopt`); a second participant is
 // ignored and hears nothing back. That limit is real and is surfaced in the
-// UI via the agent's `agent_busy` broadcast. Room-per-session is the actual
-// fix and lands with /api/session/create.
+// UI via the agent's `agent_busy` broadcast.
+//
+// **The lens no longer uses this.** `/api/session/create` allocates the room
+// AND the identity server-side, which removes the guesswork entirely: the
+// server knows what is held, so it never has to infer it from browser storage.
+// This module is now the console's (`/livekit-test`) — deliberately, because a
+// drill must not depend on the session layer being up.
 
 const STORAGE_KEY = 'luminastream_identity';
 const CLAIM_KEY = 'luminastream_identity_claims';

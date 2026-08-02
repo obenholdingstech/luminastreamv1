@@ -46,9 +46,20 @@ To run against a deployed Worker:
 VITE_API_BASE=https://<your-worker-host> npm run dev
 ```
 
-`VITE_LIVEKIT_ROOM` overrides the room the lens joins (default
-`luminastream-test`, matching the agent's own default). One agent serves one
-speaker; a second concurrent session needs its own room **and** its own agent.
+**The lens no longer chooses its room.** `POST /api/session/create` allocates
+one from a pool of rooms an agent is actually serving (`SESSION_ROOMS` in
+`workers/api/wrangler.jsonc`), together with a non-colliding identity and a
+grant scoped to both — and refuses with a reason when nothing is free, rather
+than admitting a second speaker into a room where the agent is already busy.
+`VITE_LIVEKIT_ROOM` is gone with it.
+
+The slot is held from **Start** to **Stop**, not from unlock, and is released on
+Stop, on unmount, and on `pagehide`. A slot nobody releases stays held until its
+lease expires (2h), which on a one-agent system means one closed tab locks
+everyone else out for the afternoon.
+
+`/livekit-test` still picks its own room and identity by hand — it is the
+instrument panel, and a drill must not depend on the session layer being up.
 
 ## Verification
 
