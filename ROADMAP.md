@@ -71,11 +71,12 @@ Clearing the debt that would otherwise be paid at a worse time.
 - ✅ Pull-based blue/green agent deploy on systemd *(#24)*
 - ✅ The lens on `/`, Base44 excised — 107 files, 33 dependencies *(#25)*
 - ✅ **This document**, and the doctrine below *(#26)*
-- ⬜ **CI hardening.** The deploy workflow currently runs **no tests and no
-  lint**. Nine rounds of external review on #25 found twenty-five issues that a
-  pipeline should have been the first to see.
-- ⬜ Owed micro-fixes: Mac venv → Python 3.10+, agent SIGINT exit code, and the
-  **fail-open rate limiter** at `workers/api/src/index.js:47`.
+- ✅ **CI hardening** *(#27)* — nothing ran on a pull request at all. Four jobs
+  now do, and the first run caught a test that only passed on machines
+  configured like mine.
+- ✅ Owed micro-fixes *(#28)* — the rate limiter now **fails closed**, the agent
+  venv floor is Python 3.10+ for a patched `aiohttp`, and shutdown has the
+  regression test it never had.
 
 ### P1 — The session layer *(~1½ weeks)* — **this is where audio becomes multi-user**
 
@@ -375,9 +376,12 @@ The dead Base44 `createSession` returned the raw Decart account key to the
 client. Named permanently as the anti-pattern. *(31 Jul)*
 
 **26. Fail closed.**
-`isRateLimited` fails *open* when its binding is missing — so a deploy that drops
-the `ratelimits` block turns the admin-password oracle unthrottled, and nothing
-errors. Every guard must fail toward refusal. *(31 Jul, owed in P0)*
+`isRateLimited` failed *open* when its binding was missing, so a deploy that
+dropped the `ratelimits` block would have turned the admin-password oracle
+unthrottled with nothing anywhere reporting an error. Every guard must fail
+toward refusal — and a broken guard must be distinguishable in the logs from a
+guard doing its job, which is why a missing binding answers 503 and a real
+throttle answers 429. *(31 Jul, fixed in #28)*
 
 **27. A check whose precondition failed has not passed.**
 The pre-merge parentage check ran `git log main..HEAD` against a possibly stale

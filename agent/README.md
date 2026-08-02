@@ -23,7 +23,15 @@ Two agents:
 
 ## Prerequisites
 
-- Python 3.9+ (macOS system Python works)
+- **Python 3.10 or newer.** Not 3.9, and macOS's system Python (3.9.6) is
+  therefore not enough — `brew install python@3.12` or equivalent.
+
+  This is a security floor, not a style preference. `requirements.txt` pins
+  `aiohttp>=3.14.1` on 3.10+ and falls back to `3.13.5` below it, because ten
+  advisories against 3.13.5 are first patched in 3.14.x — which **requires**
+  3.10. On a 3.9 interpreter the patched version cannot be installed at all, so
+  the marker silently resolves to the vulnerable one. The VPS runs 3.12; a Mac
+  harness on 3.9 is testing a dependency set production does not have.
 - `secrets.env` at the **repo root** with `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
   `LIVEKIT_API_SECRET` (the agent mints its own token server-side — it never
   uses a pasted/hardcoded token)
@@ -32,9 +40,15 @@ Two agents:
 
 ```bash
 cd agent
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
+python3.12 -m venv .venv          # NOT `python3` on macOS — that is 3.9
+./.venv/bin/python -m pip install -r requirements.txt
 ```
+
+`python -m pip`, never `./.venv/bin/pip`. That shim is a `#!/bin/sh`
+trampoline holding an **absolute** path to the interpreter it was created
+with, so a repo that has been moved, copied or synced installs into a
+different site-packages entirely — and reports success while doing it. This
+project lost a session to exactly that (`ROADMAP.md` §4, doctrine 13).
 
 ## Run the echo agent (Stage 1 reference)
 
@@ -439,7 +453,7 @@ Two things to know about those numbers before planning against them:
 ```bash
 # 1. Pull and install
 cd ~/luminastreamv1 && git pull
-cd agent && ./.venv/bin/pip install -r requirements.txt
+cd agent && ./.venv/bin/python -m pip install -r requirements.txt
 
 # 2. Add the TWO new secrets to the repo-root secrets.env (hand-typed;
 #    never committed — secrets.env is gitignored)
