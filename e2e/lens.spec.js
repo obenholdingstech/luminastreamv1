@@ -156,24 +156,34 @@ test('a busy lens says so in words — and recovers when the holder releases', a
   // never quietly turns this into a test of nothing.
   const cap = await capacity(token);
   const held = [];
-  for (let i = 0; i < cap.capacity; i += 1) {
-    const h = await post('/api/session/create', token);
-    expect(h.status, `filling slot ${i + 1} of ${cap.capacity}`).toBe(200);
-    held.push(h.body);
+  try {
+    for (let i = 0; i < cap.capacity; i += 1) {
+      const h = await post('/api/session/create', token);
+      expect(h.status, `filling slot ${i + 1} of ${cap.capacity}`).toBe(200);
+      held.push(h.body);
+    }
+
+    await unlockAndStart(page);
+    await expect(page.getByText(/the lens is busy right now/)).toBeVisible({ timeout: 15_000 });
+
+    // One person leaves; ours retries with ONE click — the admin session
+    // survived the refusal, so no password re-entry.
+    await post('/api/session/end', token, {
+      sessionId: held[0].sessionId,
+      endToken: held[0].endToken,
+    });
+    await page.getByRole('button', { name: 'Start the lens' }).click();
+    await expectHolding(page);
+    await page.getByRole('button', { name: 'Stop' }).click();
+  } finally {
+    // EVERY held slot goes back, assertion failure or not. A crashed run must
+    // not strand real capacity behind test sessions until the lease expires —
+    // ending an already-ended session is a designed no-op, so this is safe to
+    // run unconditionally.
+    for (const h of held) {
+      await post('/api/session/end', token, { sessionId: h.sessionId, endToken: h.endToken });
+    }
   }
-
-  await unlockAndStart(page);
-  await expect(page.getByText(/the lens is busy right now/)).toBeVisible({ timeout: 15_000 });
-
-  // One person leaves; ours retries with ONE click — the admin session
-  // survived the refusal, so no password re-entry.
-  await post('/api/session/end', token, {
-    sessionId: held[0].sessionId,
-    endToken: held[0].endToken,
-  });
-  await page.getByRole('button', { name: 'Start the lens' }).click();
-  await expectHolding(page);
-  await page.getByRole('button', { name: 'Stop' }).click();
 });
 
 test('TWO people at once — the first multi-user moment, proven', async ({ browser }) => {
@@ -190,9 +200,12 @@ test('TWO people at once — the first multi-user moment, proven', async ({ brow
   const A = await ctxA.newPage();
   const B = await ctxB.newPage();
   try {
-    await unlockAndStart(A);
+    // CONCURRENT, not sequential — this is the Durable Object's entire reason
+    // to exist: two Starts in the same instant must serialize inside the DO
+    // and come out holding two DIFFERENT rooms. Awaiting A before starting B
+    // would never exercise the overlap.
+    await Promise.all([unlockAndStart(A), unlockAndStart(B)]);
     await expectHolding(A);
-    await unlockAndStart(B);
     await expectHolding(B);
 
     const roomOf = async (p) =>
@@ -211,8 +224,21 @@ test('TWO people at once — the first multi-user moment, proven', async ({ brow
       .poll(async () => (await capacity(token)).live, { intervals: [1000, 2000], timeout: 15_000 })
       .toBe(0);
   } finally {
+    // Stop is attempted while each document is still ALIVE. Closing a context
+    // is not guaranteed to fire pagehide — our own leave-page test documents
+    // exactly that — so a mid-test assertion failure must not strand two
+    // slots for the lease. The clicks are best-effort (the happy path already
+    // stopped both, so the buttons may be gone); the reset is the backstop
+    // that makes "this test leaked" impossible by construction.
+    for (const p of [A, B]) {
+      await p
+        .getByRole('button', { name: 'Stop' })
+        .click({ timeout: 2000 })
+        .catch(() => {});
+    }
     await ctxA.close();
     await ctxB.close();
+    await post('/api/session/reset', token);
   }
 });
 
