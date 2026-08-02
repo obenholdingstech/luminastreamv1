@@ -50,7 +50,7 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
 | Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
-| Cloudflare plan | **Workers Free** (2 Aug 2026), which includes SQLite-backed Durable Objects within daily quotas. P1's **O(1) invariant** protects both: on Free it keeps us under a quota whose breach *fails operations*, and on Paid it keeps the bill flat. |
+| Cloudflare plan | **Workers Free** (2 Aug 2026), which includes SQLite-backed Durable Objects within daily quotas. P1's **O(1) invariant** protects both: on Free it keeps us under a quota whose breach *fails operations*, and on Paid it keeps cost proportional to sessions **served** rather than to hours **streamed**. It does not make usage free — cost still grows with session count, and both quotas can still be exceeded at volume. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
@@ -214,9 +214,13 @@ asserts:
 | **Short vs long session** | counts **identical** — a 1-minute and a 10-hour session must cost the same |
 | N concurrent sessions | **≤ N × budget** — linear in sessions is expected and fine |
 
-The third row is the invariant itself, and the only one that catches a poll
-being added later. The others bound the constant; that one proves it *is* a
-constant.
+The rows do different jobs, and it matters which. The first two **bound the
+constant** — a poll heavy enough to push past 3 requests trips them. The third
+is the **duration-scaling detector**, and it is the one that survives a poll
+being added *within* the budget: a request that fires twice in a short session
+and two hundred times in a long one keeps every per-case count plausible while
+breaking the invariant outright. Only comparing a short session against a long
+one convicts that.
 
 Discrimination-tested like everything else: adding a poll to the session path,
 or converting the reaper to a fixed interval, must turn that row red.
