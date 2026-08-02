@@ -270,6 +270,7 @@ export class SessionRegistry {
     if (pathname === '/create') return this.#create(config);
     if (pathname === '/capacity') return this.#capacity(config);
     if (pathname === '/end') return this.#end(await this.#readJson(request));
+    if (pathname === '/reset') return this.#reset();
     return json({ ok: false, error: 'not_found' }, 404);
   }
 
@@ -433,6 +434,32 @@ export class SessionRegistry {
       // not because we ran out of agents.
       pool: config.rooms.length,
     });
+  }
+
+  /**
+   * Release EVERY slot, held or not. The operator escape hatch.
+   *
+   * This exists because the first live drill hit a slot that was held with no
+   * client left to release it, and there was no way to clear it short of
+   * waiting out the two-hour lease. A lease is a backstop, not an operation —
+   * a system whose only recovery is "wait until this afternoon" is missing a
+   * tool, and shipping the registry without one was an omission.
+   *
+   * Deliberately blunt. It does not try to distinguish a stuck slot from a live
+   * one, because from here they are indistinguishable: a held record with time
+   * left on it looks identical whether someone is speaking into it or the tab
+   * closed an hour ago. So this can evict a real session, and the caller has to
+   * be someone entitled to make that call.
+   */
+  async #reset() {
+    const stored = await this.storage.list({ prefix: KEY_PREFIX });
+    const keys = [...stored.keys()];
+    for (let i = 0; i < keys.length; i += MAX_DELETE_KEYS) {
+      await this.storage.delete(keys.slice(i, i + MAX_DELETE_KEYS));
+    }
+    // Nothing is pending any more, so the reaper has nothing to wake for.
+    if ((await this.storage.getAlarm()) !== null) await this.storage.deleteAlarm();
+    return json({ ok: true, released: keys.length });
   }
 
   async #end(body) {

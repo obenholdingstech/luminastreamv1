@@ -331,6 +331,33 @@ async function handleSessionEnd(request, env, origin) {
   return json({ ok: true, ended: ended.ended === true, live: ended.live }, { origin });
 }
 
+// The operator escape hatch. Releases EVERY slot.
+//
+// The registry shipped without one, and the first live drill found the cost of
+// that: a slot held with no client left to release it, and no way to clear it
+// short of waiting out the two-hour lease. A lease is a backstop, not an
+// operation.
+//
+// Blunt on purpose — it cannot tell a stuck slot from a live one, because from
+// the server they are identical. Admin-gated and rate-limited like everything
+// else here; the caller is someone entitled to evict a session.
+async function handleSessionReset(request, env, origin) {
+  const refusal = await sessionGate(request, env, origin);
+  if (refusal) return refusal;
+
+  const res = await callRegistry(env, '/reset');
+  if (!res) return registryUnavailable(origin);
+  const reset = await res.json().catch(() => null);
+  if (!reset?.ok) {
+    return (
+      registryRefusal(reset, origin) ??
+      json({ ok: false, error: 'session_reset_failed' }, { status: 502, origin })
+    );
+  }
+  console.warn('session registry reset — released', reset.released, 'slot(s)');
+  return json({ ok: true, released: reset.released }, { origin });
+}
+
 async function handleSessionCapacity(request, env, origin) {
   const refusal = await sessionGate(request, env, origin);
   if (refusal) return refusal;
@@ -409,6 +436,13 @@ export default {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       return handleSessionEnd(request, env, origin);
+    }
+
+    if (pathname === '/api/session/reset') {
+      if (request.method !== 'POST') {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return handleSessionReset(request, env, origin);
     }
 
     if (pathname === '/api/session/capacity') {

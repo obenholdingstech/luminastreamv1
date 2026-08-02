@@ -531,3 +531,50 @@ test('EVERY wrangler environment binds SessionRegistry and migrates it', async (
     );
   }
 });
+
+// ─── the operator escape hatch ─────────────────────────────────────────────
+
+test('reset releases every slot and clears the alarm', async () => {
+  // Shipped after the first live drill found a slot held with no client left
+  // to release it, and no recovery short of waiting out the two-hour lease.
+  const h = harness();
+  await create(h);
+  await create(h);
+  assert.equal((await capacity(h)).body.live, 2);
+  assert.notEqual(h.pendingAlarm(), null);
+
+  const { status, body } = await call(h, '/reset');
+  assert.equal(status, 200);
+  assert.equal(body.released, 2);
+  assert.equal((await capacity(h)).body.live, 0);
+  assert.equal(h.stored().size, 0);
+  assert.equal(h.pendingAlarm(), null, 'nothing is pending, so nothing may wake the reaper');
+});
+
+test('reset on an empty registry is a no-op, not an error', async () => {
+  const h = harness();
+  const { status, body } = await call(h, '/reset');
+  assert.equal(status, 200);
+  assert.equal(body.released, 0);
+});
+
+test('a slot is reusable immediately after a reset', async () => {
+  // The whole point: the lens works again without waiting for the lease.
+  const h = harness({ SESSION_ROOMS: 'only-room', MAX_CONCURRENT_SESSIONS: '1' });
+  const stuck = (await create(h)).body;
+  assert.equal((await create(h)).status, 503, 'held');
+
+  await call(h, '/reset');
+  const fresh = (await create(h)).body;
+  assert.equal(fresh.session.room, stuck.session.room, 'the same room, handed out again');
+  assert.notEqual(fresh.session.id, stuck.session.id);
+});
+
+test('reset clears more than 128 slots without stranding any', async () => {
+  const rooms = Array.from({ length: 200 }, (_, i) => `room-${i}`);
+  const h = harness({ SESSION_ROOMS: rooms.join(','), MAX_CONCURRENT_SESSIONS: '200' });
+  for (let i = 0; i < 200; i += 1) await create(h);
+
+  assert.equal((await call(h, '/reset')).body.released, 200);
+  assert.equal(h.stored().size, 0);
+});
