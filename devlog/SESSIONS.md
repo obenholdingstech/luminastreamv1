@@ -57,7 +57,7 @@ harness only ever passed on machines configured like mine**, and had been
 reporting 40/40 since #24. A blanket `2>/dev/null` I wrote then hid the reason,
 surfacing it as a mismatched assertion rather than "the fixture did not build".
 
-#28 repeated the shape: the shutdown harness printed READY *before*
+PR #28 repeated the shape: the shutdown harness printed READY *before*
 `wait_for_stop` installed its handlers, so a signal arriving in that window got
 the interpreter's default disposition. macOS lost that race rarely enough never
 to fail; Linux lost it every time. Fixed with `loop.call_soon` — ordering, not a
