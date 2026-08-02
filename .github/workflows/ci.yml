@@ -128,3 +128,18 @@ jobs:
           bash -n scripts/deploy-agent.sh
           bash -n scripts/test-deploy-agent.sh
           bash -n scripts/check-live.sh
+
+      # A line beginning `#24` is an h1 with no space, not a reference to PR 24
+      # (markdownlint MD018). Caught by review twice in two days — once in the
+      # session log, once in the roadmap — which is the point at which a habit
+      # stops being worth relying on and becomes worth checking. Narrow on
+      # purpose: this is the one markdown mistake this project actually makes,
+      # and a full markdownlint would arrive with a backlog nobody asked for.
+      - name: Markdown — no PR reference parsed as a heading
+        run: |
+          if git grep -n --untracked -E '^#[0-9]' -- '*.md' ':!node_modules'; then
+            echo "::error::A markdown line starts with '#<digit>' — that renders as a heading."
+            echo "Write 'PR #24' or '(#24)' instead of starting the line with '#24'."
+            exit 1
+          fi
+          echo "no PR references parsed as headings"

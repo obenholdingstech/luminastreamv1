@@ -246,7 +246,7 @@ sessions are live? Which box is near capacity? What did the last deploy do?
 None of that needs accounts or billing, and all of it becomes necessary the
 moment P1 makes more than one session possible. It rides along with P1 and P9
 rather than waiting here. The agent heartbeat and status surface deferred out of
-#24 is the first piece.
+PR #24 is the first piece.
 
 **The admin system proper — here, because it cannot exist sooner.** It reads
 identity (P4) and money (P5), so it is genuinely gated on both. A business
@@ -264,6 +264,14 @@ What that usually covers, offered as a starting point rather than a decision —
 - **Truth:** COGS per session against what was charged. This is the number that
   tells you whether the business works, and nothing else in the system reports
   it.
+
+  **The metering it reads is not P9's, and must not be.** Per-session cost is
+  emitted at session end from **P2 onward** — the moment there is vendor spend
+  worth attributing — and **P5 requires it anyway**, because a wallet cannot be
+  debited correctly against a cost nobody recorded. P9's work is aggregating and
+  reporting that stream at scale, not producing it. If the emission slipped to
+  P9, P8 would depend on a phase that comes after it, which is the shape of
+  dependency that gets discovered halfway through a build.
 - **Safety:** an **audit log** — who did what, to whose account, when. An admin
   tool without one is a liability rather than a control, because the first time
   something is disputed there is no record of who changed it.
@@ -279,9 +287,14 @@ not a weekend: budget it like a feature.
 
 ### P9 — Scale & harden *(ongoing)*
 
-Load balancing across boxes, orchestration, caching layers, observability, and
-per-session COGS metering. Some of this lands earlier where it is cheap; the
-deliberate work happens here.
+Load balancing across boxes, orchestration, caching layers, and observability.
+
+**COGS aggregation and reporting**, not COGS *emission* — the per-session cost
+record is written from P2 onward and consumed by P5's wallet and P8's admin
+system, both of which come first. What happens here is turning that stream into
+something you can query across thousands of sessions.
+
+Some of this lands earlier where it is cheap; the deliberate work happens here.
 
 ---
 
