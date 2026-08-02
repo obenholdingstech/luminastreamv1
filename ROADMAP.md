@@ -1,6 +1,6 @@
 # LuminaStream — Roadmap & Canon
 
-**v2.2 · 1 August 2026**
+**v2.3 · 2 August 2026**
 
 This is the canonical description of what LuminaStream is, what state it is in,
 and what order the remaining work happens in. It exists because the previous
@@ -64,7 +64,7 @@ Each phase is gated on the one before it. Where a phase has a hard external
 dependency with lead time, that is called out — those start early or they become
 the critical path.
 
-### P0 — Foundations *(in progress, ~1 week)*
+### P0 — Foundations ✅ *(closed 2 Aug 2026)*
 
 Clearing the debt that would otherwise be paid at a worse time.
 
@@ -78,7 +78,7 @@ Clearing the debt that would otherwise be paid at a worse time.
   venv floor is Python 3.10+ for a patched `aiohttp`, and shutdown has the
   regression test it never had.
 
-### P1 — The session layer *(~1½ weeks)* — **this is where audio becomes multi-user**
+### P1 — The session layer *(~1½ weeks)* ⟵ **NEXT** — **this is where audio becomes multi-user**
 
 Today one agent serves one speaker in one fixed room. A second person is ignored
 and told so. That is the single largest functional limit in the product.
@@ -86,6 +86,11 @@ and told so. That is the single largest functional limit in the product.
 - `POST /api/session/create` in the Worker: allocates a room, an identity, and an
   agent, and returns a scoped LiveKit grant.
 - A Durable Object ledger — the Worker currently has **zero** storage bindings.
+  This is the project's first server-side storage, but it is **not** the
+  database: a Durable Object here holds coordination state — which rooms exist,
+  who holds them, how many are live — that must be consistent across
+  simultaneous requests. It is measured in kilobytes and it forgets. The user
+  database, the thing that remembers a person between sessions, is **P4**.
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
@@ -118,8 +123,14 @@ Decart Lucy 2.5 in the browser studio, spend-walled.
 
 ### P4 — Identity & persistence *(~1½ weeks)*
 
-Accounts, voice clones, reference images, session history. The first real
-database. Voice cloning becomes a user-facing flow rather than a dashboard step.
+**This is the database phase.** Accounts, voice clones, reference images,
+session history — the first storage whose job is to remember a person between
+sessions, as opposed to P1's coordination state, which exists to keep concurrent
+requests honest and is allowed to forget. Voice cloning becomes a user-facing
+flow rather than a step someone performs in a vendor dashboard.
+
+Everything downstream waits on this: billing needs an account to charge, and the
+admin system needs a person to look up.
 
 ### P5 — Billing *(~1½ weeks)*
 
@@ -225,11 +236,52 @@ experience pass on the flows a person actually walks through. Scheduled once the
 product surface stops moving — which is after P1, because the session layer
 changes what the lens page even shows.
 
-### P8 — Scale & harden *(ongoing)*
+### P8 — Admin & operations *(scope to be agreed before it starts)*
 
-Load balancing across boxes, orchestration, caching layers, observability, an
-agent heartbeat and status surface, and per-session COGS metering. Some of this
-lands earlier where it is cheap; the deliberate work happens here.
+Two different things wear the word "admin", they have different dependencies,
+and conflating them is how an admin console becomes a six-week surprise.
+
+**Operational visibility — earlier, and cheap.** Is the agent up? How many
+sessions are live? Which box is near capacity? What did the last deploy do?
+None of that needs accounts or billing, and all of it becomes necessary the
+moment P1 makes more than one session possible. It rides along with P1 and P9
+rather than waiting here. The agent heartbeat and status surface deferred out of
+#24 is the first piece.
+
+**The admin system proper — here, because it cannot exist sooner.** It reads
+identity (P4) and money (P5), so it is genuinely gated on both. A business
+system that cannot see who someone is or what they have paid is a dashboard, not
+an admin system.
+
+What that usually covers, offered as a starting point rather than a decision —
+**scope gets agreed with the CEO before any of it is built:**
+
+- **People:** find a user, see their sessions and their spend, suspend or
+  reinstate, handle a "it stopped working" support message with evidence rather
+  than guesswork.
+- **Money:** wallet balances, top-ups, refunds, failed payments, and the
+  subscription state that gates access at all. Every mutation attributable.
+- **Truth:** COGS per session against what was charged. This is the number that
+  tells you whether the business works, and nothing else in the system reports
+  it.
+- **Safety:** an **audit log** — who did what, to whose account, when. An admin
+  tool without one is a liability rather than a control, because the first time
+  something is disputed there is no record of who changed it.
+- **Access:** admin is not one role. "Support can read and refund" and "founder
+  can change limits" are different powers, and the separation is far cheaper to
+  build in than to retrofit.
+
+Two things worth saying now rather than at the door. An admin system is the
+**highest-value target in the product** — it can see everything and change
+anything — so it gets the strictest auth of anything we build, and it is the one
+surface where "fail closed" is not a preference. And it is real product work,
+not a weekend: budget it like a feature.
+
+### P9 — Scale & harden *(ongoing)*
+
+Load balancing across boxes, orchestration, caching layers, observability, and
+per-session COGS metering. Some of this lands earlier where it is cheap; the
+deliberate work happens here.
 
 ---
 
@@ -414,9 +466,10 @@ pasted output.
 
 | | Why it matters |
 |---|---|
-| Start **Apple Developer Program** enrolment | P6's critical path. Lead time is the risk, not the paperwork. |
+| ~~Start **Apple Developer Program** enrolment~~ | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk. |
 | `DECART_API_KEY` via `wrangler secret put` | **Only after** the P2 spend wall is merged and verified. |
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters. |
+| Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
 
 ---
 

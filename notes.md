@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 2 August 2026 — ROADMAP v2.3: admin phase added, storage question answered
+
+- **P8 — Admin & operations** added at the CEO's request, scope deliberately open until we discuss it. Split into two things that get conflated: **operational visibility** (agent up? sessions live? capacity?) which needs no accounts and rides along with P1, and the **admin system proper** which reads identity (P4) and money (P5) and genuinely cannot exist sooner. Sketched what it usually covers — people, money, COGS-vs-charged, **audit log**, and role separation — as a starting point to react to, not a decision. Scale & harden renumbered P8 → P9.
+- **"Is P1 the database stage?" — no, and the roadmap now says so in both places.** P1's Durable Object is the first server-side storage but it holds *coordination* state (which rooms exist, who holds them) measured in kilobytes, and it forgets. **P4 is the database** — the first storage whose job is remembering a person between sessions. Billing and admin both wait on it.
+- **Cloudflare scopes for P1: no change expected.** Durable Object migrations are applied as part of the script deploy, which `Workers Scripts: Edit` already authorises — the token has it. Confirmed at the first staging deploy, not assumed; if it 403s the fix is one checkbox. **SQLite-backed DOs are on the free plan**, so P1 adds no Cloudflare spend.
+- Apple Developer enrolment **started 2 Aug** — struck from the open-actions table. P0 marked closed; P1 marked NEXT.
+
 ## 2 August 2026 — P0 CLOSED (#26, #27, #28 merged)
 
 - **`ROADMAP.md` is canon** — lens paragraph, real state, P0–P8, and 29 doctrine entries reconstructed from this repo's own failure narratives. **P7 is the CEO's design session**: its own brief, after P1, system debt named (hardcoded hex, unset font tokens, framer-motion in one place).
