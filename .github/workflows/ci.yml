@@ -128,3 +128,32 @@ jobs:
           bash -n scripts/deploy-agent.sh
           bash -n scripts/test-deploy-agent.sh
           bash -n scripts/check-live.sh
+
+      # A line beginning `#24` is an h1 with no space, not a reference to PR 24
+      # (markdownlint MD018). Caught by review twice in two days — once in the
+      # session log, once in the roadmap — which is the point at which a habit
+      # stops being worth relying on and becomes worth checking. Narrow on
+      # purpose: this is the one markdown mistake this project actually makes,
+      # and a full markdownlint would arrive with a backlog nobody asked for.
+      - name: Markdown — no PR reference parsed as a heading
+        run: |
+          # git grep exits 0 for "found", 1 for "nothing found", and 2+ for a
+          # SCAN ERROR — a bad pathspec, a broken index. Treating every non-zero
+          # as "clean" would make this check fail open, which is the one thing a
+          # guard may never do (ROADMAP.md §4, doctrine 26). The status is
+          # captured and the three cases handled separately.
+          set +e
+          hits="$(git grep -n --untracked -E '^#[0-9]' -- '*.md' ':!node_modules')"
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            echo "$hits"
+            echo "::error::A markdown line starts with '#<digit>' — that renders as an h1, not a reference."
+            echo "Write 'PR #<number>' or '(#<number>)' rather than starting the line with '#<number>'."
+            exit 1
+          elif [ "$status" -ne 1 ]; then
+            echo "::error::git grep failed with status $status — the scan did not run, so nothing was verified."
+            exit 1
+          fi
+          echo "no PR references parsed as headings"

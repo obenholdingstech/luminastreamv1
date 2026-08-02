@@ -1,6 +1,6 @@
 # LuminaStream — Roadmap & Canon
 
-**v2.2 · 1 August 2026**
+**v2.3 · 2 August 2026**
 
 This is the canonical description of what LuminaStream is, what state it is in,
 and what order the remaining work happens in. It exists because the previous
@@ -49,6 +49,7 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Quality | CEO scorecard **8.7 overall** — clean 8, latency-feel 8.3, "is it ME?" 8.5 |
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
+| Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
@@ -64,7 +65,7 @@ Each phase is gated on the one before it. Where a phase has a hard external
 dependency with lead time, that is called out — those start early or they become
 the critical path.
 
-### P0 — Foundations *(in progress, ~1 week)*
+### P0 — Foundations ✅ *(closed 2 Aug 2026)*
 
 Clearing the debt that would otherwise be paid at a worse time.
 
@@ -78,7 +79,7 @@ Clearing the debt that would otherwise be paid at a worse time.
   venv floor is Python 3.10+ for a patched `aiohttp`, and shutdown has the
   regression test it never had.
 
-### P1 — The session layer *(~1½ weeks)* — **this is where audio becomes multi-user**
+### P1 — The session layer *(~1½ weeks)* ⟵ **NEXT** — **this is where audio becomes multi-user**
 
 Today one agent serves one speaker in one fixed room. A second person is ignored
 and told so. That is the single largest functional limit in the product.
@@ -86,6 +87,26 @@ and told so. That is the single largest functional limit in the product.
 - `POST /api/session/create` in the Worker: allocates a room, an identity, and an
   agent, and returns a scoped LiveKit grant.
 - A Durable Object ledger — the Worker currently has **zero** storage bindings.
+  This is the project's first server-side storage, but it is **not** the
+  database: a Durable Object here holds coordination state — which rooms exist,
+  who holds them, how many are live — that must be consistent across
+  simultaneous requests.
+
+  **Durable Object storage is genuinely durable**, and it is worth being precise
+  because the opposite is easy to assume. It survives eviction and restart; the
+  name is not marketing. What separates it from P4 is *purpose and lifetime*,
+  not permanence: these are session records that `/api/session/create` writes
+  and the session-end path deletes, so the store stays small by being cleaned
+  up, not by expiring on its own. It is **not the system of record for user
+  history** — nothing here should be the only copy of anything a person would
+  miss. That is **P4**.
+
+  **Cost, conditionally.** SQLite-backed Durable Objects are available on the
+  Workers **Free** plan, so on Free and within its documented limits P1 adds no
+  incremental Cloudflare charge. On Workers **Paid** they are metered — requests,
+  duration and storage — on top of that plan's monthly minimum. Which plan this
+  account is on has not been checked, so *"P1 is free"* is a claim this document
+  is not entitled to make until it has been.
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
@@ -118,8 +139,14 @@ Decart Lucy 2.5 in the browser studio, spend-walled.
 
 ### P4 — Identity & persistence *(~1½ weeks)*
 
-Accounts, voice clones, reference images, session history. The first real
-database. Voice cloning becomes a user-facing flow rather than a dashboard step.
+**This is the database phase.** Accounts, voice clones, reference images,
+session history — the first storage whose job is to remember a person between
+sessions, as opposed to P1's coordination state, which exists to keep concurrent
+requests honest and is deleted when the session it describes ends. Voice cloning becomes a user-facing
+flow rather than a step someone performs in a vendor dashboard.
+
+Everything downstream waits on this: billing needs an account to charge, and the
+admin system needs a person to look up.
 
 ### P5 — Billing *(~1½ weeks)*
 
@@ -225,11 +252,65 @@ experience pass on the flows a person actually walks through. Scheduled once the
 product surface stops moving — which is after P1, because the session layer
 changes what the lens page even shows.
 
-### P8 — Scale & harden *(ongoing)*
+### P8 — Admin & operations *(scope to be agreed before it starts)*
 
-Load balancing across boxes, orchestration, caching layers, observability, an
-agent heartbeat and status surface, and per-session COGS metering. Some of this
-lands earlier where it is cheap; the deliberate work happens here.
+Two different things wear the word "admin", they have different dependencies,
+and conflating them is how an admin console becomes a six-week surprise.
+
+**Operational visibility — earlier, and cheap.** Is the agent up? How many
+sessions are live? Which box is near capacity? What did the last deploy do?
+None of that needs accounts or billing, and all of it becomes necessary the
+moment P1 makes more than one session possible. It rides along with P1 and P9
+rather than waiting here. The agent heartbeat and status surface deferred out of
+PR #24 is the first piece.
+
+**The admin system proper — here, because it cannot exist sooner.** It reads
+identity (P4) and money (P5), so it is genuinely gated on both. A business
+system that cannot see who someone is or what they have paid is a dashboard, not
+an admin system.
+
+What that usually covers, offered as a starting point rather than a decision —
+**scope gets agreed with the CEO before any of it is built:**
+
+- **People:** find a user, see their sessions and their spend, suspend or
+  reinstate, handle a "it stopped working" support message with evidence rather
+  than guesswork.
+- **Money:** wallet balances, top-ups, refunds, failed payments, and the
+  subscription state that gates access at all. Every mutation attributable.
+- **Truth:** COGS per session against what was charged. This is the number that
+  tells you whether the business works, and nothing else in the system reports
+  it.
+
+  **The metering it reads is not P9's, and must not be.** Per-session cost is
+  emitted at session end from **P2 onward** — the moment there is vendor spend
+  worth attributing — and **P5 requires it anyway**, because a wallet cannot be
+  debited correctly against a cost nobody recorded. P9's work is aggregating and
+  reporting that stream at scale, not producing it. If the emission slipped to
+  P9, P8 would depend on a phase that comes after it, which is the shape of
+  dependency that gets discovered halfway through a build.
+- **Safety:** an **audit log** — who did what, to whose account, when. An admin
+  tool without one is a liability rather than a control, because the first time
+  something is disputed there is no record of who changed it.
+- **Access:** admin is not one role. "Support can read and refund" and "founder
+  can change limits" are different powers, and the separation is far cheaper to
+  build in than to retrofit.
+
+Two things worth saying now rather than at the door. An admin system is the
+**highest-value target in the product** — it can see everything and change
+anything — so it gets the strictest auth of anything we build, and it is the one
+surface where "fail closed" is not a preference. And it is real product work,
+not a weekend: budget it like a feature.
+
+### P9 — Scale & harden *(ongoing)*
+
+Load balancing across boxes, orchestration, caching layers, and observability.
+
+**COGS aggregation and reporting**, not COGS *emission* — the per-session cost
+record is written from P2 onward and consumed by P5's wallet and P8's admin
+system, both of which come first. What happens here is turning that stream into
+something you can query across thousands of sessions.
+
+Some of this lands earlier where it is cheap; the deliberate work happens here.
 
 ---
 
@@ -414,9 +495,10 @@ pasted output.
 
 | | Why it matters |
 |---|---|
-| Start **Apple Developer Program** enrolment | P6's critical path. Lead time is the risk, not the paperwork. |
 | `DECART_API_KEY` via `wrangler secret put` | **Only after** the P2 spend wall is merged and verified. |
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters. |
+| Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
+| Confirm the **Cloudflare Workers plan** | Free vs Paid decides whether P1's Durable Object is free or metered. See P1. |
 
 ---
 
