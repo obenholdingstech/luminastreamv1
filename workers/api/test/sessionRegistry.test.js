@@ -110,7 +110,9 @@ test('a room reclaimed by the reaper is handed out again', async () => {
 });
 
 test('capacity is min(pool size, MAX_CONCURRENT_SESSIONS) — the pool can never be exceeded', async () => {
-  // The policy cap can only ever admit FEWER sessions than there are agents.
+  // The policy cap can never admit MORE sessions than there are agents. It may
+  // equal that number — min permits equality, and production runs at exactly
+  // that today — it just cannot exceed it.
   const policyBound = harness({ SESSION_ROOMS: 'a,b,c,d', MAX_CONCURRENT_SESSIONS: '2' });
   assert.equal((await capacity(policyBound)).body.capacity, 2);
   assert.equal((await capacity(policyBound)).body.pool, 4);
