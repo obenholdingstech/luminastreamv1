@@ -142,14 +142,14 @@ test('the release token is never stored in the clear', async () => {
   assert.ok(dump.includes('endTokenHash'));
 });
 
-test('capacity reports live / capacity / available / pool', async () => {
+test('capacity reports enabled / live / capacity / available / pool', async () => {
   const h = harness();
-  const pool = POOL.length;
-  assert.deepEqual((await capacity(h)).body, { ok: true, live: 0, capacity: 2, available: 2, pool });
+  const base = { ok: true, enabled: true, capacity: 2, pool: POOL.length };
+  assert.deepEqual((await capacity(h)).body, { ...base, live: 0, available: 2 });
   await create(h);
-  assert.deepEqual((await capacity(h)).body, { ok: true, live: 1, capacity: 2, available: 1, pool });
+  assert.deepEqual((await capacity(h)).body, { ...base, live: 1, available: 1 });
   await create(h);
-  assert.deepEqual((await capacity(h)).body, { ok: true, live: 2, capacity: 2, available: 0, pool });
+  assert.deepEqual((await capacity(h)).body, { ...base, live: 2, available: 0 });
 });
 
 test('the session past capacity is refused with 503 at_capacity, not silently admitted', async () => {
@@ -380,6 +380,39 @@ test('THE POOL DEFAULT MATCHES THE AGENT — parsed from convert_agent.py', () =
   );
 });
 
+test('sessions are enabled by default, and refusable with one variable', async () => {
+  assert.equal(readRegistryConfig({}).enabled, true);
+
+  const off = harness({ ...ENV, SESSIONS_ENABLED: 'false' });
+  const { status, body } = await create(off);
+  assert.equal(status, 503);
+  assert.equal(
+    body.error,
+    'sessions_disabled',
+    '"no agents here" must be distinguishable from "agents are busy" — a client ' +
+      'that cannot tell them apart retries the permanent one forever',
+  );
+
+  const view = (await capacity(off)).body;
+  assert.equal(view.enabled, false);
+  assert.equal(view.capacity, 0, 'no agents means no capacity, whatever the pool lists');
+  assert.equal(view.available, 0);
+});
+
+test('a malformed SESSIONS_ENABLED is FATAL, in both directions', () => {
+  // Read as falsy it would silently take sessions offline; read as truthy it
+  // would silently promise agents that do not exist. Neither quietly.
+  for (const bad of ['flase', 'yes', 'no', '1', '0', 'TRUE ish']) {
+    assert.throws(
+      () => readRegistryConfig({ SESSIONS_ENABLED: bad }),
+      RegistryConfigError,
+      `SESSIONS_ENABLED=${JSON.stringify(bad)} must not resolve silently`,
+    );
+  }
+  assert.equal(readRegistryConfig({ SESSIONS_ENABLED: 'TRUE' }).enabled, true);
+  assert.equal(readRegistryConfig({ SESSIONS_ENABLED: ' False ' }).enabled, false);
+});
+
 test('a lease outside the allowed band is FATAL', () => {
   assert.throws(
     () => readRegistryConfig({ SESSION_LEASE_SECONDS: String(MIN_LEASE_SECONDS - 1) }),
@@ -469,6 +502,17 @@ test('EVERY wrangler environment binds SessionRegistry and migrates it', async (
     ...Object.entries(config.env ?? {}).map(([name, scope]) => [`env.${name}`, scope]),
   ];
   assert.ok(scopes.length >= 2, 'there is at least one named environment to check');
+
+  // TRIPWIRE. Staging has no agent, so staging must hand out no sessions —
+  // otherwise it issues valid credentials for a room nobody serves, which is
+  // the exact failure the room pool replaced. When a staging agent genuinely
+  // runs, flip the var AND this assertion in the same commit; the point is that
+  // turning staging on cannot be a one-character edit nobody reviews.
+  assert.equal(
+    config.env.staging.vars.SESSIONS_ENABLED,
+    'false',
+    'no agent serves the staging rooms — enabling sessions there promises silence',
+  );
 
   for (const [where, scope] of scopes) {
     const bindings = scope.durable_objects?.bindings ?? [];

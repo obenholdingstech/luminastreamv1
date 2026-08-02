@@ -62,11 +62,22 @@
         { "name": "SESSION_LIMITER", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } }
       ],
       "vars": {
-        // Staging lists four rooms so concurrency can be exercised. No agent
-        // serves them, which is the point: staging tests the ALLOCATOR, and a
-        // room here is a slot on paper only. Never point staging at a room
-        // production is serving — two registries handing out one room is the
-        // eviction bug the duplicate check exists to prevent.
+        // NO AGENT RUNS FOR STAGING, so staging hands out no sessions.
+        //
+        // A pool is a promise that someone is listening. Listing rooms nobody
+        // serves would issue valid credentials for silence — the exact failure
+        // the room pool replaced, reintroduced through configuration instead of
+        // code. Staging says so plainly instead.
+        //
+        // The rooms below are what a staging agent WOULD join. To turn staging
+        // on: start `convert_agent.py --room staging-room-1` (and friends) on a
+        // box, flip this to "true", and update the tripwire in
+        // test/sessionRegistry.test.js in the SAME commit — it exists to make
+        // this a deliberate act rather than a one-character edit.
+        //
+        // Never point staging at a room production is serving: two registries
+        // handing out one room is the same eviction bug through another door.
+        "SESSIONS_ENABLED": "false",
         "SESSION_ROOMS": "staging-room-1,staging-room-2,staging-room-3,staging-room-4",
         "MAX_CONCURRENT_SESSIONS": "4",
         "SESSION_LEASE_SECONDS": "7200"

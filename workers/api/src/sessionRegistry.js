@@ -167,7 +167,31 @@ function parseRooms(raw, { name, fallback }) {
   return rooms;
 }
 
+// Whether this environment can hand out sessions at all.
+//
+// A pool is a promise that an agent is listening. An environment where that is
+// not true must say so, rather than issue valid credentials for a room nobody
+// serves — which is the exact failure the pool replaced, reintroduced through
+// configuration instead of code. Staging has no agent, so staging says no.
+//
+// Doubles as an operational kill switch: sessions can be stopped for
+// maintenance with one variable and no code deploy.
+function parseEnabled(raw, { name, fallback }) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const text = String(raw).trim().toLowerCase();
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  // Strict on purpose. A typo'd "flase" read as falsy would silently take
+  // sessions offline, and read as truthy would silently promise agents that do
+  // not exist. Neither may happen quietly.
+  throw new RegistryConfigError(`${name} must be "true" or "false", got ${JSON.stringify(raw)}`);
+}
+
 export function readRegistryConfig(env = {}) {
+  const enabled = parseEnabled(env.SESSIONS_ENABLED, {
+    name: 'SESSIONS_ENABLED',
+    fallback: true,
+  });
   const rooms = parseRooms(env.SESSION_ROOMS, {
     name: 'SESSION_ROOMS',
     fallback: DEFAULT_SESSION_ROOMS,
@@ -180,12 +204,14 @@ export function readRegistryConfig(env = {}) {
   });
 
   return {
+    enabled,
     rooms,
     maxConcurrentSessions,
-    // The physical limit and the policy limit, resolved into one number. The
-    // pool can never be exceeded — there is no slot without an agent — and the
-    // policy cap can only lower it further.
-    capacity: Math.min(rooms.length, maxConcurrentSessions),
+    // The physical limit and the policy limit, resolved into one number, and
+    // zero when this environment has no agents at all. The pool can never be
+    // exceeded — there is no slot without an agent — and the policy cap can
+    // only lower it further.
+    capacity: enabled ? Math.min(rooms.length, maxConcurrentSessions) : 0,
     leaseSeconds: parseCount(env.SESSION_LEASE_SECONDS, {
       name: 'SESSION_LEASE_SECONDS',
       fallback: DEFAULT_LEASE_SECONDS,
@@ -322,6 +348,14 @@ export class SessionRegistry {
   }
 
   async #create(config) {
+    // Checked before anything else, and reported as its own error rather than
+    // as at_capacity. "There are no agents here" and "the agents are all busy"
+    // are different facts, and a caller that cannot tell them apart will retry
+    // the first one forever.
+    if (!config.enabled) {
+      return json({ ok: false, error: 'sessions_disabled' }, 503);
+    }
+
     const now = this.now();
     const live = await this.#liveSessions(now);
 
@@ -388,6 +422,7 @@ export class SessionRegistry {
     await this.#rearm(live);
     return json({
       ok: true,
+      enabled: config.enabled,
       live: live.length,
       capacity: config.capacity,
       available: Math.max(0, config.capacity - live.length),

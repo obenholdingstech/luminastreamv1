@@ -11,9 +11,15 @@ take, replacing the DEV-ONLY `scripts/generate-livekit-token.js`.
 | GET    | `/api/health`            | none              | `{ ok, version }` liveness check                         |
 | POST   | `/api/admin/verify`      | none (hard limit) | `{ password }` → `{ ok, token, expiresAt }` (~12h)       |
 | POST   | `/api/livekit/token`     | `X-Admin-Token`   | `{ room, identity }` → LiveKit access token (≤6h)        |
-| POST   | `/api/session/create`    | `X-Admin-Token`   | allocates a room + identity + grant, or `503 at_capacity` |
+| POST   | `/api/session/create`    | `X-Admin-Token`   | → `{ sessionId, endToken, room, identity, token, url, expiresAt }` |
 | POST   | `/api/session/end`       | `X-Admin-Token`   | `{ sessionId, endToken }` → releases the slot            |
-| GET    | `/api/session/capacity`  | `X-Admin-Token`   | `{ live, capacity, available }`                          |
+| GET    | `/api/session/capacity`  | `X-Admin-Token`   | `{ enabled, live, capacity, available, pool }`            |
+
+`/api/session/create` refuses with **503** and one of two distinct errors:
+`at_capacity` (every agent is busy — a queue that will clear) or
+`sessions_disabled` (this environment serves no sessions at all — permanent, do
+not retry). A client that cannot tell them apart retries the permanent one
+forever, which is why they are separate codes rather than one.
 
 - The admin password is checked with a **constant-time** comparison (SHA-256
   both sides via Web Crypto, digests compared — never `===`).
@@ -84,6 +90,15 @@ down" apart from "we ran out of agents".
 Growing capacity in P1c is therefore one operation on the box and one config
 line: start another agent with `convert_agent.py --room <name>` (already a
 first-class flag) and add that name here.
+
+**An environment with no agent must say so.** `SESSIONS_ENABLED` (default
+`true`) exists because a pool is a *promise that someone is listening*. Staging
+runs no agent, so staging sets it `false` and refuses with `sessions_disabled`
+rather than issuing valid credentials for silence — which would be this exact
+bug reintroduced through configuration instead of code. A test asserts the
+committed staging config keeps it off, so turning it on is a deliberate act with
+a review attached rather than a one-character edit. It doubles as an operational
+kill switch: sessions stop with one variable and no code deploy.
 
 The pool is parsed strictly, and the **duplicate check earns its keep**: a room
 listed twice would hand one room to two sessions, and LiveKit evicts on
