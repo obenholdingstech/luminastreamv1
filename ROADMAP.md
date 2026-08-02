@@ -49,6 +49,7 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Quality | CEO scorecard **8.7 overall** — clean 8, latency-feel 8.3, "is it ME?" 8.5 |
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
+| Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
@@ -99,6 +100,13 @@ and told so. That is the single largest functional limit in the product.
   up, not by expiring on its own. It is **not the system of record for user
   history** — nothing here should be the only copy of anything a person would
   miss. That is **P4**.
+
+  **Cost, conditionally.** SQLite-backed Durable Objects are available on the
+  Workers **Free** plan, so on Free and within its documented limits P1 adds no
+  incremental Cloudflare charge. On Workers **Paid** they are metered — requests,
+  duration and storage — on top of that plan's monthly minimum. Which plan this
+  account is on has not been checked, so *"P1 is free"* is a claim this document
+  is not entitled to make until it has been.
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
@@ -487,10 +495,10 @@ pasted output.
 
 | | Why it matters |
 |---|---|
-| ~~Start **Apple Developer Program** enrolment~~ | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk. |
 | `DECART_API_KEY` via `wrangler secret put` | **Only after** the P2 spend wall is merged and verified. |
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
+| Confirm the **Cloudflare Workers plan** | Free vs Paid decides whether P1's Durable Object is free or metered. See P1. |
 
 ---
 
