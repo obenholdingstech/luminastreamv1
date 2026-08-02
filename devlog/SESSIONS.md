@@ -4,6 +4,128 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 2 August 2026 — P0 CLOSED: canon, CI, and the last owed fixes (#26, #27, #28 merged)
+
+### Task (verbatim)
+
+> "tested it and it worked, thou the ui looks generic, but i dont want ui and ux
+> polishing to be something of todat but id like for it to be added in the
+> roadmap, cause i would like a special sessio where all we will do is repolish
+> the app ui and enhance user experiemce but for now lets focus on the nest P0
+> PRs. movre on with the momentum."
+
+### What I did
+
+**#26 — the canon.** `ROADMAP.md` v2.2: the lens paragraph, the real state
+(648 ms baseline, 8.7 scorecard, what does NOT exist), phases P0–P8, human-only
+walls. §4 is 29 doctrine entries reconstructed from the failure narratives in
+this file, each citing the session that paid for it. P7 is the CEO's design
+session — its own brief, after P1, with the real system debt named.
+
+**#27 — CI.** Nothing ran on a pull request. Both workflows were push-to-main
+only, so the first automated opinion arrived after merge, and the Pages deploy
+shipped without running a test. Four jobs now run on every PR; the deploy gates
+on lint, typecheck and tests before building.
+
+**#28 — the owed fixes.** The rate limiter fails closed. `agent/README` no
+longer documents the pip trampoline. Python floor 3.10. Shutdown has the
+regression test it never had.
+
+### Key findings / surprises
+
+**1. P6 was planned wrong, twice, and review caught both.** I wrote the macOS
+camera extension as "embedded in the app bundle, no installer, no reboot".
+Verified: it needs `OSSystemExtensionRequest` activation, the container app
+**must be in `/Applications`**, and the user must clear a "System Extension
+Blocked" alert. Then, asked to specify the microphone's packaging, I promoted
+`AudioDriverKit` to a co-equal route **on the strength of the suggestion alone**
+— and only checked on the next round, when it turned out Apple supports it for
+*physical* audio devices only and **will not grant entitlements for virtual
+ones**. Not a riskier route; a route that fails at the entitlement request.
+
+Doctrine 6 says verify the invocation before believing the verdict. A review
+suggestion is a verdict too, and deferring to a reviewer without checking is the
+same failure as deferring to documentation without checking — it just feels more
+polite. The useful consequence: the mic's admin-password install is a **fixed
+constraint to design around**, which firms the estimate rather than widening it.
+
+**2. CI paid for itself twice within a day of existing — both times on my
+tests.** #27's own first run failed the bash harness on Linux: `git clone`
+follows the remote's HEAD, the harness built its bare remote with a plain
+`git init --bare`, and this Mac has `init.defaultBranch = main` globally. **The
+harness only ever passed on machines configured like mine**, and had been
+reporting 40/40 since #24. A blanket `2>/dev/null` I wrote then hid the reason,
+surfacing it as a mismatched assertion rather than "the fixture did not build".
+
+PR #28 repeated the shape: the shutdown harness printed READY *before*
+`wait_for_stop` installed its handlers, so a signal arriving in that window got
+the interpreter's default disposition. macOS lost that race rarely enough never
+to fail; Linux lost it every time. Fixed with `loop.call_soon` — ordering, not a
+sleep — and proven by probing `signal.getsignal(SIGTERM)` at the moment READY is
+announced: `SIG_DFL` before, `installed` after.
+
+**3. A fix for a test defect contained another test defect.** CodeRabbit was
+right that the `run_seconds` test had no lower bound and could not fail on what
+it named. Its suggested threshold — 0.25 s of wall clock on the subprocess —
+would have produced **another test that cannot fail**: elapsed time includes
+interpreter startup and importing `convert_agent`, which pulls numpy and torch
+and costs over a second on its own. Found only by discrimination-testing the fix
+rather than trusting it. The duration is now measured inside the child.
+
+**4. The fail-open rate limiter was load-bearing for its own test suite.**
+`isRateLimited` returned "not limited" on a missing binding so `node --test`
+could run dependency-free — which meant the fail-open path could never be
+removed without breaking the tests. That is how it survived a security review
+and got written down as "deliberate and documented". The tests now inject a
+permissive limiter, which is the more honest statement anyway.
+
+**5. The README documented the exact command doctrine 13 forbids.** Twice.
+`./.venv/bin/pip` — the `#!/bin/sh` trampoline holding an absolute path, on a
+project that lost a session to precisely that and then wrote a doctrine entry
+about it while the setup instructions kept telling you to do it.
+
+**6. The SIGINT item was already fixed.** The spike branch's loop handlers are on
+main and both signals already exit 0. Rather than invent a change, added the
+guard that was missing.
+
+### Files changed
+
+- **New:** `ROADMAP.md`, `.github/workflows/ci.yml`, `agent/test_shutdown.py`
+- **Changed:** `.github/workflows/deploy-pages.yml` (test gate),
+  `workers/api/src/index.js` + `test/http.test.js` (fail closed),
+  `agent/README.md` (3.10 floor, pip trampoline),
+  `scripts/test-deploy-agent.sh` (branch portability, loud fixtures),
+  `AGENTS.md`, `README.md`, `.gitignore`
+
+### Verification
+
+```text
+CI (every PR, 4 jobs)      green — frontend, worker, agent 3.12, deploy harness
+npm run lint / typecheck   clean
+node --test src/lib/*      89 pass
+workers/api node --test    43 pass  (was 35)
+agent pytest -q            224 pass (was 221)
+test-deploy-agent.sh       40 assertions
+parentage (fails closed)   verified against origin/main on every merge
+```
+
+Discrimination mutations this session: 12, across the rate limiter (3), the
+shutdown contract (2), the harness portability (3), the lens state (2) and the
+deploy gate (2). One did not discriminate and exposed a missing test; one
+exposed that a reviewer's proposed threshold was untestable.
+
+### Next
+
+**P1 — the session layer.** `POST /api/session/create`, a Durable Object ledger
+(the Worker has zero storage bindings today), agent-per-session on the VPS, and
+the capacity constant that has never been measured. This is where audio becomes
+genuinely multi-user and where the shared room, the `agent_busy` state and the
+admin-password gate all retire.
+
+---
+
+---
+
 ## 1 August 2026 — THE LENS ON `/`, BASE44 GONE, AND THE CANON WRITTEN DOWN (PRs #24 merged, #25 merged, branch docs/roadmap-canon)
 
 ### Task (verbatim)
