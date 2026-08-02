@@ -50,7 +50,7 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
 | Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
-| Cloudflare plan | **Workers Free** (2 Aug 2026). P1's Durable Object is included — but see P1's O(1) invariant, which is designed for the paid plan we will grow into. |
+| Cloudflare plan | **Workers Free** (2 Aug 2026), which includes SQLite-backed Durable Objects within daily quotas. P1's **O(1) invariant** protects both: on Free it keeps us under a quota whose breach *fails operations*, and on Paid it keeps the bill flat. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
@@ -116,8 +116,10 @@ session lasts.** Never O(session duration).
 
 Written here, before the code, because the DO's *shape* is the expensive thing
 to change later — not its implementation. Raised by the CEO on 2 Aug 2026 as a
-future paid-plan cost risk; the arithmetic says it bites on the plan we are on
-today, and harder.
+future paid-plan cost risk. It is that — but the arithmetic says it bites on the
+plan we are on **today**, and harder: on Free the failure mode is refused
+operations, not an invoice. The invariant protects both plans, which is why it
+is a requirement now rather than a migration task later.
 
 A DO is billed for its allocated **128 MB** whenever awake, and hibernates after
 **10 s** with no request or event. That single fact drives everything below.
@@ -126,20 +128,27 @@ A DO is billed for its allocated **128 MB** whenever awake, and hibernates after
 
 | Design | Per session | Sessions/day before operations start failing |
 |---|---|---|
-| Browser polls the DO once a second | 1800 req, 1800 s awake | **56** |
-| Create + capacity read + end | 3 req, ~30 s awake | **3,467** |
+| Browser polls the DO once a second | 1800 req, 1800 s awake | **55** |
+| Create + capacity read + end | 3 req, ~30 s awake | **3,466** |
 
-**Fifty-six sessions a day.** Not a surprising invoice — a product that stops
-creating sessions, at a scale we would pass in the first week of having users.
+**Fifty-five sessions a day.** The request quota binds first (100,000 ÷ 1800 =
+55.5); duration would allow 57. Both floored — a partial session is not a
+session. And the consequence is not a surprising invoice: it is a product that
+**stops creating sessions**, at a scale we would pass in the first week of
+having real users.
 
 **On Workers Paid — where we are going.** Requests $0.15/M (1M included),
 duration $12.50/M GB-s (400,000 included). At 100,000 sessions/month of 30
 minutes:
 
-| Design | Requests | GB-s | Monthly |
+| Design | Requests | GB-s | Incremental DO charge |
 |---|---|---|---|
 | Polling once a second | 180,000,000 | 22,500,000 | **~$303** |
 | Create + capacity read + end | 300,000 | ~375,000 | **$0** |
+
+That column is **incremental Durable Object usage only**. Workers Paid carries a
+**$5/month minimum** either way; the difference between the rows is what the
+coordination layer adds on top of it.
 
 The 375,000 GB-s assumes each of the three requests keeps the object awake for
 one full 10-second hibernation window and that none of them overlap — the
