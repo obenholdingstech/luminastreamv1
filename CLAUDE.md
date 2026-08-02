@@ -132,15 +132,37 @@ journalctl --user -u lumina-agent -n 50 --no-pager
 under `echo-preflight-*`, which is expected. Compare against the service PID:
 
 ```sh
-systemctl --user show -p MainPID --value lumina-agent.service
-pgrep -af convert_agent.py    # anything that is neither MainPID nor a preflight
+# every agent unit's PID (primary + template instances):
+for u in $(systemctl --user list-units --plain --no-legend 'lumina-agent*.service' | awk '{print $1}'); do
+  printf '%s ' "$u"; systemctl --user show -p MainPID --value "$u"
+done
+pgrep -af convert_agent.py    # anything not in that list and not a preflight
 ```
 
 **Startup gates, in this order — do not proceed past a missing one:**
 `STT READY` → `TTS READY (TTFB …ms)` → `PREFLIGHT OK` → connected to room.
 
-**One agent per room.** A *second* room is the supported concurrency pattern:
-`--room <name>`, plus its own `--identity` if the default is also in use.
+**One agent per room.** More rooms = more instances of the template unit
+(`scripts/systemd/lumina-agent@.service`, instance name = room; identity is
+derived as `echo-convert-<room>` automatically):
+
+```sh
+# once, to (re)install the template:
+cp ~/luminastreamv1/scripts/systemd/lumina-agent@.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+
+# one MORE agent, serving <room>:
+systemctl --user enable --now lumina-agent@<room>.service
+journalctl --user -u lumina-agent@<room> -f     # same four startup gates
+
+# it participates in deploys automatically: deploy-agent.sh restarts and
+# health-gates EVERY lumina-agent unit, and all of them share one venv symlink.
+```
+
+**Order matters when adding capacity:** agent first, pool second. Only after
+the new instance clears its gates does its room go into `SESSION_ROOMS`
+(workers/api/wrangler.jsonc) — a room in the pool with no agent hands out
+credentials for silence.
 
 ## Agent process & deploys (systemd, pull-based)
 

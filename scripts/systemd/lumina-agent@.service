@@ -1,0 +1,47 @@
+[Unit]
+# One MORE agent, one room per instance: `lumina-agent@<room>` serves <room>.
+#
+#   systemctl --user enable --now lumina-agent@luminastream-2.service
+#
+# This template is how capacity grows. A session slot is a room with an agent
+# in it (workers/api/README.md), so every instance enabled here is one more
+# entry SESSION_ROOMS can carry — in that order: agent first, pool second.
+# The primary lumina-agent.service keeps serving the default room; instances
+# are additive.
+Description=LuminaStream voice agent (%i)
+Documentation=https://github.com/obenholdingstech/luminastreamv1
+After=network-online.target
+Wants=network-online.target
+
+# Same spend control as the primary, PER INSTANCE: every start fires a real
+# warm-up synthesis and the governor is per-process. Five failures in five
+# minutes parks this instance in `failed` without touching its siblings.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/luminastreamv1/agent
+# Identity keeps the echo-* prefix (agents ignore each other) and embeds the
+# room, so `pgrep -af convert_agent.py` reads as an inventory. The venv is the
+# SAME symlink the primary uses — deploy-agent.sh swaps it once and restarts
+# every instance, so all agents always run the same SHA.
+ExecStart=%h/luminastreamv1/agent/.venv/bin/python convert_agent.py --engine tts --mode convert --room %i --identity echo-convert-%i
+
+Restart=always
+RestartSec=5
+
+KillSignal=SIGTERM
+TimeoutStopSec=30
+KillMode=mixed
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+# Per-instance identifier, so `journalctl -t lumina-agent-<room>` reads one
+# agent while `-u lumina-agent@<room>` remains the deploy script's filter.
+SyslogIdentifier=lumina-agent-%i
+
+[Install]
+WantedBy=default.target
