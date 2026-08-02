@@ -43,7 +43,11 @@ response, so nothing ever comes back to ask, which is what makes rule 1 free.
 
 Cleanup is one demand-driven `alarm()` at the earliest pending expiry, re-armed
 on wake. A clean session costs 3 requests / 0 alarms; an abandoned one costs
-1 / 1, whether abandoned after a minute or a week.
+1 / 1 — no matter how far into its lease it was abandoned, and no matter how
+long the registry then sits idle afterwards. (Nothing can be abandoned "after a
+week": a session cannot outlive its 2h lease. The week is the *silence that
+follows*, which is what the quick-vs-slow test actually varies, and what a
+fixed-interval reaper would bill for.)
 
 Fail-closed throughout, matching the rate limiter: a missing or throwing DO
 binding refuses with 503 rather than handing out uncounted rooms; a malformed

@@ -206,8 +206,11 @@ Five rules follow, all cheap now and all expensive to retrofit:
    invariant this section exists to state**. Instead the DO keeps **one** alarm,
    always set to the *earliest pending expiry*; on wake it reaps what expired and
    re-arms to the next one, or to nothing. A session that ends cleanly costs zero
-   alarm wakeups; an abandoned one costs exactly one, whether it was abandoned
-   after a minute or after a day.
+   alarm wakeups; an abandoned one costs exactly one — no matter how far into
+   its lease it was abandoned, and no matter how long the registry then sits
+   idle before anything touches it again. (A session cannot be abandoned "after
+   a day": it cannot outlive its lease. What can run for a day is the *silence
+   afterwards*, and that is the part a fixed-interval reaper would charge for.)
 
 #### The test oracle
 

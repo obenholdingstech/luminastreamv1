@@ -32,8 +32,11 @@
 // The whole object is therefore three storage-touching operations and one
 // alarm handler, all built from the same two primitives (#liveSessions and
 // #rearm). A clean session costs 3 requests and 0 alarms; an abandoned one
-// costs 1 request and exactly 1 alarm, whether it was abandoned after a minute
-// or after a day.
+// costs 1 request and exactly 1 alarm — no matter how far into its lease it was
+// abandoned, and no matter how long the object then sits idle afterwards. It
+// cannot be abandoned "after a day", because it cannot outlive its lease; what
+// can last a day is the silence that follows, which is exactly what a
+// fixed-interval reaper would bill for.
 
 import { base64UrlEncode, base64UrlDecode, sha256, timingSafeEqual } from './crypto.js';
 import { MAX_LIVEKIT_TTL_SECONDS } from './livekit.js';
