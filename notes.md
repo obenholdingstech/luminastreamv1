@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 2 August 2026 — P0 CLOSED (#26, #27, #28 merged)
+
+- **`ROADMAP.md` is canon** — lens paragraph, real state, P0–P8, and 29 doctrine entries reconstructed from this repo's own failure narratives. **P7 is the CEO's design session**: its own brief, after P1, system debt named (hardcoded hex, unset font tokens, framer-motion in one place).
+- **CI exists.** Nothing ran on a PR before. Four jobs now do, and the Pages deploy gates on tests. It caught two of my test defects within a day — both races between my test and the platform, both invisible on this Mac.
+- **Rate limiter fails closed** (503 for a missing binding vs 429 for a real throttle — distinguishable in logs). Python floor 3.10 for a patched aiohttp. `agent/README` no longer documents the `.venv/bin/pip` trampoline. Shutdown has a real regression test; the SIGINT fix itself was already on main.
+- **P6 corrected twice:** the camera needs `/Applications` + activation + user approval; `AudioDriverKit` is **not a route** — Apple grants no entitlements for virtual audio devices, so the mic's admin-password install is a fixed constraint to design around.
+- **Lesson recorded:** I added the AudioDriverKit route on a review suggestion and verified only when pushed back on. A suggestion is a verdict too.
+- **Next: P1, the session layer** — `/api/session/create`, DO ledger, agent-per-session, and the capacity constant that has never been measured. Retires the shared room, `agent_busy`, and the admin gate on the lens.
+
 ## 1 August 2026 — LENS ON `/`, BASE44 GONE, CANON WRITTEN (PRs #24 + #25 merged, branch docs/roadmap-canon)
 
 - **VPS is on systemd.** CEO installed the units; `lumina-agent` runs as a service and `lumina-deploy.timer` polls `origin/main` every 2 min. **Merging is now deploying** — no more hand commands on the box.
