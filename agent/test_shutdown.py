@@ -35,7 +35,17 @@ HARNESS = textwrap.dedent(
     from convert_agent import wait_for_stop
 
     async def main():
-        print("READY", flush=True)
+        # READY is announced with call_soon, NOT printed before the await.
+        #
+        # wait_for_stop installs its signal handlers synchronously and only then
+        # awaits, so a call_soon callback cannot run until installation is done —
+        # control does not return to the loop before that point. Printing READY
+        # on the line above instead would announce readiness BEFORE the handlers
+        # exist, and a signal arriving in that window gets the interpreter's
+        # default disposition: SIGTERM kills the process outright, SIGINT raises
+        # KeyboardInterrupt. Which is a race, not a failure of the agent — and
+        # one that macOS timing happened to hide while Linux lost it every time.
+        asyncio.get_running_loop().call_soon(lambda: print("READY", flush=True))
         await wait_for_stop()
         print("CLEAN", flush=True)
 
