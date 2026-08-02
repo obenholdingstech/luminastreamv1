@@ -290,3 +290,29 @@ test('an auth failure does NOT hand back a session token', async () => {
     return true;
   });
 });
+
+test('an UNNAMED refusal code never reaches the user as a raw token', async () => {
+  // The branch nobody looked at. The named codes each get prose; anything else
+  // fell through to `code || ...` and put a machine token in front of a person
+  // — including every code the Worker might grow later. The code still travels
+  // on .code for callers that want to branch on it.
+  for (const code of ['bad_request', 'some_future_code', 'teapot']) {
+    stub(async () => jsonResponse(400, { ok: false, error: code }));
+    await assert.rejects(() => createSession('t', BASE), (err) => {
+      assert.ok(!err.message.includes(code), `${code} leaked into the message`);
+      assert.match(err.message, /could not start a session/);
+      assert.equal(err.code, code, 'the code is still available to callers');
+      assert.equal(err.status, 400);
+      return true;
+    });
+  }
+});
+
+test('a refusal with no error field at all still reads as English', async () => {
+  stub(async () => jsonResponse(500, {}));
+  await assert.rejects(() => createSession('t', BASE), (err) => {
+    assert.match(err.message, /could not start a session \(HTTP 500\)/);
+    assert.equal(err.code, undefined);
+    return true;
+  });
+});

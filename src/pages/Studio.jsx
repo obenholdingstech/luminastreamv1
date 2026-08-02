@@ -192,6 +192,17 @@ export default function Studio() {
     releaseRef.current = { adminToken, session };
   }, [adminToken, session]);
 
+  // Whether this component is still on screen, readable from an async callback
+  // that resolved after the user navigated away. `start` needs it: a slot that
+  // arrives for a page nobody is looking at still has to be given back.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const [lensMode, setLensMode] = useState('converted');
   // Set when credentials arrive, cleared when the connect fires. See `start`.
   const [pendingConnect, setPendingConnect] = useState(false);
@@ -287,8 +298,28 @@ export default function Studio() {
     setUnlockError('');
     try {
       const opened = await openSession({ password: accessKey, adminToken });
+      const held = { sessionId: opened.sessionId, endToken: opened.endToken };
+
+      // Record the slot SYNCHRONOUSLY, before any setState. The effect that
+      // normally mirrors state into releaseRef only runs on the next commit,
+      // and if this tab is already unmounting there will not be one — leaving a
+      // slot nobody can release until its 2h lease expires.
+      releaseRef.current = { adminToken: opened.adminToken, session: held };
+
+      // And the other half of the same window: if the unmount happened WHILE
+      // this request was in flight, the cleanup has already run and found
+      // nothing to release. Writing the ref above does not help then, because
+      // nothing will read it again. Give the slot back here instead.
+      // Up to DEFAULT_TIMEOUT_MS wide — following the console link right after
+      // pressing Start is enough to land in it.
+      if (!mountedRef.current) {
+        releaseRef.current = { adminToken: '', session: null };
+        await endSession(opened.adminToken, held);
+        return;
+      }
+
       setAdminToken(opened.adminToken);
-      setSession({ sessionId: opened.sessionId, endToken: opened.endToken });
+      setSession(held);
       setAllocation({ room: opened.room, identity: opened.identity });
       setUrl(opened.url);
       setToken(opened.token);

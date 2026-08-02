@@ -59,7 +59,11 @@ function describeRefusal(status, data) {
       code,
     });
   }
-  return sessionError(code || `could not start a session (HTTP ${status})`, { status, code });
+  // Prose, never the raw code. An unnamed or future code used as the message
+  // puts a machine token in front of a person — the same defect the named
+  // branches above exist to avoid, reached through the door nobody looked at.
+  // The code still travels on `.code` for callers that want to branch.
+  return sessionError(`could not start a session (HTTP ${status})`, { status, code });
 }
 
 /**
