@@ -2,13 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
-## 2 August 2026 — ROADMAP v2.4: the DO O(1) invariant (CEO cost concern, and it was right)
+## 2 August 2026 — ROADMAP v2.4: the DO O(1) invariant (CEO cost concern, and it bites NOW)
 
-- **CEO flagged that Durable Objects get metered on paid plans and that a chatty DO could run up a bill overnight.** Correct, and the arithmetic is sharper than expected. At 100k sessions/month × 30 min on Workers Paid: polling the DO once a second costs **~$303/month**, create+end costs **$0** (inside the included tiers).
-- **The trap is duration, not requests.** Duration is ~90% of that bill. A DO polled every second never reaches the **10 s** hibernation threshold, so it bills its allocated **128 MB** for the whole session — meaning cost tracks *how long people stream*, the exact axis this product grows along.
-- **The invariant, now a P1 requirement:** DO requests per session must be **O(1)**, never O(session duration). Five rules: no polling (status goes over the LiveKit data channel we already pay for), no heartbeats through the DO, no WebSocket without the Hibernation API, **no `setTimeout`/`setInterval` in a DO** (a pending timer makes it ineligible for hibernation entirely), one reaper `alarm()` rather than per-session timers.
-- **Enforced, not documented.** P1 ships a test that drives a full session lifecycle and asserts the DO request count is constant, so "someone adds a poll" fails in CI rather than on a bill.
-- **Account is on Workers Free** (CEO, 2 Aug) — struck from open actions. **Next: P1a**, the Worker endpoint + SessionRegistry DO.
+- **CEO flagged Durable Objects as metered on paid plans and warned a chatty DO could run up a bill overnight.** Right — and review sharpened it further: **it bites on the free tier we are on today, as failures rather than a bill.** Workers Free allows **100,000 DO requests and 13,000 GB-s per day**, and exceeding either makes further operations of that type **fail with an error** (reset 00:00 UTC).
+- **Polling the DO once a second breaks at 56 sessions/day.** O(1) gets ~3,467/day. On paid, the same comparison is ~$303/month vs $0 at 100k sessions — and **duration is ~90% of that**, because a DO polled every second never reaches the **10 s** hibernation threshold and bills its allocated **128 MB** for the whole session. Cost tracks *how long people stream*.
+- **Invariant, a P1 requirement:** DO requests per session are **O(1)**, never O(session duration). Rules: no polling (status rides the LiveKit data channel we already pay for), no heartbeats through the DO, **no non-hibernating** WebSocket, **no `setTimeout`/`setInterval`** (a pending timer makes the object ineligible for hibernation *entirely*), and the reaper alarm is **demand-driven — one alarm set to the earliest pending expiry, re-armed on wake**. A fixed-interval reaper would itself make alarm count scale with duration, breaking the invariant it was meant to serve.
+- **Test oracle defined in `ROADMAP.md` (source of truth), not left as "constant".** Counts every DO `fetch()` plus every `alarm()`. Clean session ≤3 req/0 alarms; abandoned ≤2 req/exactly 1 alarm; **short vs long session must be identical** (the row that actually catches a poll); N sessions ≤ N × budget. Discrimination-tested by adding a poll and by making the reaper fixed-interval.
+- **Next: P1a** — the Worker endpoint + `SessionRegistry` DO + that oracle.
 
 ## 2 August 2026 — ROADMAP v2.3: admin phase added, storage question answered
 

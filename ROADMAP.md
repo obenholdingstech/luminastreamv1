@@ -102,59 +102,101 @@ and told so. That is the single largest functional limit in the product.
   history** — nothing here should be the only copy of anything a person would
   miss. That is **P4**.
 
-  **Cost.** The account is on Workers **Free** (confirmed by the CEO, 2 Aug
-  2026), where SQLite-backed Durable Objects are included. But the plan we are
-  on today is the wrong thing to design against — see the invariant below, which
-  is a **P1 requirement, not a P9 optimisation**.
+  **Cost.** The account is on Workers **Free** (CEO, 2 Aug 2026), where
+  SQLite-backed Durable Objects are included — **within daily quotas of 100,000
+  DO requests and 13,000 GB-s, reset at 00:00 UTC.** Exceeding either does not
+  produce a bill; **further operations of that type fail with an error**. On the
+  free tier, a wasteful DO is an availability problem before it is ever a cost
+  problem.
 
 #### The O(1) invariant — a P1 requirement
 
 **DO requests per session must be a constant, independent of how long the
 session lasts.** Never O(session duration).
 
-This is written here, before the code, because the DO's *shape* is the expensive
-thing to change later — not its implementation. Raised by the CEO on 2 Aug 2026,
-and the arithmetic supports the concern more sharply than expected.
+Written here, before the code, because the DO's *shape* is the expensive thing
+to change later — not its implementation. Raised by the CEO on 2 Aug 2026 as a
+future paid-plan cost risk; the arithmetic says it bites on the plan we are on
+today, and harder.
 
-On Workers Paid: requests are **$0.15/M** (1M included) and duration is
-**$12.50/M GB-s** (400,000 included), where a DO is billed for its allocated
-**128 MB** whenever it is awake. It hibernates after **10 s** with no request or
-event. At 100,000 sessions a month of 30 minutes each:
+A DO is billed for its allocated **128 MB** whenever awake, and hibernates after
+**10 s** with no request or event. That single fact drives everything below.
+
+**On Workers Free — where we are now.** 13,000 GB-s/day is 28.9 awake-hours/day.
+
+| Design | Per session | Sessions/day before operations start failing |
+|---|---|---|
+| Browser polls the DO once a second | 1800 req, 1800 s awake | **56** |
+| Create + capacity read + end | 3 req, ~30 s awake | **3,467** |
+
+**Fifty-six sessions a day.** Not a surprising invoice — a product that stops
+creating sessions, at a scale we would pass in the first week of having users.
+
+**On Workers Paid — where we are going.** Requests $0.15/M (1M included),
+duration $12.50/M GB-s (400,000 included). At 100,000 sessions/month of 30
+minutes:
 
 | Design | Requests | GB-s | Monthly |
 |---|---|---|---|
-| Browser polls the DO once a second | 180,000,000 | 22,500,000 | **~$303** |
-| Create + end + one capacity read | 300,000 | ~375,000 | **$0** (inside the included tiers) |
+| Polling once a second | 180,000,000 | 22,500,000 | **~$303** |
+| Create + capacity read + end | 300,000 | ~375,000 | **$0** |
 
-The counterintuitive part, and the reason "just don't call it too much" is not
-the lesson: **duration is ~90% of that bill, not requests.** A DO polled every
-second never reaches the 10-second hibernation threshold, so it bills 128 MB of
-wall clock for the entire session. The cost therefore tracks **how long people
-stream**, which is precisely the axis this product intends to grow along.
+The 375,000 GB-s assumes each of the three requests keeps the object awake for
+one full 10-second hibernation window and that none of them overlap — the
+pessimistic reading. In practice concurrent sessions share warm windows, so the
+real figure is lower.
+
+**Duration is ~90% of the paid-plan bill, not requests.** A DO polled every
+second never reaches the 10-second threshold, so it bills 128 MB of wall clock
+for the entire session — which makes cost track **how long people stream**,
+precisely the axis this product intends to grow along. The lesson is not "don't
+call it too much". It is **"don't keep it awake"**.
 
 Five rules follow, all cheap now and all expensive to retrofit:
 
 1. **No polling.** The browser is told its room once, at create. Everything after
-   that — agent ready, mode confirmed, session ending — travels over the LiveKit
-   data channel we already pay for and which is the right transport for it.
+   — agent ready, mode confirmed, session ending — travels over the LiveKit data
+   channel we already pay for and which is the right transport for it anyway.
 2. **No heartbeats through the DO.** Agent liveness is not the DO's business.
-   Routing a 10-second heartbeat through it converts a health check into a
-   permanently-awake billable object.
-3. **No WebSocket to the DO.** Accepting one bills duration for the entire time
-   it stays connected. If a future design genuinely needs one, it uses the
-   **Hibernation API** — the docs' own worked example takes a case from $138.65
+   Routing a 10-second health check through it converts liveness monitoring into
+   a permanently-awake object.
+3. **No non-hibernating WebSocket to the DO.** A standard WebSocket bills
+   duration for its entire connected life. The **Hibernation API** is the only
+   acceptable form, and Cloudflare's own worked example takes a case from $138.65
    to $10.00.
-4. **No `setTimeout` or `setInterval` inside the DO.** A pending timer makes the
-   object *ineligible for hibernation altogether*, so a single stray one silently
-   bills the full wall clock. Deferred work uses `alarm()`.
-5. **One reaper alarm, not per-session timers.** Alarm invocations are billed as
-   requests, so abandoned sessions are swept on a single sane interval rather
-   than by scheduling one wake-up per session.
+4. **No `setTimeout`/`setInterval` inside a DO.** The subtle one: a pending timer
+   makes the object **ineligible for hibernation altogether**, so a single stray
+   line silently bills full wall clock with no other symptom. Deferred work uses
+   `alarm()`.
+5. **The reaper alarm is demand-driven, never fixed-interval.** A reaper that
+   wakes every N minutes while any session is open makes alarm invocations —
+   which bill as requests — scale with session duration, **breaking the very
+   invariant this section exists to state**. Instead the DO keeps **one** alarm,
+   always set to the *earliest pending expiry*; on wake it reaps what expired and
+   re-arms to the next one, or to nothing. A session that ends cleanly costs zero
+   alarm wakeups; an abandoned one costs exactly one, whether it was abandoned
+   after a minute or after a day.
 
-**Enforced, not just documented.** P1 ships a test that drives a full session
-lifecycle against the DO and asserts the request count is a constant — so
-"someone adds a poll" fails in CI rather than on a bill. A rule with no test is
-a preference.
+#### The test oracle
+
+"Constant" is not a test. P1 ships `SessionRegistry` with a lifecycle test that
+counts **every `fetch()` into the DO stub plus every `alarm()` invocation**, and
+asserts:
+
+| Case | Budget |
+|---|---|
+| Clean session: create → end | **≤ 3** requests, **0** alarms |
+| Abandoned session: create → reaped | **≤ 2** requests, **exactly 1** alarm |
+| **Short vs long session** | counts **identical** — a 1-minute and a 10-hour session must cost the same |
+| N concurrent sessions | **≤ N × budget** — linear in sessions is expected and fine |
+
+The third row is the invariant itself, and the only one that catches a poll
+being added later. The others bound the constant; that one proves it *is* a
+constant.
+
+Discrimination-tested like everything else: adding a poll to the session path,
+or converting the reaper to a fixed interval, must turn that row red.
+
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
