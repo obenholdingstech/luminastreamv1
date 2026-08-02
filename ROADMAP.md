@@ -206,8 +206,26 @@ Five rules follow, all cheap now and all expensive to retrofit:
    invariant this section exists to state**. Instead the DO keeps **one** alarm,
    always set to the *earliest pending expiry*; on wake it reaps what expired and
    re-arms to the next one, or to nothing. A session that ends cleanly costs zero
-   alarm wakeups; an abandoned one costs exactly one, whether it was abandoned
-   after a minute or after a day.
+   alarm wakeups; an abandoned one costs **at most one** — no matter how far
+   into its lease it was abandoned, and no matter how long the registry then
+   sits idle before anything touches it again.
+
+   *At most*, not *exactly*: **one wakeup reaps everything that has expired**, so
+   abandoned sessions sharing an expiry instant cost one alarm between them
+   rather than one each. The bound is the number of **distinct pending
+   expiries** — at most one per session, and often exactly that, since a lease
+   runs from creation and sessions started at different moments expire at
+   different moments. The saving applies only when creates coincide.
+
+   The half that carries the invariant is the other one: **the bound does not
+   grow with elapsed time.** Alarm count is bounded by how many sessions were
+   abandoned, never by how long anything ran or how long the registry then sat
+   idle. "Exactly one" is what the isolated single-session oracle row asserts —
+   the tightest case, not the general rule.
+
+   (A session cannot be abandoned "after a day" either: it cannot outlive its
+   lease. What can run for a day is the *silence afterwards*, and that silence is
+   precisely what a fixed-interval reaper would charge for.)
 
 #### The test oracle
 
