@@ -62,9 +62,21 @@ const LIMIT_UNAVAILABLE = 'unavailable';
 async function checkRateLimit(limiter, key) {
   if (!limiter || typeof limiter.limit !== 'function') return LIMIT_UNAVAILABLE;
   try {
-    const { success } = await limiter.limit({ key });
-    return success ? LIMIT_OK : LIMIT_EXCEEDED;
-  } catch {
+    const result = await limiter.limit({ key });
+    // `success` must be an actual boolean. A limiter that returns undefined —
+    // an API shape change, a stub that forgot the field — would otherwise be
+    // read as falsy and reported as EXCEEDED, silently 429ing every request on
+    // the endpoint while looking like ordinary throttling in the logs. Only a
+    // literal `false` means "over limit"; anything else means we do not know,
+    // and not knowing is UNAVAILABLE.
+    if (typeof result?.success !== 'boolean') return LIMIT_UNAVAILABLE;
+    return result.success ? LIMIT_OK : LIMIT_EXCEEDED;
+  } catch (err) {
+    // Logged, because the whole point of failing closed is to make a broken
+    // guard visible. Without this an operator can only infer it from a rising
+    // 503 rate, and cannot tell a transient binding failure from a permanent
+    // misconfiguration.
+    console.error('rate limiter binding failed', err);
     return LIMIT_UNAVAILABLE;
   }
 }

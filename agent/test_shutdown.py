@@ -16,10 +16,13 @@ some platforms and the code deliberately falls through to default handling.
 """
 
 import os
+import queue
+import re
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -54,6 +57,22 @@ HARNESS = textwrap.dedent(
 )
 
 
+# add_signal_handler is not implemented on every platform — wait_for_stop
+# deliberately falls through to default handling there, which these tests are
+# not asserting about.
+_HAS_LOOP_SIGNALS = hasattr(signal, "SIGTERM") and os.name == "posix"
+
+
+def _reap(proc):
+    """Kill and collect, so a failed assertion never leaves an orphan behind."""
+    if proc.poll() is None:
+        proc.kill()
+    try:
+        return proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:  # pragma: no cover - the kill did not take
+        return ("", "")
+
+
 def _spawn():
     proc = subprocess.Popen(
         [sys.executable, "-c", HARNESS.format(agent_dir=AGENT_DIR)],
@@ -64,29 +83,76 @@ def _spawn():
         # up to pytest itself and take the whole run down with it.
         start_new_session=True,
     )
-    # Wait for the handlers to actually be installed. Signalling before that is
-    # a race that would test the interpreter's default handling instead of ours.
+
+    # Read on a thread rather than calling readline() directly. readline blocks
+    # until a newline arrives, so a child that hangs before printing anything
+    # would block here FOREVER and the deadline below would never be evaluated
+    # — a hung test rather than a failed one, which is strictly worse: it burns
+    # the CI job's whole timeout and reports nothing.
+    # The thread OWNS proc.stdout for the rest of the process's life, which is
+    # why the queue is handed back to the caller. communicate() cannot be used
+    # for stdout afterwards — the pipe is already drained and it would return
+    # an empty string, which reads exactly like "the child printed nothing".
+    lines = queue.Queue()
+
+    def pump():
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)  # EOF sentinel
+
+    threading.Thread(target=pump, daemon=True).start()
+
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        line = proc.stdout.readline()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _reap(proc)
+            raise AssertionError("harness never became READY within 10s")
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            continue
+        if line is None:
+            _, err = _reap(proc)
+            raise AssertionError(f"harness exited before READY:\n{err}")
         if line.strip() == "READY":
-            return proc
-        if proc.poll() is not None:
-            raise AssertionError(f"harness died early: {proc.stderr.read()}")
-    proc.kill()
-    raise AssertionError("harness never became READY")
+            return proc, lines
 
 
+def _drain(lines, timeout):
+    """Everything the child printed after READY, up to EOF."""
+    out = []
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "".join(out)
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            return "".join(out)
+        if line is None:
+            return "".join(out)
+        out.append(line)
+
+
+@pytest.mark.skipif(
+    not _HAS_LOOP_SIGNALS,
+    reason="loop signal handlers are POSIX-only; wait_for_stop falls back elsewhere",
+)
 @pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM"])
 def test_stops_cleanly_and_exits_zero(signame):
     """Both signals shut down cleanly, and the exit status says 'fine'."""
-    proc = _spawn()
+    proc, lines = _spawn()
     proc.send_signal(getattr(signal, signame))
+
+    out = _drain(lines, timeout=15)
     try:
-        out, err = proc.communicate(timeout=15)
+        proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _reap(proc)
         pytest.fail(f"{signame} did not stop the agent within 15s")
+    err = proc.stderr.read()
 
     assert "CLEAN" in out, f"{signame} did not reach the clean shutdown path\n{err}"
     assert proc.returncode == 0, (
@@ -100,26 +166,41 @@ def test_stops_cleanly_and_exits_zero(signame):
 
 def test_run_seconds_ends_the_run_without_any_signal():
     """Scripted drills take signals out of the picture entirely."""
+    # The duration is measured INSIDE the child, around the await alone.
+    #
+    # Timing the subprocess from out here would include interpreter startup and
+    # importing convert_agent — which pulls numpy and torch and costs well over
+    # a second. A lower bound on that total is satisfied by the imports no
+    # matter what wait_for_stop does, so the assertion would pass even with
+    # run_seconds ignored entirely. Verified: mutating the timeout to 0.001
+    # failed nothing until this measurement moved inside.
     harness = textwrap.dedent(
         f"""
-        import asyncio, sys
+        import asyncio, sys, time
         sys.path.insert(0, {AGENT_DIR!r})
         from convert_agent import wait_for_stop
 
         async def main():
+            t0 = time.monotonic()
             await wait_for_stop(run_seconds=0.4)
-            print("ELAPSED", flush=True)
+            print("WAITED %.4f" % (time.monotonic() - t0), flush=True)
 
         asyncio.run(main())
         """
     )
-    started = time.monotonic()
     proc = subprocess.run(
         [sys.executable, "-c", harness],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "ELAPSED" in proc.stdout
-    assert time.monotonic() - started < 10, "run_seconds did not bound the run"
+    match = re.search(r"WAITED ([0-9.]+)", proc.stdout)
+    assert match, f"harness did not report a duration:\n{proc.stdout}\n{proc.stderr}"
+    waited = float(match.group(1))
+
+    # BOTH bounds. An upper bound alone cannot fail on the behaviour this test
+    # names: if run_seconds were ignored and the wait returned immediately,
+    # "finished quickly" would still hold and the test would guard nothing.
+    assert waited >= 0.3, f"run_seconds was not honoured — waited {waited:.4f}s"
+    assert waited < 5, f"run_seconds did not bound the run ({waited:.2f}s)"

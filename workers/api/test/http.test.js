@@ -302,3 +302,25 @@ test('503 (ours) and 429 (theirs) stay distinguishable', async () => {
   assert.equal(throttled.status, 429);
   assert.notEqual((await missing.json()).error, (await throttled.json()).error);
 });
+
+test('a limiter returning a non-boolean success is unavailable, not a 429', async () => {
+  // Read as falsy, an undefined `success` would report EXCEEDED — silently
+  // 429ing every request while looking like ordinary throttling in the logs.
+  for (const bad of [{}, { success: undefined }, { success: 'yes' }, { success: 1 }, null]) {
+    const env = { ...BASE_ENV, VERIFY_LIMITER: { async limit() { return bad; } } };
+    const res = await call(
+      req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+      env,
+    );
+    assert.equal(res.status, 503, `limiter returning ${JSON.stringify(bad)} must be unavailable`);
+  }
+});
+
+test('only a literal false means over-limit', async () => {
+  const env = { ...BASE_ENV, VERIFY_LIMITER: { async limit() { return { success: false }; } } };
+  const res = await call(
+    req('/api/admin/verify', { method: 'POST', body: { password: ADMIN_PASSWORD } }),
+    env,
+  );
+  assert.equal(res.status, 429);
+});
