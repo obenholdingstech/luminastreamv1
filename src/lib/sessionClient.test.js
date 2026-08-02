@@ -316,3 +316,18 @@ test('a refusal with no error field at all still reads as English', async () => 
     return true;
   });
 });
+
+test('a busy refusal carries the counts, so the cause is diagnosable', async () => {
+  // "The lens is busy" reads the same whether someone else is genuinely
+  // talking or a stuck slot is holding the only room — and those want opposite
+  // actions (wait vs. reset). The numbers travel with the error.
+  stub(async () =>
+    jsonResponse(503, { ok: false, error: 'at_capacity', live: 1, capacity: 1, pool: 1 }),
+  );
+  await assert.rejects(() => createSession('t', BASE), (err) => {
+    assert.equal(err.live, 1);
+    assert.equal(err.capacity, 1);
+    assert.equal(err.pool, 1);
+    return true;
+  });
+});

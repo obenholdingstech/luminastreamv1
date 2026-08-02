@@ -24,11 +24,18 @@ export { DEFAULT_TIMEOUT_MS };
  * without matching on prose. `at_capacity` and `sessions_disabled` are both
  * 503 and mean opposite things about whether retrying is worth it.
  *
+ * `at_capacity` additionally carries live/capacity/pool, because "the lens is
+ * busy" reads identically whether someone else is talking or a stuck slot is
+ * holding the only room — and those two want opposite actions.
+ *
  * @param {string} message
  * @param {{ status?: number, code?: string }} [meta]
+ * @returns {Error & { status?: number, code?: string, live?: number, capacity?: number, pool?: number }}
  */
 function sessionError(message, { status, code } = {}) {
-  const err = /** @type {Error & { status?: number, code?: string }} */ (new Error(message));
+  const err = /** @type {Error & { status?: number, code?: string, live?: number, capacity?: number, pool?: number }} */ (
+    new Error(message)
+  );
   if (status !== undefined) err.status = status;
   if (code !== undefined) err.code = code;
   return err;
@@ -39,10 +46,18 @@ function describeRefusal(status, data) {
   if (code === 'at_capacity') {
     // Deliberately about people, not slots: "capacity" is our word for it and
     // means nothing to whoever is trying to talk.
-    return sessionError('the lens is busy right now — try again in a moment', {
+    //
+    // The counts ride along on the error because the first live drill produced
+    // this message with no way to tell "someone else is talking" apart from "a
+    // stuck slot is holding the only room". Same sentence, opposite actions.
+    const err = sessionError('the lens is busy right now — try again in a moment', {
       status,
       code,
     });
+    err.live = data?.live;
+    err.capacity = data?.capacity;
+    err.pool = data?.pool;
+    return err;
   }
   if (code === 'sessions_disabled') {
     // Permanent for this deployment. Saying "try again" here would be a lie

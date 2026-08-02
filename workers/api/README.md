@@ -14,6 +14,7 @@ take, replacing the DEV-ONLY `scripts/generate-livekit-token.js`.
 | POST   | `/api/session/create`    | `X-Admin-Token`   | → `{ sessionId, endToken, room, identity, token, url, expiresAt }` |
 | POST   | `/api/session/end`       | `X-Admin-Token`   | `{ sessionId, endToken }` → releases the slot            |
 | GET    | `/api/session/capacity`  | `X-Admin-Token`   | `{ enabled, live, capacity, available, pool }`            |
+| POST   | `/api/session/reset`     | `X-Admin-Token`   | releases **every** slot → `{ released }` (operator tool)  |
 
 `/api/session/create` refuses with **503** and one of two distinct errors:
 `at_capacity` (every agent is busy — a queue that will clear) or
@@ -107,6 +108,32 @@ call they are mid-sentence in. It presents as a flaky connection, never as a
 configuration error. A test also parses `agent/convert_agent.py` and asserts the
 default pool equals the agent's `DEFAULT_ROOM`, so a rename on one side cannot
 quietly hand out a room nobody serves.
+
+### Recovering a stuck slot
+
+A slot is held from Start to Stop, and one nobody releases stays held until its
+lease expires. The lease is a backstop for the paths where no client code can
+run — a hard tab close, a dead laptop. **It is not an operation**, and the first
+live drill proved why: a held slot with no client left to release it, and no
+recovery available short of waiting two hours.
+
+```bash
+scripts/reset-sessions.sh production   # or staging
+```
+
+Reads `ADMIN_PASSWORD` from the gitignored `secrets.env` and pipes it straight
+into the request — never echoed, never in argv, never in shell history. Prints
+capacity before and after, so the output says what was actually stuck rather
+than only what was cleared.
+
+It is **blunt on purpose**: it cannot tell a stuck slot from a live one, because
+from the server they are identical — a record with time left on it looks the
+same whether someone is speaking into it or the tab closed an hour ago. It can
+therefore cut off a real session. Use it when the lens refuses with "busy" and
+nobody is using it.
+
+`at_capacity` refusals now carry `live`, `capacity` and `pool`, so the next one
+says which case it is instead of leaving it to be inferred.
 
 ### The lease
 

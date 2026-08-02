@@ -462,3 +462,65 @@ test('a failed LiveKit mint gives the slot back instead of leaking capacity', as
   assert.equal((await (await readCapacity(env, token)).json()).available, 1);
   assert.equal(h.pendingAlarm(), null, 'and the released slot takes its alarm with it');
 });
+
+// ─── the operator escape hatch, through HTTP ───────────────────────────────
+
+test('reset frees a stuck slot so the lens works again without waiting a lease', async () => {
+  const { env, h } = setup({ capacity: 1 });
+  const token = await adminToken(env);
+
+  // A slot claimed and then abandoned by a client that never came back — the
+  // exact state the first live drill hit.
+  await createSession(env, token);
+  assert.equal((await createSession(env, token)).status, 503);
+
+  const res = await worker.fetch(
+    req('/api/session/reset', { method: 'POST', origin: STUDIO, token }),
+    env,
+  );
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).released, 1);
+  // Checked here, BEFORE the next create — which correctly arms a new alarm.
+  assert.equal(h.pendingAlarm(), null, 'nothing pending, so nothing may wake the reaper');
+
+  assert.equal((await createSession(env, token)).status, 200, 'usable immediately');
+});
+
+test('reset requires an admin session and the right method', async () => {
+  const { env } = setup();
+  const token = await adminToken(env);
+  assert.equal(
+    (await worker.fetch(req('/api/session/reset', { method: 'POST' }), env)).status,
+    401,
+  );
+  assert.equal(
+    (await worker.fetch(req('/api/session/reset', { token }), env)).status,
+    405,
+  );
+});
+
+test('reset fails closed when the registry binding is missing', async () => {
+  const { env } = setup();
+  const token = await adminToken(env);
+  const res = await worker.fetch(
+    req('/api/session/reset', { method: 'POST', token }),
+    { ...env, SESSION_REGISTRY: undefined },
+  );
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'session_registry_unavailable');
+});
+
+test('at_capacity reports the numbers, so a refusal is self-diagnosing', async () => {
+  // The first drill produced "the lens is busy" with no way to tell whether
+  // one slot was legitimately in use or a stuck one was holding the only room.
+  // The counts travel with the refusal now.
+  const { env } = setup({ capacity: 1 });
+  const token = await adminToken(env);
+  await createSession(env, token);
+
+  const body = await (await createSession(env, token)).json();
+  assert.equal(body.error, 'at_capacity');
+  assert.equal(body.live, 1);
+  assert.equal(body.capacity, 1);
+  assert.equal(body.pool, 1);
+});
