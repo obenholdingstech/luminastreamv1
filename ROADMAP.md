@@ -1,6 +1,6 @@
 # LuminaStream — Roadmap & Canon
 
-**v2.3 · 2 August 2026**
+**v2.4 · 2 August 2026**
 
 This is the canonical description of what LuminaStream is, what state it is in,
 and what order the remaining work happens in. It exists because the previous
@@ -50,6 +50,7 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
 | Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
+| Cloudflare plan | **Workers Free** (2 Aug 2026). P1's Durable Object is included — but see P1's O(1) invariant, which is designed for the paid plan we will grow into. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
@@ -101,12 +102,59 @@ and told so. That is the single largest functional limit in the product.
   history** — nothing here should be the only copy of anything a person would
   miss. That is **P4**.
 
-  **Cost, conditionally.** SQLite-backed Durable Objects are available on the
-  Workers **Free** plan, so on Free and within its documented limits P1 adds no
-  incremental Cloudflare charge. On Workers **Paid** they are metered — requests,
-  duration and storage — on top of that plan's monthly minimum. Which plan this
-  account is on has not been checked, so *"P1 is free"* is a claim this document
-  is not entitled to make until it has been.
+  **Cost.** The account is on Workers **Free** (confirmed by the CEO, 2 Aug
+  2026), where SQLite-backed Durable Objects are included. But the plan we are
+  on today is the wrong thing to design against — see the invariant below, which
+  is a **P1 requirement, not a P9 optimisation**.
+
+#### The O(1) invariant — a P1 requirement
+
+**DO requests per session must be a constant, independent of how long the
+session lasts.** Never O(session duration).
+
+This is written here, before the code, because the DO's *shape* is the expensive
+thing to change later — not its implementation. Raised by the CEO on 2 Aug 2026,
+and the arithmetic supports the concern more sharply than expected.
+
+On Workers Paid: requests are **$0.15/M** (1M included) and duration is
+**$12.50/M GB-s** (400,000 included), where a DO is billed for its allocated
+**128 MB** whenever it is awake. It hibernates after **10 s** with no request or
+event. At 100,000 sessions a month of 30 minutes each:
+
+| Design | Requests | GB-s | Monthly |
+|---|---|---|---|
+| Browser polls the DO once a second | 180,000,000 | 22,500,000 | **~$303** |
+| Create + end + one capacity read | 300,000 | ~375,000 | **$0** (inside the included tiers) |
+
+The counterintuitive part, and the reason "just don't call it too much" is not
+the lesson: **duration is ~90% of that bill, not requests.** A DO polled every
+second never reaches the 10-second hibernation threshold, so it bills 128 MB of
+wall clock for the entire session. The cost therefore tracks **how long people
+stream**, which is precisely the axis this product intends to grow along.
+
+Five rules follow, all cheap now and all expensive to retrofit:
+
+1. **No polling.** The browser is told its room once, at create. Everything after
+   that — agent ready, mode confirmed, session ending — travels over the LiveKit
+   data channel we already pay for and which is the right transport for it.
+2. **No heartbeats through the DO.** Agent liveness is not the DO's business.
+   Routing a 10-second heartbeat through it converts a health check into a
+   permanently-awake billable object.
+3. **No WebSocket to the DO.** Accepting one bills duration for the entire time
+   it stays connected. If a future design genuinely needs one, it uses the
+   **Hibernation API** — the docs' own worked example takes a case from $138.65
+   to $10.00.
+4. **No `setTimeout` or `setInterval` inside the DO.** A pending timer makes the
+   object *ineligible for hibernation altogether*, so a single stray one silently
+   bills the full wall clock. Deferred work uses `alarm()`.
+5. **One reaper alarm, not per-session timers.** Alarm invocations are billed as
+   requests, so abandoned sessions are swept on a single sane interval rather
+   than by scheduling one wake-up per session.
+
+**Enforced, not just documented.** P1 ships a test that drives a full session
+lifecycle against the DO and asserts the request count is a constant — so
+"someone adds a poll" fails in CI rather than on a bill. A rule with no test is
+a preference.
 - Agent-per-session on the VPS, supervised, with a measured **capacity constant**
   (concurrent rooms per box — never yet measured; each agent loads its own Silero
   ONNX model, which dominates per-session memory).
@@ -498,7 +546,6 @@ pasted output.
 | `DECART_API_KEY` via `wrangler secret put` | **Only after** the P2 spend wall is merged and verified. |
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
-| Confirm the **Cloudflare Workers plan** | Free vs Paid decides whether P1's Durable Object is free or metered. See P1. |
 
 ---
 

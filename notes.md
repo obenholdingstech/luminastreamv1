@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 2 August 2026 — ROADMAP v2.4: the DO O(1) invariant (CEO cost concern, and it was right)
+
+- **CEO flagged that Durable Objects get metered on paid plans and that a chatty DO could run up a bill overnight.** Correct, and the arithmetic is sharper than expected. At 100k sessions/month × 30 min on Workers Paid: polling the DO once a second costs **~$303/month**, create+end costs **$0** (inside the included tiers).
+- **The trap is duration, not requests.** Duration is ~90% of that bill. A DO polled every second never reaches the **10 s** hibernation threshold, so it bills its allocated **128 MB** for the whole session — meaning cost tracks *how long people stream*, the exact axis this product grows along.
+- **The invariant, now a P1 requirement:** DO requests per session must be **O(1)**, never O(session duration). Five rules: no polling (status goes over the LiveKit data channel we already pay for), no heartbeats through the DO, no WebSocket without the Hibernation API, **no `setTimeout`/`setInterval` in a DO** (a pending timer makes it ineligible for hibernation entirely), one reaper `alarm()` rather than per-session timers.
+- **Enforced, not documented.** P1 ships a test that drives a full session lifecycle and asserts the DO request count is constant, so "someone adds a poll" fails in CI rather than on a bill.
+- **Account is on Workers Free** (CEO, 2 Aug) — struck from open actions. **Next: P1a**, the Worker endpoint + SessionRegistry DO.
+
 ## 2 August 2026 — ROADMAP v2.3: admin phase added, storage question answered
 
 - **P8 — Admin & operations** added at the CEO's request, scope deliberately open until we discuss it. Split into two things that get conflated: **operational visibility** (agent up? sessions live? capacity?) which needs no accounts and rides along with P1, and the **admin system proper** which reads identity (P4) and money (P5) and genuinely cannot exist sooner. Sketched what it usually covers — people, money, COGS-vs-charged, **audit log**, and role separation — as a starting point to react to, not a decision. Scale & harden renumbered P8 → P9.
