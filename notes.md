@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 2 August 2026 (night) — P1c: TWO AGENTS LIVE, capacity constant measured (#39, #40)
+
+- **#39 (zero findings — first clean pass):** systemd template `lumina-agent@<room>`; deploys restart + gate EVERY agent unit by name; harness 39→50 assertions. CEO ran the runbook cleanly; her paste showed the deploy had already restarted the primary itself.
+- **THE CONSTANT (first measurement, 2 Aug):** 7.8 GiB/4-core box; **~350 MiB RSS per agent** (325–338 observed, Silero-dominated); ~3 % lifetime-avg CPU ⇒ **⌊6963/350⌋ = 19 agents RAM-bound**. Caveat: `ps %cpu` is lifetime average — concurrent-load CPU unmeasured ⇒ **hold pool ≤ 6** until a two-conversation `top` drill. Floored, never rounded.
+- **#40:** pool = `luminastream-test,luminastream-2`, capacity **2**. E2E capacity-agnostic + paced (verify limiter is 5/60 s doctrine; the robot slows down instead). New test: **two browser contexts holding two sessions in two rooms simultaneously** — skips honestly while deployed pool is 1; 6/6 expected post-merge.
+- **Still owed:** CEO's scored voice drill (same-day log when run); concurrent-CPU measurement before pool > 6.
+
 ## 2 August 2026 (late) — INCIDENT: stuck slot → reset tool, root cause, E2E harness (#37 merged, #38)
 
 - **CEO's drill hit `503 at_capacity` with no session visible** — one stuck slot holding the only room. Unblocked by running the new `scripts/reset-sessions.sh production` (`live:1 → released:1 → live:0`).

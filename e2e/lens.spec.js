@@ -53,7 +53,14 @@ test.beforeAll(async () => {
 // (test 1 does, deliberately: it asserts the HELD state) poisoned every test
 // after it with at_capacity. The suite was recreating the exact incident it
 // exists to detect, as a fixture bug.
+let firstTest = true;
 test.beforeEach(async () => {
+  // Pace between tests. /api/admin/verify allows 5/60s per IP — it is a
+  // password oracle and that limit is doctrine — and every unlockAndStart
+  // spends one verify. Seven-plus tests back-to-back would trip it and read
+  // as product failures. The robot slows down; the control stays tight.
+  if (!firstTest) await new Promise((r) => setTimeout(r, 15_000));
+  firstTest = false;
   await post('/api/session/reset', token);
   const cap = await capacity(token);
   expect(cap.live, 'registry must be empty before each drill step').toBe(0);
@@ -94,7 +101,7 @@ test('the lens starts: a real slot, allocated by the server, visible in the UI',
   // And the server agrees the slot is held — the UI is not narrating a hope.
   const cap = await capacity(token);
   expect(cap.live).toBe(1);
-  expect(cap.available).toBe(0);
+  expect(cap.available).toBe(cap.capacity - 1);
 });
 
 test('stop releases the slot, and the server agrees', async ({ page }) => {
@@ -118,9 +125,9 @@ test('stop releases the slot, and the server agrees', async ({ page }) => {
 });
 
 test('start → stop → START AGAIN — the release path, proven by reuse', async ({ page }) => {
-  // The drill step that found the incident. If any stop/unload path fails to
-  // release, this second start refuses with "busy" — there is only one slot,
-  // so reuse is PROOF of release, not just absence of error.
+  // The drill step that found the incident. Release is PROVEN by the poll
+  // below — the server agreeing live===0 — not merely by the second start
+  // succeeding, which a pool of more than one room would let pass anyway.
   await unlockAndStart(page);
   await expectHolding(page);
   await page.getByRole('button', { name: 'Stop' }).click();
@@ -143,24 +150,70 @@ test('start → stop → START AGAIN — the release path, proven by reuse', asy
 });
 
 test('a busy lens says so in words — and recovers when the holder releases', async ({ page }) => {
-  // Somebody else holds the only slot (simulated via the API, which is what a
-  // second person's browser would do). The UI must refuse in prose, keep the
-  // access key exchanged (no re-login), and work the moment the slot frees.
-  const held = await post('/api/session/create', token);
-  expect(held.status).toBe(200);
+  // Every slot is held by somebody else (simulated via the API, which is what
+  // other people's browsers would do). Capacity-agnostic on purpose: the test
+  // reads the pool size from the server and fills it, so growing the pool
+  // never quietly turns this into a test of nothing.
+  const cap = await capacity(token);
+  const held = [];
+  for (let i = 0; i < cap.capacity; i += 1) {
+    const h = await post('/api/session/create', token);
+    expect(h.status, `filling slot ${i + 1} of ${cap.capacity}`).toBe(200);
+    held.push(h.body);
+  }
 
   await unlockAndStart(page);
   await expect(page.getByText(/the lens is busy right now/)).toBeVisible({ timeout: 15_000 });
 
-  // The other person leaves; ours retries with ONE click — the admin session
+  // One person leaves; ours retries with ONE click — the admin session
   // survived the refusal, so no password re-entry.
   await post('/api/session/end', token, {
-    sessionId: held.body.sessionId,
-    endToken: held.body.endToken,
+    sessionId: held[0].sessionId,
+    endToken: held[0].endToken,
   });
   await page.getByRole('button', { name: 'Start the lens' }).click();
   await expectHolding(page);
   await page.getByRole('button', { name: 'Stop' }).click();
+});
+
+test('TWO people at once — the first multi-user moment, proven', async ({ browser }) => {
+  // The point of P1c. Two separate browser contexts — two people, two
+  // sessionStorages, two mics — each holds a session AT THE SAME TIME, and
+  // the server hands each a DIFFERENT room, because a room with an agent in
+  // it serves one speaker. Before the pool had two rooms this was impossible,
+  // and this test skips rather than lies if it ever shrinks back.
+  const cap = await capacity(token);
+  test.skip(cap.capacity < 2, `pool capacity is ${cap.capacity} — multi-user needs 2+`);
+
+  const ctxA = await browser.newContext({ permissions: ['microphone'] });
+  const ctxB = await browser.newContext({ permissions: ['microphone'] });
+  const A = await ctxA.newPage();
+  const B = await ctxB.newPage();
+  try {
+    await unlockAndStart(A);
+    await expectHolding(A);
+    await unlockAndStart(B);
+    await expectHolding(B);
+
+    const roomOf = async (p) =>
+      (await p.locator('footer').textContent()).match(/room\s+(\S+)/)?.[1];
+    const roomA = await roomOf(A);
+    const roomB = await roomOf(B);
+    expect(roomA, 'each person gets their own agent-served room').not.toBe(roomB);
+
+    const mid = await capacity(token);
+    expect(mid.live).toBe(2);
+
+    // Both leave; both slots come home.
+    await A.getByRole('button', { name: 'Stop' }).click();
+    await B.getByRole('button', { name: 'Stop' }).click();
+    await expect
+      .poll(async () => (await capacity(token)).live, { intervals: [1000, 2000], timeout: 15_000 })
+      .toBe(0);
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
 });
 
 test('leaving the page releases the slot — the leak of 2 Aug, pinned', async ({ page }) => {

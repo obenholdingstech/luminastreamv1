@@ -34,15 +34,18 @@
     // The rooms an agent is ACTUALLY serving, comma-separated. A session slot
     // is a room with an agent in it — nothing else is a slot — so this is the
     // physical capacity limit and `MAX_CONCURRENT_SESSIONS` can only lower it.
-    // One entry today because one agent runs; P1c adds more by starting more
-    // (`convert_agent.py --room <name>`) and listing them here. Must match the
-    // agent's room exactly: a test parses convert_agent.py to enforce it.
-    "SESSION_ROOMS": "luminastream-test",
+    // Two entries since 2 Aug 2026: the primary (lumina-agent.service) and the
+    // template instance lumina-agent@luminastream-2. Growing further is one
+    // `systemctl --user enable --now lumina-agent@<room>` on the box, its
+    // gates confirmed, THEN the room added here — in that order, always.
+    // Measured constant (2 Aug, 7.8GiB/4-core box): ~350 MiB per agent ⇒
+    // ~19 RAM-bound; hold ≤6 until CPU under concurrent load is measured.
+    "SESSION_ROOMS": "luminastream-test,luminastream-2",
     // Policy ceiling on top of the pool. Effective capacity is
     // min(pool size, this), so it can never admit MORE sessions than there
     // are agents. It may equal that number — min permits equality — it just
     // cannot exceed it.
-    "MAX_CONCURRENT_SESSIONS": "1",
+    "MAX_CONCURRENT_SESSIONS": "2",
     // 2h. Simultaneously the maximum session length and the maximum time an
     // abandoned slot stays held. Hard-capped by the 6h LiveKit grant ceiling.
     "SESSION_LEASE_SECONDS": "7200"

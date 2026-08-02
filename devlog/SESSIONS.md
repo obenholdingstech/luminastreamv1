@@ -4,6 +4,75 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 2 August 2026 (night) — P1c: two agents, and the capacity constant exists (#39 merged, #40 open)
+
+### Task (verbatim)
+
+> "okay its working, now now lets go ahead with P1c, you said my hands at the
+> vps, whats required of me to do and provide me with everything i need. lets
+> keep the momentum going"
+
+### What happened, in order
+
+**#39 — the template unit.** `lumina-agent@<room>.service`: instance name is
+the room, identity derives as `echo-convert-<room>`, per-instance
+StartLimitBurst spend wall. `deploy-agent.sh` now discovers every agent unit
+(union of list-unit-files and list-units, bare template filtered), restarts
+each, gates each BY NAME, stray-scans against the set of MainPIDs. Harness
+grew 39 → 50 assertions; the mutation that silently drops @instances from the
+restart list reddens five. Zero CodeRabbit findings — the first clean pass of
+the day.
+
+**The CEO's hands (runbook executed cleanly, screenshot in chat, logged here
+same-day per the drill convention).** Box pulled #39 on its own; her
+`enable --now lumina-agent@luminastream-2` came up and connected as
+`echo-convert-luminastream-2`, mode=convert, publishing stats. Quiet proof in
+her paste: the PRIMARY showed ELAPSED 10:44 against the instance's 05:04 —
+**the pull-based deploy had already restarted the primary itself** when #39
+landed. The multi-unit deploy worked in production before we watched it work.
+
+### THE CAPACITY CONSTANT — measured for the first time
+
+| | |
+|---|---|
+| Box | 7.8 GiB RAM, 4 cores, swap 0, 6.8 GiB available |
+| Agent 1 RSS | 333 372 KiB idle → **346 128 KiB while the CEO spoke** (~325 → 338 MiB) |
+| Agent 2 RSS | 333 536 KiB idle (~326 MiB) |
+| CPU | ~3 % per agent — **lifetime average** (`ps %cpu`), see caveat |
+| Per-agent budget | **~350 MiB** (floored margin over worst observed) |
+| **RAM-bound ceiling** | **⌊6963 / 350⌋ = 19 agents** |
+
+**Caveat recorded, not glossed:** `ps` reports lifetime-average CPU, so a 30 s
+talk barely moves it — CPU under several *simultaneous* conversations is
+unmeasured. Published constant: **19 RAM-bound, hold ≤ 6 until concurrent-load
+CPU is measured** with `top` during a two-conversation drill. Floored, never
+rounded (doctrine).
+
+Also visible in her paste: agent 2's warm-up cost `TTS 1/5000 chars (1 call)`
+— the per-instance governor working, and the per-deploy warm-up price of a
+second agent (cents, capped by StartLimitBurst).
+
+### #40 — the pool of two
+
+`SESSION_ROOMS=luminastream-test,luminastream-2`, `MAX_CONCURRENT_SESSIONS=2`.
+E2E made capacity-agnostic (the busy test reads the pool size and fills it, so
+growth can never quietly turn it into a test of nothing) and **paced** — every
+unlock spends one verify against the 5/60 s password-oracle limit, and the
+robot slows down rather than anyone loosening a security control for tests.
+New test: **TWO people at once** — two browser contexts, two sessions
+simultaneously, two different rooms, both released. It skips (says so, does
+not lie) while the deployed pool is 1; the proving run happens post-merge.
+
+Pre-merge run against production: 5 passed, multi-user skipped, as designed.
+
+### Next
+
+Post-merge: `npm run e2e` must show 6/6 — the first multi-user moment, proven.
+Then still owed: the CEO's scored voice drill (DNS fixed, lens working), and
+the concurrent-load CPU measurement before the pool ever grows past 6.
+
+---
+
 ## 2 August 2026 (late) — INCIDENT: the stuck slot, reproduced, fixed, and pinned by E2E (#37 merged, #38 open)
 
 ### Task (verbatim)
