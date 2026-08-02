@@ -60,6 +60,16 @@ everything after it with the very at_capacity it exists to detect; and the
 reuse test clicked faster than the release could land (UI says "Lens off"
 before the server agrees — known wart, phase='stopping' sketched for P7).
 
+### Analyzer report and scorecard for this drill
+
+**None exist, and here is why rather than a hole:** the drill never reached
+audio. The LiveKit connection failed at DNS (Starlink blackhole), so there was
+no capture, nothing for `analyze_capture.py` to read, and nothing for the CEO
+to score. The drill's product was the incident above. **A scored voice drill on
+the new session flow is still owed** — it runs after the CEO applies the
+OS-level 1.1.1.1 fix, and gets logged same-day per the convention this section
+exists to honour.
+
 ### Still true / still owed
 
 - **The CEO's Mac needs the OS-level DNS fix** (1.1.1.1) before voice will
