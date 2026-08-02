@@ -1,9 +1,12 @@
 // LuminaStream API Worker — our first owned backend.
 //
-//   GET  /api/health         → { ok, version }                (public)
-//   POST /api/admin/verify   → { password } → { ok, token }   (rate-limited hard)
-//   POST /api/livekit/token  → { room, identity } → LiveKit access token
-//                              (requires a valid X-Admin-Token, rate-limited)
+//   GET  /api/health           → { ok, version }                (public)
+//   POST /api/admin/verify     → { password } → { ok, token }   (rate-limited hard)
+//   POST /api/livekit/token    → { room, identity } → LiveKit access token
+//                                (requires a valid X-Admin-Token, rate-limited)
+//   POST /api/session/create   → allocates a room + identity + grant   ┐ P1:
+//   POST /api/session/end      → releases the slot                     │ the
+//   GET  /api/session/capacity → { live, capacity, available }          ┘ session layer
 //
 // This is the path real users will eventually take, replacing the DEV-ONLY
 // `scripts/generate-livekit-token.js`. The LiveKit API secret lives ONLY in
@@ -13,13 +16,20 @@ import { handlePreflight, corsHeaders } from './cors.js';
 import { constantTimeCompareSecrets } from './crypto.js';
 import { signSession, verifySession } from './session.js';
 import { mintLiveKitToken } from './livekit.js';
+import { SessionRegistry } from './sessionRegistry.js';
 
 const VERSION = '0.1.0';
 
-function json(body, { status = 200, origin } = {}) {
+function json(body, { status = 200, origin, headers = {} } = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', ...corsHeaders(origin) },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...headers,
+      // CORS last: an extra header may never displace the allow-origin the
+      // browser needs to read this response at all.
+      ...corsHeaders(origin),
+    },
   });
 }
 
@@ -160,6 +170,185 @@ async function handleToken(request, env, origin) {
   }
 }
 
+// ─── the session layer ─────────────────────────────────────────────────────
+//
+// One Durable Object instance, addressed by a fixed name. That is the point of
+// it: capacity is a single global count, and a count with two authorities is
+// not a count. Every /api/session/* request lands on the same object, which is
+// what makes "are we full?" answerable when two people press Start at once.
+const REGISTRY_NAME = 'global';
+
+// Talk to the registry, or report that we cannot.
+//
+// Returns null when the binding is missing or the stub throws — the same
+// fail-closed posture as checkRateLimit. A deploy that drops the
+// `durable_objects` block from wrangler.jsonc must refuse sessions loudly, not
+// hand out unbounded rooms with nothing counting them.
+async function callRegistry(env, path, body) {
+  const ns = env?.SESSION_REGISTRY;
+  if (!ns || typeof ns.idFromName !== 'function' || typeof ns.get !== 'function') return null;
+  try {
+    const stub = ns.get(ns.idFromName(REGISTRY_NAME));
+    return await stub.fetch(
+      new Request(`https://session-registry.internal${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      }),
+    );
+  } catch (err) {
+    console.error('session registry binding failed', err);
+    return null;
+  }
+}
+
+const registryUnavailable = (origin) =>
+  json({ ok: false, error: 'session_registry_unavailable' }, { status: 503, origin });
+
+// The gate every /api/session/* route passes first: throttle, then session.
+// Rate-limit BEFORE auth for the same reason /api/livekit/token does — an
+// unauthenticated flood must be stopped by the cheap check, not the HMAC.
+// Returns a Response to refuse with, or null to proceed.
+async function sessionGate(request, env, origin) {
+  const limit = rateLimitRefusal(
+    await checkRateLimit(env.SESSION_LIMITER, clientIp(request)),
+    origin,
+  );
+  if (limit) return limit;
+
+  if (!env.ADMIN_SESSION_SECRET) {
+    return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
+  }
+  const session = await verifySession(env.ADMIN_SESSION_SECRET, request.headers.get('X-Admin-Token'));
+  if (!session.valid) return json({ ok: false, error: 'unauthorized' }, { status: 401, origin });
+  return null;
+}
+
+// Map a registry refusal onto an HTTP response. `registry_misconfigured`
+// carries the offending variable's name for the log and NOT for the client.
+function registryRefusal(payload, origin) {
+  if (payload?.error === 'registry_misconfigured') {
+    console.error('session registry misconfigured:', payload.detail);
+    return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
+  }
+  if (payload?.error === 'at_capacity') {
+    return json(
+      { ok: false, error: 'at_capacity', live: payload.live, capacity: payload.capacity },
+      { status: 503, origin },
+    );
+  }
+  return null;
+}
+
+async function handleSessionCreate(request, env, origin) {
+  const refusal = await sessionGate(request, env, origin);
+  if (refusal) return refusal;
+
+  const res = await callRegistry(env, '/create');
+  if (!res) return registryUnavailable(origin);
+  const created = await res.json().catch(() => null);
+
+  if (!created?.ok) {
+    return (
+      registryRefusal(created, origin) ??
+      json({ ok: false, error: 'session_create_failed' }, { status: 502, origin })
+    );
+  }
+
+  const { session, endToken } = created;
+  // The grant is minted for exactly the lease the registry just issued, so the
+  // slot and the credential that can occupy it expire together. `expiresAt` is
+  // reported in epoch SECONDS, matching /api/livekit/token; the registry keeps
+  // milliseconds internally and this is the only place the two units meet.
+  const expiresAt = Math.floor(session.expiresAt / 1000);
+  const ttlSeconds = Math.max(1, expiresAt - Math.floor(Date.now() / 1000));
+
+  try {
+    const { token } = await mintLiveKitToken(env, {
+      room: session.room,
+      identity: session.identity,
+      ttlSeconds,
+    });
+    return json(
+      {
+        ok: true,
+        sessionId: session.id,
+        endToken,
+        room: session.room,
+        identity: session.identity,
+        token,
+        url: env.LIVEKIT_URL ?? null,
+        expiresAt,
+      },
+      { origin },
+    );
+  } catch {
+    // The slot is already allocated at this point. Give it back rather than
+    // leaving a room nobody can join holding capacity until its lease runs
+    // out. This is the error path, so the extra registry request is not on the
+    // budget the O(1) oracle measures.
+    await callRegistry(env, '/end', { sessionId: session.id, endToken });
+    return json({ ok: false, error: 'mint_failed' }, { status: 500, origin });
+  }
+}
+
+async function handleSessionEnd(request, env, origin) {
+  const refusal = await sessionGate(request, env, origin);
+  if (refusal) return refusal;
+
+  const body = await readJson(request);
+  const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+  const endToken = typeof body?.endToken === 'string' ? body.endToken : '';
+  if (!sessionId || !endToken) {
+    return json({ ok: false, error: 'session_and_token_required' }, { status: 400, origin });
+  }
+
+  const res = await callRegistry(env, '/end', { sessionId, endToken });
+  if (!res) return registryUnavailable(origin);
+  const ended = await res.json().catch(() => null);
+
+  if (!ended?.ok) {
+    if (ended?.error === 'end_refused') {
+      return json({ ok: false, error: 'end_refused' }, { status: 403, origin });
+    }
+    return (
+      registryRefusal(ended, origin) ??
+      json({ ok: false, error: 'session_end_failed' }, { status: 502, origin })
+    );
+  }
+  return json({ ok: true, ended: ended.ended === true, live: ended.live }, { origin });
+}
+
+async function handleSessionCapacity(request, env, origin) {
+  const refusal = await sessionGate(request, env, origin);
+  if (refusal) return refusal;
+
+  const res = await callRegistry(env, '/capacity');
+  if (!res) return registryUnavailable(origin);
+  const capacity = await res.json().catch(() => null);
+  if (!capacity?.ok) {
+    return (
+      registryRefusal(capacity, origin) ??
+      json({ ok: false, error: 'capacity_read_failed' }, { status: 502, origin })
+    );
+  }
+
+  // The one endpoint in the API that invites polling, so it is the one that
+  // gets a cache header. This is an admin-console read, not something the lens
+  // does — the lens is told its room once, at create (ROADMAP.md §P1 rule 1).
+  // Five seconds of browser caching means even a naive per-second poll reaches
+  // the Durable Object at a fifth of the rate.
+  return json(
+    {
+      ok: true,
+      live: capacity.live,
+      capacity: capacity.capacity,
+      available: capacity.available,
+    },
+    { status: 200, origin, headers: { 'Cache-Control': 'max-age=5' } },
+  );
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin');
@@ -189,8 +378,32 @@ export default {
       return handleToken(request, env, origin);
     }
 
+    if (pathname === '/api/session/create') {
+      if (request.method !== 'POST') {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return handleSessionCreate(request, env, origin);
+    }
+
+    if (pathname === '/api/session/end') {
+      if (request.method !== 'POST') {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return handleSessionEnd(request, env, origin);
+    }
+
+    if (pathname === '/api/session/capacity') {
+      if (request.method !== 'GET') {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return handleSessionCapacity(request, env, origin);
+    }
+
     return json({ ok: false, error: 'not_found' }, { status: 404, origin });
   },
 };
 
-export { VERSION };
+// Re-exported because a Durable Object class must be reachable from the
+// Worker's entrypoint — that is how the runtime resolves `class_name` in the
+// wrangler.jsonc binding and how the migration finds it.
+export { VERSION, SessionRegistry };
