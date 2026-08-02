@@ -159,7 +159,7 @@ test('ORACLE abandonment costs the same whether it is noticed in a minute or a w
 
 // ─── row 3: THE DURATION-SCALING DETECTOR ──────────────────────────────────
 
-test('ORACLE short vs long: a 1-minute and a 110-minute session cost exactly the same', async () => {
+test('ORACLE short vs long: a 30-second and a full-lease session cost exactly the same', async () => {
   async function runSession(holdMs) {
     const { env, h } = setup();
     const token = await adminToken(env);
@@ -177,13 +177,22 @@ test('ORACLE short vs long: a 1-minute and a 110-minute session cost exactly the
     return h.counts();
   }
 
-  const short = await runSession(30_000); // half a minute either side
-  const long = await runSession(55 * MINUTE); // 110 minutes, inside the 2h lease
+  const short = await runSession(15_000); // 30 seconds end to end
+  // Right up to the lease boundary — one second short of expiry, so this is
+  // the longest session the product can have, not merely a long one. Anything
+  // less would leave the claim "a full-lease session costs the same" untested
+  // at exactly the point it is most likely to stop being true.
+  const long = await runSession((LEASE_SECONDS * 1000 - 1000) / 2);
 
+  // Two assertions doing two different jobs, and it is worth being exact about
+  // which catches what. The comparison is the DURATION detector: it is the only
+  // thing that fails when cost tracks elapsed time. The absolute pins BOUND the
+  // constant: a uniform extra request would raise both sides equally and slip
+  // past the comparison untouched.
   assert.deepEqual(
     long,
     short,
-    'cost must not track duration — this is the row a poll cannot survive',
+    'cost must not track duration — this is the assertion a duration-scaling poll cannot survive',
   );
   assert.equal(short.requests, 3);
   assert.equal(short.alarms, 0);
@@ -272,7 +281,12 @@ test('the capacity read carries a cache header — the one route that invites po
   const token = await adminToken(env);
   const res = await readCapacity(env, token);
   assert.equal(res.status, 200);
-  assert.match(res.headers.get('Cache-Control') ?? '', /max-age=5/);
+  const cacheControl = res.headers.get('Cache-Control') ?? '';
+  assert.match(cacheControl, /max-age=5/);
+  // `private` matters: the route is authenticated by X-Admin-Token, which is
+  // not in Vary, so a shared cache would be entitled to key on the URL alone
+  // and serve one caller's capacity view to another.
+  assert.match(cacheControl, /\bprivate\b/);
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), STUDIO, 'CORS survives the header merge');
 });
 

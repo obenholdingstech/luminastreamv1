@@ -40,6 +40,13 @@ export function createRegistryHarness({ env = {}, startAt = Date.now() } = {}) {
     },
     async delete(key) {
       const keys = Array.isArray(key) ? key : [key];
+      // The real API accepts at most 128 keys per call. A fake that quietly
+      // swallowed 10,000 would make the chunking in #liveSessions untestable —
+      // and untested chunking is chunking that gets removed by the next person
+      // who finds it fussy.
+      if (keys.length > 128) {
+        throw new Error(`storage.delete() accepts at most 128 keys, got ${keys.length}`);
+      }
       let deleted = 0;
       for (const k of keys) if (store.delete(k)) deleted += 1;
       return deleted;

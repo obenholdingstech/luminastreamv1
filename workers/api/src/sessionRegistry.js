@@ -40,6 +40,10 @@ import { MAX_LIVEKIT_TTL_SECONDS } from './livekit.js';
 
 const KEY_PREFIX = 'session:';
 
+// Cloudflare's storage.delete() takes an array, but no more than 128 keys in
+// one call. Exceeding it throws — which would strand the whole sweep.
+const MAX_DELETE_KEYS = 128;
+
 // ─── lease and capacity ────────────────────────────────────────────────────
 //
 // The lease is the one number that makes a heartbeat unnecessary. A session
@@ -194,7 +198,14 @@ export class SessionRegistry {
         live.push(record);
       }
     }
-    if (dead.length > 0) await this.storage.delete(dead);
+    // storage.delete() accepts at most 128 keys per call, and
+    // MAX_CONCURRENT_SESSIONS permits far more than that. The batch only
+    // matters in the case where it would hurt most — every lease expiring at
+    // once, on a busy registry, with the reaper as the only thing that can
+    // clear them.
+    for (let i = 0; i < dead.length; i += MAX_DELETE_KEYS) {
+      await this.storage.delete(dead.slice(i, i + MAX_DELETE_KEYS));
+    }
     return live;
   }
 

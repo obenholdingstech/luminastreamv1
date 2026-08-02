@@ -162,6 +162,21 @@ test('a malformed stored record is swept rather than holding a slot forever', as
   assert.equal(h.stored().size, 0, 'the unparseable record must be cleaned up, not counted');
 });
 
+test('more than 128 leases expiring at once are all swept', async () => {
+  // storage.delete() takes at most 128 keys per call and THROWS above that, so
+  // an unchunked sweep would strand the whole reap — on the one occasion it
+  // matters most, a busy registry where every lease ran out together and the
+  // reaper is the only thing that can clear them. The harness enforces the real
+  // limit, so removing the chunking in #liveSessions turns this red.
+  const h = harness({ MAX_CONCURRENT_SESSIONS: '300', SESSION_LEASE_SECONDS: String(LEASE) });
+  for (let i = 0; i < 300; i += 1) await create(h);
+  assert.equal((await capacity(h)).body.live, 300);
+
+  await h.advanceBy((LEASE + 1) * 1000);
+  assert.equal(h.stored().size, 0, 'every expired record must be deleted, not the first 128');
+  assert.equal((await capacity(h)).body.available, 300);
+});
+
 // ─── the alarm: one, at the earliest expiry ────────────────────────────────
 
 test('create arms exactly one alarm, at the session expiry', async () => {
@@ -288,14 +303,53 @@ test('the Durable Object contains no timer and no WebSocket', () => {
   }
 });
 
-test('the class the wrangler binding names is the one exported from the entrypoint', async () => {
-  // `class_name: "SessionRegistry"` in wrangler.jsonc resolves against the
-  // Worker's exports. A rename that missed one of the two would deploy and
-  // then fail at runtime on the first session.
+function parseJsonc(source) {
+  return JSON.parse(
+    source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:"])\/\/.*$/gm, '$1')
+      .replace(/,(\s*[}\]])/g, '$1'),
+  );
+}
+
+test('EVERY wrangler environment binds SessionRegistry and migrates it', async () => {
+  // `class_name: "SessionRegistry"` resolves against the Worker's exports, so a
+  // rename that missed one of the two would deploy and then fail at runtime on
+  // the first session.
   const entry = await import('../src/index.js');
   assert.equal(entry.SessionRegistry, SessionRegistry);
 
-  const config = readFileSync(join(import.meta.dirname, '..', 'wrangler.jsonc'), 'utf8');
-  assert.match(config, /"class_name":\s*"SessionRegistry"/);
-  assert.match(config, /"new_sqlite_classes":\s*\[\s*"SessionRegistry"\s*\]/);
+  const config = parseJsonc(
+    readFileSync(join(import.meta.dirname, '..', 'wrangler.jsonc'), 'utf8'),
+  );
+  // Prove the parse before trusting it. A stripper that mangled the file into
+  // something that happened to parse would make every assertion below vacuous.
+  assert.equal(config.name, 'luminastream-api');
+  assert.equal(config.env.staging.name, 'luminastream-api-staging');
+
+  // Named environments inherit NEITHER durable_objects NOR migrations, so each
+  // scope has to be checked on its own. The previous version of this test
+  // grepped the file for one occurrence of each and would have passed happily
+  // with staging missing both — a test that could not fail on the thing it
+  // named.
+  const scopes = [
+    ['top-level', config],
+    ...Object.entries(config.env ?? {}).map(([name, scope]) => [`env.${name}`, scope]),
+  ];
+  assert.ok(scopes.length >= 2, 'there is at least one named environment to check');
+
+  for (const [where, scope] of scopes) {
+    const bindings = scope.durable_objects?.bindings ?? [];
+    assert.ok(
+      bindings.some((b) => b.class_name === 'SessionRegistry' && b.name === 'SESSION_REGISTRY'),
+      `${where} must bind SESSION_REGISTRY → SessionRegistry`,
+    );
+    // Not required to be the ONLY class — P2's SpendLedger lands in this same
+    // list, and this assertion must not have to be rewritten when it does.
+    const created = (scope.migrations ?? []).flatMap((m) => m.new_sqlite_classes ?? []);
+    assert.ok(
+      created.includes('SessionRegistry'),
+      `${where} migrations must create SessionRegistry (got ${JSON.stringify(created)})`,
+    );
+  }
 });

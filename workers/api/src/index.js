@@ -338,6 +338,11 @@ async function handleSessionCapacity(request, env, origin) {
   // does — the lens is told its room once, at create (ROADMAP.md §P1 rule 1).
   // Five seconds of browser caching means even a naive per-second poll reaches
   // the Durable Object at a fifth of the rate.
+  //
+  // `private` because the route is authenticated by X-Admin-Token and that
+  // header is not in Vary — a shared cache would otherwise be free to key the
+  // entry on the URL alone and hand one caller's response to another. The
+  // intent was always the browser's own cache; this says so.
   return json(
     {
       ok: true,
@@ -345,7 +350,7 @@ async function handleSessionCapacity(request, env, origin) {
       capacity: capacity.capacity,
       available: capacity.available,
     },
-    { status: 200, origin, headers: { 'Cache-Control': 'max-age=5' } },
+    { status: 200, origin, headers: { 'Cache-Control': 'private, max-age=5' } },
   );
 }
 
