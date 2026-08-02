@@ -129,11 +129,21 @@ A DO is billed for its allocated **128 MB** whenever awake, and hibernates after
 | Design | Per session | Sessions/day before operations start failing |
 |---|---|---|
 | Browser polls the DO once a second | 1800 req, 1800 s awake | **55** |
-| Create + capacity read + end | 3 req, ~30 s awake | **3,466** |
+| Create + capacity read + end | 3 req, ~30 ms **billable** | **33,333** |
 
-**Fifty-five sessions a day.** The request quota binds first (100,000 ÷ 1800 =
-55.5); duration would allow 57. Both floored — a partial session is not a
-session. And the consequence is not a surprising invoice: it is a product that
+**Fifty-five against thirty-three thousand.** For polling, the request quota
+binds first (100,000 ÷ 1800 = 55.5, floored — a partial session is not a
+session); duration would allow 57. For the O(1) design, requests bind at 33,333
+and duration allows millions.
+
+The asymmetry comes from *what is actually billable*. **A DO eligible for
+hibernation accrues no duration charge at all** — not even during the ten
+seconds before the runtime hibernates it. So an O(1) session bills only its
+active execution: three requests of single-digit-to-tens of milliseconds. A
+polled session bills 128 MB of continuous wall clock, because it never becomes
+eligible.
+
+And the consequence on Free is not a surprising invoice. It is a product that
 **stops creating sessions**, at a scale we would pass in the first week of
 having real users.
 
@@ -144,16 +154,21 @@ minutes:
 | Design | Requests | GB-s | Incremental DO charge |
 |---|---|---|---|
 | Polling once a second | 180,000,000 | 22,500,000 | **~$303** |
-| Create + capacity read + end | 300,000 | ~375,000 | **$0** |
+| Create + capacity read + end | 300,000 | **~375** | **$0** |
 
 That column is **incremental Durable Object usage only**. Workers Paid carries a
 **$5/month minimum** either way; the difference between the rows is what the
 coordination layer adds on top of it.
 
-The 375,000 GB-s assumes each of the three requests keeps the object awake for
-one full 10-second hibernation window and that none of them overlap — the
-pessimistic reading. In practice concurrent sessions share warm windows, so the
-real figure is lower.
+~375 GB-s is three requests × ~10 ms of active execution × 128 MB × 100,000
+sessions. Only active time counts, because a hibernation-eligible object is not
+billed for the window before it hibernates.
+
+The conclusion is robust to that estimate being wrong. Even under the
+deliberately pessimistic reading — every request somehow holding the object
+awake for a full 10-second window, none overlapping — it comes to 375,000 GB-s,
+which is *still* inside the 400,000 included. Three orders of magnitude of
+modelling error, same answer.
 
 **Duration is ~90% of the paid-plan bill, not requests.** A DO polled every
 second never reaches the 10-second threshold, so it bills 128 MB of wall clock
@@ -194,7 +209,7 @@ asserts:
 
 | Case | Budget |
 |---|---|
-| Clean session: create → end | **≤ 3** requests, **0** alarms |
+| Clean session: create → capacity read → end | **≤ 3** requests, **0** alarms |
 | Abandoned session: create → reaped | **≤ 2** requests, **exactly 1** alarm |
 | **Short vs long session** | counts **identical** — a 1-minute and a 10-hour session must cost the same |
 | N concurrent sessions | **≤ N × budget** — linear in sessions is expected and fine |
