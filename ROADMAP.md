@@ -510,10 +510,12 @@ already lives**: the orchestrator health-checks containers as its core job, so
 the orchestrator — not the agent — registers and deregisters rooms, on its own
 lifecycle events. Registration is idempotent (re-registering an existing room
 is a no-op); a crashed agent is deregistered by the same supervisor that
-noticed the crash; and self-registered rooms carry a coarse safety TTL
-(minutes, refreshed by orchestrator scale events — **never** by per-second
-heartbeats through the Durable Object, which §P1 rule 2 forbids) so a
-partitioned orchestrator's stale rooms age out instead of advertising capacity
+noticed the crash; and orchestrator-registered rooms carry a coarse safety
+TTL that **the orchestrator itself refreshes** on its scale events — one
+owner for registration, refresh, and deregistration alike, so cleanup can
+never fall between two components. Never per-second heartbeats through the
+Durable Object (§P1 rule 2 forbids exactly that): a partitioned
+orchestrator's stale rooms simply age out instead of advertising capacity
 that no longer exists. Final mechanics are decided at this gate with the
 orchestrator in hand — the constraint that survives any choice: **stale
 capacity must expire without anything polling.**
