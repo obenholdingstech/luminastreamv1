@@ -25,7 +25,8 @@
     // tighter than the mint — every call here reaches the Durable Object, and
     // on Workers Free the DO's daily request quota is a shared, exhaustible
     // resource (ROADMAP.md §P1).
-    { "name": "SESSION_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
+    { "name": "SESSION_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } },
+    { "name": "VIDEO_LIMITER", "namespace_id": "1004", "simple": { "limit": 20, "period": 60 } }
   ],
   // Non-secret configuration, deliberately visible in a public repo: these are
   // operational limits, not credentials. Both are parsed STRICTLY — a
@@ -48,14 +49,28 @@
     "MAX_CONCURRENT_SESSIONS": "2",
     // 2h. Simultaneously the maximum session length and the maximum time an
     // abandoned slot stays held. Hard-capped by the 6h LiveKit grant ceiling.
-    "SESSION_LEASE_SECONDS": "7200"
+    "SESSION_LEASE_SECONDS": "7200",
+    // Video dev ceilings: 180 s/session, 3000 s total ≈ $60 at the verified
+    // $0.02/s. These graduate to per-wallet balances at P5; until then they
+    // are the wall between a runaway loop and the company card.
+    "VIDEO_ENABLED": "true",
+    "MAX_VIDEO_SECONDS_PER_SESSION": "180",
+    "MAX_VIDEO_SECONDS_TOTAL": "3000"
   },
   // The session layer's coordination state. SQLite-backed, which is the only
   // Durable Object class available on Workers Free.
   "durable_objects": {
-    "bindings": [{ "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" }]
+    "bindings": [
+      { "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" },
+      // The video spend wall (ROADMAP §P2): the prepaid wallet enforcer in
+      // dev-cap clothes. Merged BEFORE the Decart key exists, per doctrine.
+      { "name": "VIDEO_LEDGER", "class_name": "SpendLedger" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] },
+    { "tag": "v2", "new_sqlite_classes": ["SpendLedger"] }
+  ],
   "env": {
     "staging": {
       "name": "luminastream-api-staging",
@@ -63,7 +78,8 @@
       "ratelimits": [
         { "name": "VERIFY_LIMITER", "namespace_id": "2001", "simple": { "limit": 5, "period": 60 } },
         { "name": "TOKEN_LIMITER", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } },
-        { "name": "SESSION_LIMITER", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } }
+        { "name": "SESSION_LIMITER", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } },
+        { "name": "VIDEO_LIMITER", "namespace_id": "2004", "simple": { "limit": 20, "period": 60 } }
       ],
       "vars": {
         // NO AGENT RUNS FOR STAGING, so staging hands out no sessions.
@@ -84,12 +100,24 @@
         "SESSIONS_ENABLED": "false",
         "SESSION_ROOMS": "staging-room-1,staging-room-2,staging-room-3,staging-room-4",
         "MAX_CONCURRENT_SESSIONS": "4",
-        "SESSION_LEASE_SECONDS": "7200"
+        "SESSION_LEASE_SECONDS": "7200",
+        // The ledger is pure bookkeeping — no agent behind it, nothing to
+        // promise — so unlike sessions it stays ENABLED on staging: this is
+        // where reserve/settle gets exercised without a vendor key in sight.
+        "VIDEO_ENABLED": "true",
+        "MAX_VIDEO_SECONDS_PER_SESSION": "180",
+        "MAX_VIDEO_SECONDS_TOTAL": "3000"
       },
       "durable_objects": {
-        "bindings": [{ "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" }]
+        "bindings": [
+          { "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" },
+          { "name": "VIDEO_LEDGER", "class_name": "SpendLedger" }
+        ]
       },
-      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] }]
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] },
+        { "tag": "v2", "new_sqlite_classes": ["SpendLedger"] }
+      ]
     }
   }
   // Secrets (ADMIN_PASSWORD, ADMIN_SESSION_SECRET, LIVEKIT_API_KEY,

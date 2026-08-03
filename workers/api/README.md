@@ -15,6 +15,10 @@ take, replacing the DEV-ONLY `scripts/generate-livekit-token.js`.
 | POST   | `/api/session/end`       | `X-Admin-Token`   | `{ sessionId, endToken }` → releases the slot            |
 | GET    | `/api/session/capacity`  | `X-Admin-Token`   | `{ enabled, live, capacity, available, pool }`            |
 | POST   | `/api/session/reset`     | `X-Admin-Token`   | releases **every** slot → `{ released }` (operator tool)  |
+| POST   | `/api/video/reserve`     | `X-Admin-Token`   | holds video seconds → `{ reservationId, settleToken, grantedSeconds, remainingSeconds }` |
+| POST   | `/api/video/settle`      | `X-Admin-Token`   | reports usage, credits the unused hold (idempotent)       |
+| GET    | `/api/video/budget`      | `X-Admin-Token`   | `{ enabled, perSessionSeconds, totalSeconds, spentSeconds, remainingSeconds, openReservations }` |
+| POST   | `/api/video/reset`       | `X-Admin-Token`   | zeroes the meter, drops every hold (dev-cap operator tool) |
 
 `/api/session/create` refuses with **503** and one of two distinct errors:
 `at_capacity` (every agent is busy — a queue that will clear) or
@@ -34,6 +38,28 @@ forever, which is why they are separate codes rather than one.
   **20/60s** on the session routes.
 - CORS is limited to `studio.luminastream.live`, our `*.luminastream-studio.pages.dev`
   previews, and `localhost:5173`.
+
+## The video spend wall
+
+`/api/video/*` is backed by **`SpendLedger`** — the prepaid wallet enforcer from
+day one, temporarily wearing dev-cap clothes (`ROADMAP.md` §P2). It merged
+**before the Decart key exists**, per doctrine, and today meters against
+`MAX_VIDEO_SECONDS_PER_SESSION=180` / `MAX_VIDEO_SECONDS_TOTAL=3000` (~$60).
+
+The shape is **reserve → settle** (two DO requests per video session, whatever
+its length — the §P1 O(1) invariant with money attached). The balance is
+**debited at reserve**; settle credits back the unused hold. An unsettled
+reservation is reaped by a demand-driven alarm and resolves **conservatively as
+fully spent** — dev caps protect the card, and in wallet mode a too-cautious
+hold is correctable at P5 reconciliation while a too-generous release is money
+gone.
+
+Spoof-proofing: the settle credential is random and hashed at rest; a settle
+can never exceed its reserve (usage is clamped to the grant); a second settle
+credits nothing; a wrong bearer moves no money in either direction; a zero
+balance refuses the grant with `video_budget_exhausted` — which is the wall
+*working*, not an outage. Fail-closed like everything else: a dropped
+`VIDEO_LEDGER` binding refuses video rather than serving it unmetered.
 
 ## The session layer
 

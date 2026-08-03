@@ -23,7 +23,7 @@
 
 import { SessionRegistry } from '../src/sessionRegistry.js';
 
-export function createRegistryHarness({ env = {}, startAt = Date.now() } = {}) {
+export function createRegistryHarness({ env = {}, startAt = Date.now(), cls = SessionRegistry } = {}) {
   let clock = startAt;
   const store = new Map();
   let alarmAt = null;
@@ -69,7 +69,10 @@ export function createRegistryHarness({ env = {}, startAt = Date.now() } = {}) {
     },
   };
 
-  const instance = new SessionRegistry({ storage }, env, () => clock);
+  // Any Durable Object with the (state, env, now) constructor shape — the
+  // SessionRegistry and the SpendLedger share it deliberately, so both get
+  // the same counting fake and the same oracle discipline.
+  const instance = new cls({ storage }, env, () => clock);
 
   // The counting stub. Every request the Worker makes into the registry passes
   // through here, which is the whole measurement.
