@@ -264,13 +264,20 @@ export class SpendLedger {
     }
 
     const now = this.now();
+    // Expiry is evaluated BEFORE the record is read — the registry's rule,
+    // applied to money: Cloudflare can delay or retry alarm delivery, and a
+    // settle landing in that window must NOT refund a hold that has already
+    // resolved as spent. The sweep deletes expired holds first, so an expired
+    // settle falls through to the idempotent unknown_reservation path and
+    // credits nothing. The alarm reclaims; it does not define expiry.
+    const open = await this.#sweep(now);
     const record = await this.storage.get(reservationKey(id));
 
-    // Idempotent: settling a reservation that is gone — already settled, or
-    // reaped — succeeds with settled:false and credits NOTHING. A retried
-    // settle must not read as failure, and must never refund twice.
+    // Idempotent: settling a reservation that is gone — already settled,
+    // reaped, or expired-awaiting-reap — succeeds with settled:false and
+    // credits NOTHING. A retried settle must not read as failure, and must
+    // never refund twice.
     if (!record) {
-      const open = await this.#sweep(now);
       await this.#rearm(open);
       return json({ ok: true, settled: false, reason: 'unknown_reservation' });
     }
@@ -303,8 +310,7 @@ export class SpendLedger {
     // even if a bug elsewhere shrank it first.
     await this.storage.put(SPENT_KEY, Math.max(0, spent - refund));
     await this.storage.delete(reservationKey(id));
-    const open = await this.#sweep(now);
-    await this.#rearm(open);
+    await this.#rearm(open.filter((r) => r.id !== id));
 
     return json({
       ok: true,

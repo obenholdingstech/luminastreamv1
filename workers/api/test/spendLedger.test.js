@@ -153,13 +153,31 @@ test('an expired unsettled reservation is reaped AS SPENT — the debit stands',
   await h.advanceBy((60 + SETTLE_SLACK_SECONDS + 1) * 1000);
 
   assert.equal(h.counts().alarms, 1, 'one demand-driven wakeup');
-  assert.equal(h.stored().size >= 1 ? (await budget(h)).body.openReservations : 0, 0);
+  assert.equal((await budget(h)).body.openReservations, 0);
   assert.equal((await budget(h)).body.spentSeconds, 60, 'abandonment must not refund');
 
   // And a settle arriving AFTER the reap credits nothing.
   const late = (await settle(h, { reservationId: r.reservationId, settleToken: r.settleToken, usedSeconds: 0 })).body;
   assert.equal(late.settled, false);
   assert.equal((await budget(h)).body.spentSeconds, 60);
+});
+
+test('a settle AFTER expiry but BEFORE the alarm refunds NOTHING', async () => {
+  // Cloudflare can delay or retry alarm delivery, so "expired but not yet
+  // reaped" is a reachable production state — the registry learned this for
+  // slots, and money holds the same rule harder. warpBy crosses the expiry
+  // WITHOUT firing the alarm, which is exactly the window; the earlier
+  // version of this suite only used advanceBy, which fires the alarm first
+  // and therefore could not see this bug. It shipped one.
+  const h = harness();
+  const r = (await reserve(h, { requestedSeconds: 60 })).body;
+  h.warpBy((60 + SETTLE_SLACK_SECONDS + 1) * 1000);
+  assert.equal(h.counts().alarms, 0, 'the window: expired, alarm not yet delivered');
+
+  const late = (await settle(h, { reservationId: r.reservationId, settleToken: r.settleToken, usedSeconds: 0 })).body;
+  assert.equal(late.ok, true);
+  assert.equal(late.settled, false, 'an expired hold has already resolved as spent');
+  assert.equal((await budget(h)).body.spentSeconds, 60, 'no refund through the delayed-alarm window');
 });
 
 test('a clean reserve→settle never wakes the reaper; abandonment costs exactly one alarm', async () => {

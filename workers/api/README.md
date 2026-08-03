@@ -35,7 +35,7 @@ forever, which is why they are separate codes rather than one.
   The claim shape is verified against `livekit-server-sdk` in the tests.
 - Rate limiting uses the native Workers Rate Limiting binding (per-colo):
   **5/60s** on verify (password oracle), **30/60s** on the mint endpoint,
-  **20/60s** on the session routes.
+  **20/60s** on the session routes, **20/60s** on the video routes.
 - CORS is limited to `studio.luminastream.live`, our `*.luminastream-studio.pages.dev`
   previews, and `localhost:5173`.
 
