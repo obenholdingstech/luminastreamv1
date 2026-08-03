@@ -4,6 +4,73 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 — P2a: the SpendLedger — the wall stands before the money exists (#43 merged)
+
+### What shipped
+
+Four routes (`/api/video/reserve|settle|budget|reset`) backed by the
+`SpendLedger` Durable Object — **the prepaid wallet enforcer in dev-cap
+clothes**, merged and deployed while the Decart key still does not exist, per
+doctrine. Dev ceilings 180 s/session, 3000 s total (~$60). Reserve → settle:
+two DO requests per video session whatever its length (the §P1 O(1) invariant
+with money attached); debit-on-reserve; abandonment reaped conservatively as
+fully spent.
+
+139→140 worker tests. Five money mutations run, each reddening exactly its
+guard: unclamped settle (1), record surviving its settle / double refund (2),
+reaper crediting abandonment (1), fixed-interval sweep (4), and the shipped-
+order restore below (1).
+
+### The finding of the PR — a real money bug, and why my tests were blind to it
+
+CodeRabbit's Major: `#settle` read the record without evaluating `expiresAt`,
+so a settle arriving **after expiry but before Cloudflare delivered the
+alarm** refunded a hold the object's own header says has already resolved as
+spent. In wallet terms: let a session expire, then send the settle, reclaim
+the money.
+
+Two lessons, both sharper than the bug:
+
+1. **The registry documents this exact rule** — "the alarm frees the slot, it
+   does not define expiry" — and I applied it in one object and not its
+   sibling. A rule living in one file's comments gets applied once. When the
+   ledger graduates at P5, the sweep-before-read discipline should be
+   extracted, not re-remembered.
+2. **The reviewer diagnosed the test blindness precisely:** `advanceBy` fires
+   alarms en route, so "expired but unreaped" never existed in my suite —
+   while `warpBy` has existed in the harness for exactly this window since
+   the registry's own delayed-alarm test. The new test uses it; restoring the
+   shipped order reddens exactly that test.
+
+Also fixed: a hedged assertion of mine that could silently compare 0 to 0 —
+the "test that cannot fail on the thing it names" class, caught at review
+rather than by an incident this time.
+
+### Production drill of the wall (no vendor, no spend — pure bookkeeping)
+
+Run against the deployed Worker after the v2 migration, transcript abridged:
+
+| step | result |
+|---|---|
+| virgin budget | `spent 0 / 3000, open 0` |
+| reserve 120 s | `granted 120, spent 120` (debit at reserve) |
+| WRONG settle token | `403 settle_refused`, hold stands |
+| settle, used 45 | `refunded 75, spent 45` |
+| settle AGAIN | `settled:false, unknown_reservation` — no double credit |
+| reset | meter zeroed, `0 / 3000`, clean for real P2b use |
+
+Routes gated (401 unauthenticated, 405 wrong method), `check-live.sh` PASS ×3.
+
+### Next — P2b, and its gating question
+
+**Does Decart's `maxSessionDuration` actually cap a RUNNING session?** The
+canon (#42) makes this the topology-deciding verification: pass → browser-
+direct with reservation-bound tokens; fail → video authorization moves behind
+the Worker. Needs a narrowly-scoped test key — a CEO wall — spent against the
+ledger's own $60 ceiling in one instrumented experiment.
+
+---
+
 ## 3 August 2026 — ALIGNMENT: the prepaid model, and elasticity becomes a launch gate
 
 ### Task (verbatim, abridged)

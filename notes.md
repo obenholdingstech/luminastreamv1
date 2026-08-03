@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 — P2a SHIPPED: the SpendLedger wall, live and drilled (#43 merged)
+
+- **The wall exists before the key does.** `/api/video/reserve|settle|budget|reset` + `SpendLedger` DO deployed (v2 migration); dev ceilings 180 s / 3000 s (~$60); reserve→settle = 2 DO requests per video session (O(1) with money attached); debit-on-reserve; abandonment reaps as spent.
+- **CodeRabbit's Major was a real money bug:** settle in the delayed-alarm window refunded an expired hold. Root causes worth keeping: the registry's "alarm reclaims, does not define expiry" rule lived in comments and got applied to one object only; and my tests used `advanceBy` (fires alarms) where `warpBy` (does not) was the tool — the vulnerable state never existed in the suite. Fixed, discrimination-tested, extraction of the shared discipline earmarked for P5.
+- **Production drill, no vendor spend:** debit at reserve ✓, wrong token 403 with hold standing ✓, partial settle refunds exactly the unused ✓, double settle credits nothing ✓, reset leaves 0/3000 clean. 140 worker tests; 5 money mutations each reddening its guard.
+- **Next: P2b gating question** — does Decart `maxSessionDuration` cap a RUNNING session? Needs a narrowly-scoped test key (CEO wall), one instrumented experiment against the ledger's $60 ceiling. The answer picks browser-direct vs Worker-proxied topology.
+
 ## 3 August 2026 — PREPAID CANON + PL LAUNCH GATE; P2 begins
 
 - **CEO decisions, now in ROADMAP:** strictly prepaid wallet (+ standard/pro subscription tiers, prices after running costs); SpendLedger = wallet enforcer from day one in dev-cap clothes (spoof-proof, zero-balance cutoff, O(1) reserve→settle); **PL pre-launch gate** — auto-scaling container orchestrator before any public MVP launch; doctrine "scale first, refuse last, never degrade". Capacity Q&A canonised in the PL section.
