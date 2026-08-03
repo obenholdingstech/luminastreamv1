@@ -104,8 +104,10 @@ async function runDrill(page, token, before) {
   // The honesty readout that P2d promised.
   await expect(page.getByText(/720p/)).toBeVisible();
 
-  // Evidence for the log: the transformed output on the screen.
-  await page.screenshot({ path: 'playwright-report/video-render-evidence.png', fullPage: true });
+  // Evidence for the log: the transformed output on the screen. NOT under
+  // playwright-report/ — the HTML reporter regenerates that directory after
+  // the run and destroyed the first passing run's screenshot.
+  await page.screenshot({ path: 'devlog/evidence/video-render-evidence.png', fullPage: true });
 
   // Give the money back the way a user would.
   await page.getByRole('button', { name: 'Stop video' }).click();
@@ -124,6 +126,6 @@ async function runDrill(page, token, before) {
   const spent = after.spentSeconds - before.spentSeconds;
   expect(spent, 'a short probe must not bill like a session').toBeLessThanOrEqual(60);
   console.log(
-    `RENDER PROBE PASS — billed ${spent}s, remaining ${after.remainingSeconds}s, evidence: playwright-report/video-render-evidence.png`,
+    `RENDER PROBE PASS — billed ${spent}s, remaining ${after.remainingSeconds}s, evidence: devlog/evidence/video-render-evidence.png`,
   );
 }
