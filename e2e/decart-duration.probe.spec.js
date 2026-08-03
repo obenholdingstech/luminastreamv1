@@ -118,8 +118,13 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
         mark('connectionChange', { state });
         if (state === 'disconnected') ended = ended ?? Date.now() - t0;
       });
+      let lastTickAdvanceAtMs = null;
       rt.on('generationTick', (tick) => {
-        lastTickSeconds = tick?.seconds ?? lastTickSeconds;
+        const seconds = tick?.seconds ?? lastTickSeconds;
+        // Record when the meter last MOVED — cessation is a claim about
+        // advancement stopping, and only an advancement timestamp can prove it.
+        if (seconds > lastTickSeconds) lastTickAdvanceAtMs = Date.now() - t0;
+        lastTickSeconds = seconds;
       });
       rt.on('error', (err) =>
         mark('sdkError', { message: String(err?.message ?? err).slice(0, 200) }),
@@ -141,7 +146,7 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
       try {
         rt.disconnect?.();
       } catch {}
-      return { modelUsed, endedAtMs: ended, lastTickSeconds, log };
+      return { modelUsed, endedAtMs: ended, lastTickSeconds, lastTickAdvanceAtMs, log };
     },
     { clientToken: grant.clientToken, watchMs: WATCH_SECONDS * 1000 },
   );
@@ -182,7 +187,17 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
   const ticksNearConstraint =
     (observed.lastTickSeconds ?? 0) >= PROBE_GRANT_SECONDS - 2 &&
     (observed.lastTickSeconds ?? 0) <= PROBE_GRANT_SECONDS + 10;
-  const enforced = Boolean(limitError) && ticksNearConstraint;
+  // The error alone proves the vendor SPOKE; enforcement means the meter
+  // STOPPED. Require that no tick advanced after the limit error (small slack
+  // for one in-flight tick) across the remaining watch window — a vendor that
+  // announces the limit and keeps billing through the band must classify as
+  // NOT enforced.
+  const GENERATION_STOP_SLACK_MS = 5_000;
+  const ticksCeasedAfterError =
+    Boolean(limitError) &&
+    (observed.lastTickAdvanceAtMs === null ||
+      observed.lastTickAdvanceAtMs <= limitError.atMs + GENERATION_STOP_SLACK_MS);
+  const enforced = Boolean(limitError) && ticksNearConstraint && ticksCeasedAfterError;
   const verdict = {
     question: 'does maxSessionDuration cut a RUNNING session?',
     maxSessionDuration: PROBE_GRANT_SECONDS,
@@ -191,6 +206,8 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
     lastGenerationTickSeconds: observed.lastTickSeconds,
     watchedForMs: WATCH_SECONDS * 1000,
     limitErrorAtMs: limitError?.atMs ?? null,
+    lastTickAdvanceAtMs: observed.lastTickAdvanceAtMs ?? null,
+    ticksCeasedAfterError,
     verdict: enforced
       ? 'ENFORCED against generation — vendor stopped generating at the constraint and said so; connection may linger (treat the limit error as terminal)'
       : observed.endedAtMs === null && !limitError
