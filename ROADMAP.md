@@ -361,6 +361,31 @@ contact with real money — nothing here is throwaway.
   an utterance is never truncated): stop cleanly with a visible reason, never a
   silent freeze.
 
+#### The committed topology *(verified against Decart's docs and CEO-approved, 3 Aug 2026)*
+
+**Control plane through the Worker; media plane direct.** Decart's white-label
+signaling path: our Worker creates and controls every session with the real
+key — which therefore never leaves the server in ANY form, not even ephemeral
+— while WebRTC media flows browser↔Decart directly ("media quality identical",
+control-only latency). Three consequences, each closing a previously-flagged
+hole:
+
+1. **The ledger's reaper is the executioner.** The Worker knows every session
+   id, so the existing demand-driven alarm gains one side effect: an expired
+   reservation DELETEs its Decart session by id. The hard stop is ours,
+   server-side, vendor-independent — and still O(1), one alarm per overrun.
+2. **Settle is vendor-truth.** Ending a session returns Decart's own billing
+   summary; the ledger settles against THEIR number, never the client's
+   claim. Wallet-grade reconciliation, arriving before wallets do.
+3. **The spoofing surface collapses.** The browser holds only Decart's own
+   session-scoped event token, designed to be browser-safe.
+
+`constraints.realtime.maxSessionDuration` remains a SECOND wall (defense in
+depth on any token we mint); the probe that checks whether it cuts a running
+session calibrates that layer, and its result can no longer weaken the
+primary enforcement. Lucy 2.5 is **720p fixed** (1280×720, WebRTC) — which
+makes the upscaling mandate below real rather than optional.
+
 ### P3 — A/V sync *(~1 week)*
 
 **Audio is the master clock.** Video buffers to match audio; audio never waits.
@@ -371,6 +396,22 @@ contact with real money — nothing here is throwaway.
   speech takes about as long to play as it took to say, so continuous talking
   accumulates a backlog that drains at pauses. A fixed delay either desyncs under
   load or adds permanent latency.
+
+**Upscaling mandate (CEO, 3 Aug 2026): enterprise-grade fidelity to FHD/2K,
+client-side, staged.** Lucy outputs 720p, period; crispness beyond that is our
+pipeline's job. Backend/edge GPU upscaling is **rejected** — it reintroduces a
+GPU server per stream (the architecture is deliberately GPU-free and
+stateless), inserts a network hop inside the video path directly against
+lip-sync, and at scale rivals the vendor's own fee. Client-side, the two goals
+stop competing: **WebGL spatial upscaling (FSR-class, <2 ms/frame) in the
+browser studio with this phase; Apple MetalFX spatial in the native lens
+(P6)**, publishing a crisp 1080p/1440p virtual camera while Decart bills 720p;
+WebGPU ML super-resolution kept open as a later upgrade.
+
+**The constraint that makes "day one" true:** the video render path is a
+composable frame pipeline — receive → align (this phase's elastic buffer) →
+upscale → present/publish — never a raw `<video>` element bolted to the
+screen. Costs nothing now; skipping it makes FHD a retrofit later.
 
 ### P4 — Identity & persistence *(~1½ weeks)*
 
@@ -394,6 +435,28 @@ set only after running costs are known, margins baked into credit pricing).
 The tier gates *features*; the wallet gates *usage*. Tier scope is a
 discussion for when this phase opens. The enforcement machinery is P2's
 `SpendLedger`, graduated from dev caps to wallets — same object, same paths.
+
+**Retail decoupling (CEO mandate, 3 Aug 2026): the ledger must inherently
+decouple raw vendor cost from the retail price deducted from the user — we
+never sell compute at cost by accident.** The design:
+
+- **The wallet's unit of account is retail** — Lumina Credits, whose fiat
+  purchase price bakes in margin — never a vendor unit. Vendor units (Decart
+  seconds, ElevenLabs characters/seconds, compute overhead) convert to
+  credits at settlement through a configurable **rate table**, per meter.
+- **The margin floor is an enforced invariant, not a hope:** configuration
+  declares both the estimated vendor COGS per unit and the retail rate per
+  unit, and the ledger REFUSES TO BOOT with any retail rate below the COGS
+  floor — fatal, never silent, exactly like every other malformed-config rule
+  in this codebase. Selling at cost requires a deliberate, reviewed config
+  change, not an oversight.
+- **Raw vendor billing summaries are stored verbatim alongside the retail
+  deduction** — reconciliation and audit (P8) read the vendor's number; the
+  user's wallet only ever sees retail.
+- **P2 builds the interface for this today:** settle already consumes the
+  vendor billing summary and carries raw-vendor fields distinct from the
+  deducted amount, so P5 is a rate-table change, not a refactor. Dev caps run
+  at rate 1:1 (a second is a second) until wallets exist.
 
 The 180 s / ~$60 caps that appear in older notes are **development** caps: a wall
 against a runaway loop burning the company's card during testing. They are not
