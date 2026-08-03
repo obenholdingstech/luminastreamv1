@@ -164,6 +164,8 @@ export default function Studio() {
     disconnect,
     enableAudio,
     requestAgentMode,
+    agentConfig,
+    requestAgentConfig,
   } = useLiveKitVoice(url, token);
 
   // ── access ────────────────────────────────────────────────────────────
@@ -196,6 +198,38 @@ export default function Studio() {
   const unlocking = held.phase === PHASE.starting;
 
   const [lensMode, setLensMode] = useState('converted');
+
+  // ── voice selection (CEO directive, 3 Aug 2026) ───────────────────────
+  // The whole machine already lives in the agent: a dynamic `voice` knob
+  // whose choices are the account's live ElevenLabs voices, validated and
+  // switched agent-side (_switch_voice), broadcast back via agent_config.
+  // This page adds ONLY the surface — and follows the mode toggle's rule:
+  // the value shown as current is what the agent CONFIRMED, never the
+  // request. The browser never holds the vendor key; ids and labels arrive
+  // in the agent's own broadcast.
+  const [requestedVoice, setRequestedVoice] = useState(null);
+  const confirmedVoice = agentConfig?.config?.voice ?? null;
+  const voiceMeta = agentConfig?.metadata?.voice ?? null;
+  const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
+  const voiceLabels = voiceMeta?.choice_labels ?? {};
+  const voiceRejected = agentConfig?.rejected?.voice ?? null;
+
+  useEffect(() => {
+    // The agent confirmed the switch (or the request was rejected and the
+    // broadcast restated the real voice) — either way the request is over.
+    if (requestedVoice && (confirmedVoice === requestedVoice || voiceRejected)) {
+      setRequestedVoice(null);
+    }
+  }, [confirmedVoice, requestedVoice, voiceRejected]);
+
+  const requestVoice = useCallback(
+    (voiceId) => {
+      if (!voiceId || voiceId === confirmedVoice) return;
+      setRequestedVoice(voiceId);
+      requestAgentConfig({ voice: voiceId });
+    },
+    [confirmedVoice, requestAgentConfig],
+  );
 
   // ── the video leg (P2d) ───────────────────────────────────────────────
   // Independent of the audio session on purpose: video is metered separately
@@ -595,6 +629,47 @@ export default function Studio() {
             </span>
           )}
         </p>
+
+        {/* Voice selection. Rendered only when the agent has spoken (its
+            broadcast carries the choices), and only for the Converted lens —
+            Direct passes your own voice through, so a selector there would
+            promise something the mode cannot do. The <select>'s value is the
+            agent-CONFIRMED voice; a pending request is named as pending,
+            exactly like the mode toggle above. */}
+        {isConnected && lensMode === 'converted' && voiceChoices.length > 0 && (
+          <div className="mt-4 flex flex-col items-center gap-1">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="lens-voice"
+                className="text-[9px] tracking-[0.18em] uppercase text-[#4A5568]"
+              >
+                Voice
+              </label>
+              <select
+                id="lens-voice"
+                value={requestedVoice ?? confirmedVoice ?? ''}
+                onChange={(e) => requestVoice(e.target.value)}
+                className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
+              >
+                {voiceChoices.map((id) => (
+                  <option key={id} value={id} className="bg-[#08080F]">
+                    {voiceLabels[id] ?? id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {requestedVoice && (
+              <span className="text-[9px] text-[#F59E0B]">
+                Requested — waiting for the agent to confirm.
+              </span>
+            )}
+            {!requestedVoice && voiceRejected && (
+              <span role="alert" className="text-[9px] text-[#F59E0B]">
+                the agent kept {voiceLabels[confirmedVoice] ?? 'its voice'} — {String(voiceRejected)}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* The video leg. Rendered behind the ring so the lens stays the
             subject and the transformed face sits inside it — and NEVER as a
