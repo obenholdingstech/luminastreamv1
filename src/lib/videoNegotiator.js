@@ -107,7 +107,15 @@ export function createVideoNegotiator({
     sendChain = sendChain
       .then(async () => {
         const result = await sendCandidates(target, payload);
-        if (result && typeof result === 'object' && typeof result.etag === 'string' && result.etag) {
+        // A RESOLVED refusal is as observable as a rejection — resolving
+        // {ok:false} must not be the one shape of failure that stays silent.
+        // And the etag rotates only on success: the vendor did not accept the
+        // PATCH, so its state (and etag) did not move.
+        if (result === false || result?.ok === false) {
+          onFailure?.('an ICE candidate could not be delivered');
+          return;
+        }
+        if (result?.ok === true && typeof result.etag === 'string' && result.etag) {
           target.etag = result.etag;
         }
       })

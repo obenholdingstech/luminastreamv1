@@ -144,6 +144,29 @@ test('ICE sends are SERIALIZED, each carrying the etag the previous send rotated
   assert.deepEqual(seen, ['e1', 'e2', 'e3'], 'every send used the freshest etag');
 });
 
+test('a send that RESOLVES {ok:false} is reported and rotates nothing', async () => {
+  // A resolved refusal must not be the one shape of failure that stays
+  // silent — and its etag (if any) is poison: the vendor did not accept the
+  // PATCH, so rotating onto it would 412 every send after.
+  const seen = [];
+  const h = harness({
+    sendCandidates: async (session) => {
+      seen.push(session.etag);
+      return { ok: false, etag: 'e-poison' };
+    },
+  });
+  await h.negotiator.start({});
+  h.peer().fireCandidate({ candidate: 'c1' });
+  h.peer().fireCandidate({ candidate: 'c2' });
+  for (let i = 0; i < 4; i += 1) await drain();
+  assert.deepEqual(
+    h.calls.failures,
+    ['an ICE candidate could not be delivered', 'an ICE candidate could not be delivered'],
+    'each refused delivery is observable',
+  );
+  assert.deepEqual(seen, ['e1', 'e1'], "the refusal's etag never entered the chain");
+});
+
 // ─── cancellation: the Starlink lesson, with a vendor bill ─────────────────
 
 test('stop() during the CAMERA PROMPT aborts the start and claims no session', async () => {

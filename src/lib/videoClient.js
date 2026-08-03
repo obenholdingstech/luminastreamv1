@@ -116,7 +116,10 @@ export async function sendCandidates(adminToken, session, candidates, base = API
         body: { controlToken: session.controlToken, candidates, etag: session.etag ?? undefined },
       },
     );
-    return { ok: status === 200, ...(data?.etag ? { etag: data.etag } : {}) };
+    // An etag rides only on success: HTTP does not guarantee a meaningful
+    // ETag on a failed PATCH, and rotating onto one would desync the chain
+    // from the vendor's actual state.
+    return status === 200 ? { ok: true, ...(data?.etag ? { etag: data.etag } : {}) } : { ok: false };
   } catch {
     return { ok: false };
   }

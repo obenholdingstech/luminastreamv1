@@ -124,6 +124,20 @@ test('candidates carry the control token and the ETag — and return the ROTATED
   assert.deepEqual(result, { ok: true, etag: 'e2' }, 'the caller gets the next If-Match value');
 });
 
+test('a FAILED candidate send never smuggles an etag out', async () => {
+  // The vendor refused the PATCH, so its state (and etag) did not move; an
+  // etag on a failure would let the negotiator rotate onto a value the vendor
+  // never committed and 412 every send after it.
+  stub(async () => json(502, { ok: false, status: 412, etag: 'e-poison' }));
+  const result = await sendCandidates(
+    't',
+    { sessionId: 's1', controlToken: 'c1', etag: 'e1' },
+    [{ candidate: 'x' }],
+    BASE,
+  );
+  assert.deepEqual(result, { ok: false }, 'no etag rides on a refusal');
+});
+
 test('end reports what actually happened — settled, or DEFERRED', async () => {
   stub(async () => json(200, { ok: true, settled: true, usedSeconds: 42 }));
   assert.deepEqual(await endVideoSession('t', { sessionId: 's', controlToken: 'c' }, BASE), {

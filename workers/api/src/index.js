@@ -701,8 +701,12 @@ async function handleVideoSession(request, env, origin) {
     }
     decartSessionId = created.session_id ?? null;
     if (!decartSessionId) throw new Error('vendor session create returned no id');
-    // The If-Match seed for every ICE PATCH this session will ever send.
+    // The If-Match seed for every ICE PATCH this session will ever send. A
+    // create without one would bind a PAID session that can never deliver a
+    // candidate — fail closed here, while the compensation path can still
+    // kill it and return the hold.
     const vendorEtag = createRes.headers.get('etag');
+    if (!vendorEtag) throw new Error('vendor session create returned no ETag');
 
     // 4. The executioner's ammunition, persisted BEFORE anything reaches the
     //    browser. A failed bind compensates immediately with the id in hand.

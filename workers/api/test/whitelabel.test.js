@@ -214,6 +214,33 @@ test('create: a failed BIND compensates with a vendor DELETE and returns the hol
   assert.equal(h.pendingAlarm(), null);
 });
 
+test('create: a 201 WITHOUT an ETag header fails closed and compensates', async (t) => {
+  // The ETag is the If-Match seed for every ICE PATCH; a session born without
+  // one is paid and mute. The Worker must refuse it — and because the vendor
+  // DID create it, the compensation path must kill it and return the hold.
+  const { env } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    create: () =>
+      new Response(
+        JSON.stringify({ session_id: 'decart-sess-1', sdp: { type: 'answer', sdp: 'v=0 answer' } }),
+        { status: 201 }, // no ETag header
+      ),
+  });
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token);
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, 'vendor_session_failed');
+  const del = vendor.calls.find((c) => c.method === 'DELETE');
+  assert.ok(del, 'the mute session was killed, not abandoned');
+  assert.match(del.url, /decart-sess-1$/);
+  const budget = await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env);
+  const b = await budget.json();
+  assert.equal(b.spentSeconds, 0, 'and the hold came home');
+  assert.equal(b.openReservations, 0);
+});
+
 test('create: a vendor create failure returns the hold and binds nothing', async (t) => {
   const { env } = setup();
   const token = await adminToken(env);
