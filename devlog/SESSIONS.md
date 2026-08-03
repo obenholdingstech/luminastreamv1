@@ -4,6 +4,46 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 — ALIGNMENT: the prepaid model, and elasticity becomes a launch gate
+
+### Task (verbatim, abridged)
+
+> "The Business Model is Prepaid (Pay-As-You-Go) and a monthly based
+> subscription fee [...] two tiers, lets say standard and pro [...] a strictly
+> prepaid wallet system [...] If 10,000 users burst the system, those are
+> 10,000 funded sessions. [...] Auto-Scaling is an MVP Launch Requirement [...]
+> Please acknowledge this prepaid architecture, add the pre-launch auto-scaling
+> migration to the ROADMAP.md, and then let's get moving on P2: The SpendLedger."
+
+### Decisions taken (CEO, 3 Aug 2026) — now canon in ROADMAP.md
+
+1. **Prepaid wallet + two-tier subscription** (standard/pro, illustrative
+   $10/$18 — real prices only after running costs are known; margins baked
+   into credit pricing). Tier gates features; wallet gates usage.
+2. **The SpendLedger is the wallet enforcer from day one**, temporarily wearing
+   dev-cap clothes — same object, same code paths graduate from dev ceilings to
+   user wallets. Spoof-proof server-side, zero-balance cutoff, and it must obey
+   the O(1) invariant (reserve → settle, two DO requests per video session —
+   a per-second meter would keep the DO awake for the whole stream).
+3. **PL — a formal pre-launch gate:** stateless agents migrate to an
+   auto-scaling container orchestrator (Fly.io / Fargate / K8s, chosen then)
+   before any public MVP launch. Doctrine: **scale first, refuse last, never
+   degrade** — a funded user should never reach the "busy" door, but the door
+   stays as the last backstop behind elasticity. The 2 Aug capacity Q&A
+   (three numbers, migration path, vendor-COGS truth) is canonised inside the
+   gate's section.
+
+Also observed by the CEO in live use: a THIRD device correctly refused at
+capacity 2 — the honest-refusal path exercised by a real person in production,
+behaving exactly as the e2e asserts.
+
+### Next
+
+P2a: the SpendLedger Durable Object — reserve/settle, two-layer caps, the
+lifecycle oracle, spoof tests. The wall merges before the Decart key exists.
+
+---
+
 ## 2 August 2026 (night) — P1c: two agents, and the capacity constant exists (#39, #40 merged)
 
 ### Task (verbatim)

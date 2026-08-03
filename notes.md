@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 — PREPAID CANON + PL LAUNCH GATE; P2 begins
+
+- **CEO decisions, now in ROADMAP:** strictly prepaid wallet (+ standard/pro subscription tiers, prices after running costs); SpendLedger = wallet enforcer from day one in dev-cap clothes (spoof-proof, zero-balance cutoff, O(1) reserve→settle); **PL pre-launch gate** — auto-scaling container orchestrator before any public MVP launch; doctrine "scale first, refuse last, never degrade". Capacity Q&A canonised in the PL section.
+- Her third device hit the honest refusal at capacity 2 in production — the busy path, exercised by a real person, working as the e2e asserts.
+- **Next: P2a SpendLedger** (reserve/settle DO + oracle + spoof tests), wall before key.
+
 ## 2 August 2026 (overnight close) — P1 CLOSED: 6/6, two people at once (#40, #41 merged)
 
 - **The multi-user run passed against production:** two contexts, concurrent Starts, two DIFFERENT rooms (`luminastream-test` + `luminastream-2`), live 2 → both released → live 0. `check-live.sh` PASS ×3. **P1 closed** — planned ~1½ weeks, done in a day.
