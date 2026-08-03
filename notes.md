@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 (evening) — mandate discharged: render PROVEN, Clean View live, P3 A/V sync built
+
+- **Blank render: five stacked causes.** #55 ([null] sentinel + SSE return path/P2e), #56 (typecheck escape — ritual fixed), #57 (**root cause: Lucy generates nothing on a promptless/imageless session, while billing** — Worker now injects a neutral identity default). Render probe **PASS, billed 0s**.
+- **Clean View (#58):** H → raw output only; chrome inert + focus contained (CodeRabbit catch). Validated live by hit-test; typing guard proven.
+- **Full Playwright validation:** audio 6/6; render probe PASS; visual run with committed evidence — devlog/evidence/validate-clean-view-raw-output.png is the lens working, in one picture.
+- **P3 (this PR):** elasticDelay (policy) + delayQueue (bounded hold) + frameDelay (insertable-streams glue) + alignStage (slot filled) + wiring; 18 new tests; audio is the master clock, video glides, never jumps.
+- **Budget:** ~$26 remains; all reservations resolved; the executioner earned its keep repeatedly.
+- **Next:** CEO's live drill (avatar + prompt + clean view); measure real A/V offset in a free-talk drill (P3 acceptance); WebGL upscale slot.
+
 ## 3 August 2026 — CEO's first video drill 502 → two live-API contract fixes → drill UNBLOCKED; avatar + live prompt + voice dropdown shipped
 
 - **Her 502 (#50):** the white-label adapter spoke field names I invented; the test stub spoke them back. Real contract (verified live, $0): `sdp:{type,sdp}` object, snake_case `session_id`, answer at `sdp.sdp`, ICE ETag = rotating HEADER required as If-Match (sends now SERIALIZED with rotation chained), DELETE summary = `billed_seconds`. Stub → contract fixture; new lesson: **a mock you invented is a mirror, not a wall** — vendor stubs must cite the doc/live exchange their shapes came from.

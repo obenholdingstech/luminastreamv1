@@ -23,6 +23,7 @@ import {
   setVideoImage,
   setVideoPrompt,
 } from '@/lib/videoClient';
+import { createAlignStage } from '@/lib/alignStage';
 import { createFramePipeline } from '@/lib/framePipeline';
 import { createVideoNegotiator, NEGOTIATION } from '@/lib/videoNegotiator';
 
@@ -58,7 +59,10 @@ export function useLensVideo(adminToken) {
 
   // useMemo, not a ref written during render — React may replay or discard
   // render work, and a mutation there can leak from UI that never commits.
-  const pipeline = useMemo(() => createFramePipeline(), []);
+  // P3 fills the align slot: an elastic buffer that stands video beside the
+  // audio it belongs to. Audio is the master clock; the page feeds the
+  // agent's measured tail latency into pipeline.stages.align.observeTail.
+  const pipeline = useMemo(() => createFramePipeline({ align: createAlignStage() }), []);
 
   const negotiator = useMemo(
     () =>
@@ -173,8 +177,10 @@ export function useLensVideo(adminToken) {
       globalThis.removeEventListener?.('pagehide', release);
       release();
       negotiator.stop();
+      // The align stage holds decoded frames — a leaving page closes them.
+      pipeline.stages.align.release?.();
     };
-  }, [adminToken, negotiator]);
+  }, [adminToken, negotiator, pipeline]);
 
   return { phase, error, budget, stream, pipeline, start, stop, updatePrompt, updateImage };
 }

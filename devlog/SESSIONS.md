@@ -4,6 +4,113 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 (evening) — the 5-hour mandate: render proven, Clean View, P3 A/V sync
+
+### Task (verbatim, key parts)
+
+> "You have full autonomy to keep executing down the roadmap... 1. The Blank
+> Video Output... I expect that once #51 and the Avatar upload land, clicking
+> 'Start' will successfully render the video stream on the screen. 2. New UI
+> Requirement: 'Clean View' Toggle... pressing 'H'... leaving only the raw
+> video output and the synced audio. 3. Proceed to Phase 3 (A/V Sync)...
+> Audio is the master clock... I expect no unforced errors while I am gone."
+> Later: "ensure you use playwright to test and ensure all ui and apps is
+> working properly, simulate and test connection and ensure that the output
+> and connection is actually showing and visible."
+
+### Directive 1 — the blank render had FIVE stacked causes
+
+The new render probe (npm run probe:video — asserts decoded frames whose
+clock advances, not merely "connected") failed against the fully-patched
+stack, and the diagnosis ran live against production:
+
+1. PR #55: end-of-candidates travels INSIDE the list as [null] (bare null
+   is refused: "Input should be a valid list") — this was the on-screen
+   "an ICE candidate could not be delivered" — and NOTHING consumed the
+   vendor's SSE event stream (P2e, promoted to blocking): the negotiator
+   now opens vendor.events, queues vendor candidates until the answer is
+   applied, and routes SSE error events into the terminal-limit classifier.
+2. PR #56: CI typecheck caught .data on Event (MessageEvent casts). The
+   unforced error of the day: I had not been running npm run typecheck
+   locally although it is a CI gate. Ritual fixed.
+3. Instrumented drills (RTCPeerConnection + EventSource wrapped in-page):
+   ICE CONNECTED, transport stable, SSE open — zero frames, zero events.
+   The vendor never begins generating.
+4. **Root cause, PR #57: Lucy 2.5 generates NOTHING on a session with no
+   prompt and no reference image — while billing it.** Same drill with a
+   prompt: videoWidth=1280 in under 10s. The Worker now guarantees a
+   session always has work: neutral identity default ("the same person,
+   photorealistic...") when bare; a user's prompt never overridden; a
+   reference image is work in itself.
+
+**Render probe: PASS — billed 0s** (stop refunded the whole hold).
+
+### Directive 2 — Clean View (#58)
+
+H toggles an opaque overlay carrying only the raw stream — full-frame,
+unmasked; the chrome underneath stays mounted so audio keeps playing.
+The toggle decision is a lib with tests (typing guard, OS chords,
+auto-repeat). CodeRabbit's Major was earned: hidden controls were still
+focusable — now the chrome goes inert, focus moves into the overlay, and
+returns on exit. Confirmed ✅, merged, deployed.
+
+### The full Playwright validation (her explicit ask)
+
+- Audio drill: **6/6** against production.
+- Render probe: **PASS, billed 0s**.
+- Visual validation (live session): video RENDERING at width=1280 →
+  H → overlay on top, sr-only status announced, Stop UNREACHABLE by
+  hit-test, chrome inert, focus contained → H → controls restored →
+  typing "change cloth to blue" (with its h) does not toggle.
+- Evidence committed: devlog/evidence/validate-studio-live.png and
+  validate-clean-view-raw-output.png — the latter is Lucy's live
+  transformed output full-frame in Clean View: the fake camera's test
+  pattern re-imagined as a photorealistic scene under the default
+  prompt. The lens, working, in one picture.
+
+### Directive 3 — P3 A/V sync, the align slot filled (this PR)
+
+Audio is the master clock; video buffers elastically; audio never waits.
+Three tested modules + wiring:
+- elasticDelay.js — the POLICY: windowed median over agent-measured tail
+  samples, deadband (±120ms lip-sync tolerance), slew-limited glides
+  (≤250ms/step), 2s ceiling (the structural p95). 6 tests.
+- delayQueue.js — the HOLD: frames age to readiness; BOUNDED (overflow
+  closes the OLDEST — a spike costs old pictures, never a freeze);
+  ownership transfers on take; clear() closes all. 6 tests.
+- frameDelay.js — the GLUE: insertable streams (Chrome; honest
+  passthrough elsewhere), eager reader (never blocks the processor),
+  paced writer.
+- alignStage.js — fills framePipeline's align slot: one wrap per stream,
+  predecessor released first, release() forgets the clock. 6 tests.
+- Wiring: useLensVideo mounts the stage; Studio feeds
+  utterances[0].tail_latency_ms; readout gains "· a/v synced".
+
+### The rate-limit incident (CEO-found, evening)
+
+Her live attempt failed at "Opening the lens": LiveKit's signal endpoints
+answered 429 across every region. Cause: the day's validation volume —
+suites, probes, and visual runs, each opening real rooms — consumed the
+SHARED LiveKit project's connection-rate budget, and her attempt landed
+inside the cooldown. Her failed attempts also wedged BOTH registry slots
+(live 2/2), which would have turned into "at capacity" after the 429s
+cleared. Reset released them; a single gentle retest connected in 6.4s.
+
+**New doctrine: production tests share the CEO's connection budget.**
+E2E suites and probes against production are single-shot instruments,
+never run back-to-back; any failed browser run is followed by a session
+reset; and heavy validation belongs on a staging LiveKit project (the
+staging-agent → E2E-in-CI item just became load-bearing).
+
+### Budget
+
+~1530s spent by day's end (~$31) + one open reservation from a failed
+validation run resolving via the executioner (~1290s remaining, ~$26).
+Most spend was 180s-fully-spent reaps from the windows where stop paths
+could not run — tuition, honestly accounted. Every reservation resolved;
+the conservative machinery worked every time it was asked.
+
+
 ## 3 August 2026 — the CEO's drill finds the invented dialect (#50)
 
 ### Task (verbatim)
