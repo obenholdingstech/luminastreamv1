@@ -331,6 +331,8 @@ export default function Studio() {
   // disturb the session or silence the audio.
   const [cleanView, setCleanView] = useState(false);
   const cleanViewElRef = useRef(null);
+  const cleanViewRef = useRef(null);
+  const restoreFocusRef = useRef(null);
   useEffect(() => {
     const onKey = (event) => {
       if (shouldToggleCleanView(event)) setCleanView((v) => !v);
@@ -341,6 +343,23 @@ export default function Studio() {
   useEffect(() => {
     if (cleanViewElRef.current) cleanViewElRef.current.srcObject = video.stream ?? null;
   }, [video.stream, cleanView]);
+  // Hidden must mean INOPERABLE: without this, focus stays on an underlying
+  // button and Tab/Enter can press controls the overlay conceals — Stop,
+  // invisibly. The chrome goes inert, focus moves into the overlay, and the
+  // way back returns focus where it was.
+  useEffect(() => {
+    if (cleanView) {
+      restoreFocusRef.current = document.activeElement;
+      cleanViewRef.current?.focus();
+    } else if (restoreFocusRef.current instanceof HTMLElement) {
+      restoreFocusRef.current.focus();
+      restoreFocusRef.current = null;
+    }
+  }, [cleanView]);
+  // React 18 renders boolean `inert` unreliably; the empty-string spread is
+  // the documented workaround. Applied to header/main/footer — the overlay is
+  // their sibling, so it stays interactive.
+  const chromeInert = cleanView ? { inert: '' } : {};
 
   // Set when credentials arrive, cleared when the connect fires. See `start`.
   const [pendingConnect, setPendingConnect] = useState(false);
@@ -542,7 +561,7 @@ export default function Studio() {
         }}
       />
 
-      <header className="relative flex items-center justify-between px-6 sm:px-10 py-6">
+      <header {...chromeInert} className="relative flex items-center justify-between px-6 sm:px-10 py-6">
         <div className="flex items-baseline gap-3">
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/90">Lumina</span>
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/35">Stream</span>
@@ -556,7 +575,7 @@ export default function Studio() {
         </Link>
       </header>
 
-      <main className="relative flex-1 flex flex-col items-center justify-center px-6 pb-16">
+      <main {...chromeInert} className="relative flex-1 flex flex-col items-center justify-center px-6 pb-16">
         <Lens
           tone={status.tone}
           // status.id, not status.tone: 'waiting for the agent' shares the
@@ -1035,7 +1054,7 @@ export default function Studio() {
           allocated rather than what this tab decided. Blank until a slot is
           held — showing a stale room after Stop would name one somebody else
           may already be using. */}
-      <footer className="relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide">
+      <footer {...chromeInert} className="relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide">
         {allocation ? (
           <>
             Session <span className="font-mono text-[#4A5568]">{allocation.identity}</span> · room{' '}
@@ -1053,7 +1072,11 @@ export default function Studio() {
           return. The video is full-frame and unmasked: what a third-party
           platform's viewer would receive, not the lens's ring treatment. */}
       {cleanView && (
-        <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
+        <div
+          ref={cleanViewRef}
+          tabIndex={-1}
+          className="fixed inset-0 z-50 bg-black flex items-center justify-center outline-none"
+        >
           <span className="sr-only" role="status">
             Clean view: interface hidden. Press H to restore the controls.
           </span>
