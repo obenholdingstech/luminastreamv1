@@ -34,7 +34,7 @@ function fakePeer({ onCreated } = {}) {
   return pc;
 }
 
-function harness({ createSession, endSession, getUserMedia } = {}) {
+function harness({ createSession, endSession, getUserMedia, sendCandidates } = {}) {
   const calls = { candidates: [], ends: [], streams: [], phases: [], failures: [] };
   let peer = null;
   const track = { stop() { track.stopped = true; }, stopped: false };
@@ -50,10 +50,13 @@ function harness({ createSession, endSession, getUserMedia } = {}) {
       (async () => ({
         sessionId: 'sess-1',
         controlToken: 'ctrl',
-        vendor: { sdpAnswer: 'v=0 answer', etag: 'e1' },
+        // Decart's real passthrough shape: the answer is an
+        // RTCSessionDescription-shaped object, never a flat `sdpAnswer`.
+        vendor: { sdp: { type: 'answer', sdp: 'v=0 answer' }, etag: 'e1' },
       })),
     endSession: endSession ?? (async (s) => { calls.ends.push(s); return { ok: true, settled: true }; }),
-    sendCandidates: (session, c) => calls.candidates.push({ sessionId: session?.sessionId, c }),
+    sendCandidates:
+      sendCandidates ?? ((session, c) => calls.candidates.push({ sessionId: session?.sessionId, c })),
     onStream: (s) => calls.streams.push(s),
     onPhase: (p) => calls.phases.push(p),
     onFailure: (r) => calls.failures.push(r),
@@ -61,6 +64,9 @@ function harness({ createSession, endSession, getUserMedia } = {}) {
 
   return { negotiator, calls, track, peer: () => peer };
 }
+
+/** Sends are chained microtasks now; one macrotask turn drains the chain. */
+const drain = () => new Promise((r) => setImmediate(r));
 
 // ─── the bug that proved the extraction ────────────────────────────────────
 
@@ -74,7 +80,11 @@ test('ICE candidates gathered BEFORE the session exists are queued, not dropped'
   const h = harness({
     createSession: async () => {
       await gate;
-      return { sessionId: 'sess-1', controlToken: 'c', vendor: { sdpAnswer: 'v=0 answer' } };
+      return {
+        sessionId: 'sess-1',
+        controlToken: 'c',
+        vendor: { sdp: { type: 'answer', sdp: 'v=0 answer' } },
+      };
     },
   });
 
@@ -86,6 +96,7 @@ test('ICE candidates gathered BEFORE the session exists are queued, not dropped'
 
   release();
   await starting;
+  await drain();
 
   assert.equal(h.calls.candidates.length, 2, 'both early candidates were flushed');
   assert.deepEqual(
@@ -101,8 +112,36 @@ test('candidates gathered AFTER the session exists go straight out', async () =>
   await h.negotiator.start({});
   h.peer().fireCandidate({ candidate: 'late-1' });
   h.peer().fireCandidate(null); // end-of-candidates
+  await drain();
   assert.equal(h.calls.candidates.length, 2);
   assert.equal(h.calls.candidates[1].c, null, 'the null sentinel the vendor expects');
+});
+
+test('ICE sends are SERIALIZED, each carrying the etag the previous send rotated in', async () => {
+  // Decart's If-Match rotates on every accepted PATCH. Concurrent sends would
+  // all present the create-time etag and earn 412s for good candidates; a
+  // chain that forgot to write the rotation back would do the same from the
+  // second send on. Either break makes `seen` collapse to ['e1', 'e1', 'e1'].
+  const seen = [];
+  let inFlight = 0;
+  let n = 1;
+  const h = harness({
+    sendCandidates: async (session) => {
+      assert.equal(inFlight, 0, 'a send started while another was in flight');
+      inFlight += 1;
+      seen.push(session.etag);
+      await new Promise((r) => setImmediate(r)); // hold the wire open a turn
+      inFlight -= 1;
+      n += 1;
+      return { ok: true, etag: `e${n}` };
+    },
+  });
+  await h.negotiator.start({});
+  h.peer().fireCandidate({ candidate: 'c1' });
+  h.peer().fireCandidate({ candidate: 'c2' });
+  h.peer().fireCandidate(null);
+  for (let i = 0; i < 8; i += 1) await drain();
+  assert.deepEqual(seen, ['e1', 'e2', 'e3'], 'every send used the freshest etag');
 });
 
 // ─── cancellation: the Starlink lesson, with a vendor bill ─────────────────
@@ -126,7 +165,7 @@ test('stop() DURING session creation still gives the slot back', async () => {
   const h = harness({
     createSession: async () => {
       await gate;
-      return { sessionId: 'sess-late', controlToken: 'c', vendor: { sdpAnswer: 'a' } };
+      return { sessionId: 'sess-late', controlToken: 'c', vendor: { sdp: { type: 'answer', sdp: 'a' } } };
     },
   });
 
@@ -147,7 +186,7 @@ test('stop() is reachable from every phase and always stops the camera', async (
     const h =
       phase === 'media'
         ? harness({ getUserMedia: async () => { await gate; return { getTracks: () => [] }; } })
-        : harness({ createSession: async () => { await gate; return { sessionId: 's', vendor: { sdpAnswer: 'a' } }; } });
+        : harness({ createSession: async () => { await gate; return { sessionId: 's', vendor: { sdp: { type: 'answer', sdp: 'a' } } }; } });
     const starting = h.negotiator.start({});
     await new Promise((r) => setImmediate(r));
     await h.negotiator.stop();
@@ -217,7 +256,7 @@ test('a candidate send that REJECTS is reported, never an unhandled rejection', 
       PeerConnection: function () {
         return fakePeer({ onCreated: (p) => (negotiator.__peer = p) });
       },
-      createSession: async () => ({ sessionId: 's', vendor: { sdpAnswer: 'a' } }),
+      createSession: async () => ({ sessionId: 's', vendor: { sdp: { type: 'answer', sdp: 'a' } } }),
       endSession: async () => ({ ok: true }),
       sendCandidates: async () => {
         throw new Error('worker unreachable');

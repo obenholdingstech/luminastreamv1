@@ -99,20 +99,29 @@ test('candidates and prompts never throw — a lost candidate is not a teardown'
   stub(async () => {
     throw new Error('network');
   });
-  assert.equal(await sendCandidates('t', { sessionId: 's', controlToken: 'c' }, [], BASE), false);
+  assert.deepEqual(await sendCandidates('t', { sessionId: 's', controlToken: 'c' }, [], BASE), {
+    ok: false,
+  });
   assert.equal(await setVideoPrompt('t', { sessionId: 's', controlToken: 'c' }, 'p', BASE), false);
 });
 
-test('candidates carry the control token and the ETag', async () => {
+test('candidates carry the control token and the ETag — and return the ROTATED one', async () => {
   let body = null;
   stub(async (url, opts) => {
     body = JSON.parse(opts.body);
     assert.match(String(url), /\/api\/video\/session\/s1\/candidates$/);
-    return json(200, { ok: true });
+    // The Worker lifts the vendor's rotated ETag into its JSON response.
+    return json(200, { ok: true, etag: 'e2' });
   });
-  await sendCandidates('t', { sessionId: 's1', controlToken: 'c1', etag: 'e1' }, [{ candidate: 'x' }], BASE);
+  const result = await sendCandidates(
+    't',
+    { sessionId: 's1', controlToken: 'c1', etag: 'e1' },
+    [{ candidate: 'x' }],
+    BASE,
+  );
   assert.equal(body.controlToken, 'c1');
   assert.equal(body.etag, 'e1');
+  assert.deepEqual(result, { ok: true, etag: 'e2' }, 'the caller gets the next If-Match value');
 });
 
 test('end reports what actually happened — settled, or DEFERRED', async () => {

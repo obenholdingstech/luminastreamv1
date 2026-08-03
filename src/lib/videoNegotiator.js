@@ -87,6 +87,14 @@ export function createVideoNegotiator({
     if (mine !== generation) throw new NegotiationAborted();
   };
 
+  // Decart's ICE PATCH requires If-Match with an ETag that ROTATES on every
+  // accepted send (signaling-proxy-http contract, verified live 3 Aug 2026).
+  // Two consequences, both structural: sends must be SERIALIZED — concurrent
+  // sends would race the rotation and earn 412s for candidates that were
+  // perfectly good — and each response's new etag must be written back onto
+  // the session before the next send reads it.
+  let sendChain = Promise.resolve();
+
   /**
    * A candidate send that fails must be OBSERVABLE, never an unhandled
    * rejection. The collaborator is injected, so this cannot rely on today's
@@ -96,13 +104,14 @@ export function createVideoNegotiator({
    * this module exists to eliminate.
    */
   function trySendCandidates(target, payload) {
-    try {
-      Promise.resolve(sendCandidates(target, payload)).catch(() =>
-        onFailure?.('an ICE candidate could not be delivered'),
-      );
-    } catch {
-      onFailure?.('an ICE candidate could not be delivered');
-    }
+    sendChain = sendChain
+      .then(async () => {
+        const result = await sendCandidates(target, payload);
+        if (result && typeof result === 'object' && typeof result.etag === 'string' && result.etag) {
+          target.etag = result.etag;
+        }
+      })
+      .catch(() => onFailure?.('an ICE candidate could not be delivered'));
   }
 
   /** Close one start's own resources, without touching the shared slots. */
@@ -182,7 +191,13 @@ export function createVideoNegotiator({
         // start unheard. Candidates that arrive before the session exists are
         // queued, not dropped.
         myPc.onicecandidate = (event) => {
-          const payload = event?.candidate ? [event.candidate] : null;
+          // Exactly the vendor's three candidate fields — the browser's own
+          // toJSON() adds usernameFragment, and a strict validator on the far
+          // end makes "extra field" a failure mode we can rule out for free.
+          const c = event?.candidate;
+          const payload = c
+            ? [{ candidate: c.candidate, sdpMid: c.sdpMid ?? null, sdpMLineIndex: c.sdpMLineIndex ?? null }]
+            : null;
           if (session) trySendCandidates(session, payload);
           else pendingCandidates.push(payload);
         };
@@ -217,7 +232,9 @@ export function createVideoNegotiator({
         for (const queued of pendingCandidates) trySendCandidates(session, queued);
         pendingCandidates = [];
 
-        const answer = created?.vendor?.sdpAnswer;
+        // The answer travels as an RTCSessionDescription-shaped object at
+        // `vendor.sdp` — Decart's field, not ours (the invented-name 502).
+        const answer = created?.vendor?.sdp?.sdp;
         if (!answer) throw new Error('the server returned no answer');
         setPhase(NEGOTIATION.answering);
         await myPc.setRemoteDescription({ type: 'answer', sdp: answer });

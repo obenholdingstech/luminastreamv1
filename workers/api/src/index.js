@@ -677,22 +677,32 @@ async function handleVideoSession(request, env, origin) {
     });
 
     // 3. The session, created server-side with the constrained token.
+    //
+    // The wire shapes here are DECART'S, verified against the live API on
+    // 3 Aug 2026 after the first real create failed with exactly this
+    // handler's invented field names ("body.sdp: Field required"): the offer
+    // travels as an RTCSessionDescription-shaped object, the response is
+    // snake_case (`session_id`, answer at `sdp.sdp`), and the ICE ETag is a
+    // response HEADER, not a body field.
     const createRes = await fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}/v1/realtime/sessions`, {
       method: 'POST',
       signal: AbortSignal.timeout(15_000),
       headers: { 'x-api-key': minted.clientToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'lucy-2.5',
-        sdpOffer,
+        sdp: { type: 'offer', sdp: sdpOffer },
         ...(typeof body?.prompt === 'string' && body.prompt ? { prompt: body.prompt } : {}),
       }),
     });
     const created = await createRes.json().catch(() => null);
     if (!createRes.ok || !created) {
-      throw new Error(`vendor session create failed: HTTP ${createRes.status}`);
+      const detail = created?.detail ?? created?.title ?? '';
+      throw new Error(`vendor session create failed: HTTP ${createRes.status}${detail ? ` — ${detail}` : ''}`);
     }
-    decartSessionId = created.sessionId ?? created.id ?? null;
+    decartSessionId = created.session_id ?? null;
     if (!decartSessionId) throw new Error('vendor session create returned no id');
+    // The If-Match seed for every ICE PATCH this session will ever send.
+    const vendorEtag = createRes.headers.get('etag');
 
     // 4. The executioner's ammunition, persisted BEFORE anything reaches the
     //    browser. A failed bind compensates immediately with the id in hand.
@@ -718,8 +728,11 @@ async function handleVideoSession(request, env, origin) {
         controlToken,
         grantedSeconds: reserved.grantedSeconds,
         remainingSeconds: reserved.remainingSeconds,
-        // Vendor payload passthrough: answer SDP, ICE servers, SSE auth, ETag.
-        vendor: created,
+        // Vendor payload passthrough — answer SDP (`sdp.sdp`), ICE servers,
+        // SSE auth (`events`) — plus the ETag lifted from the header, because
+        // a passthrough of the body alone would silently drop the one value
+        // every subsequent ICE PATCH is required to present.
+        vendor: { ...created, etag: vendorEtag },
       },
       { origin },
     );
@@ -765,6 +778,11 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
   if (!payload) return json({ ok: false, error: 'control_refused' }, { status: 403, origin });
 
   if (action === 'candidates') {
+    // Decart's contract (signaling-proxy-http, verified 3 Aug 2026): If-Match
+    // is REQUIRED and the ETag ROTATES — each PATCH answers 204 No Content
+    // with the next ETag in its header. The rotated value is returned to the
+    // browser so the negotiator can chain it into the next send; a stale one
+    // earns a 412 from the vendor, not a guess from us.
     const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, {
       method: 'PATCH',
       headers: body?.etag ? { 'If-Match': body.etag } : {},
@@ -772,7 +790,10 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
     }).catch(() => null);
     if (!res) return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
     const out = await res.json().catch(() => ({}));
-    return json({ ok: res.ok, status: res.status, vendor: out }, { status: res.ok ? 200 : 502, origin });
+    return json(
+      { ok: res.ok, status: res.status, etag: res.headers.get('etag'), vendor: out },
+      { status: res.ok ? 200 : 502, origin },
+    );
   }
 
   if (action === 'prompt') {

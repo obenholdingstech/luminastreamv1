@@ -99,11 +99,16 @@ export async function createVideoSession(adminToken, args, base = API_BASE, sign
  * Forward ICE candidates. Never throws — a lost candidate degrades
  * connectivity, it does not warrant tearing down a working negotiation, and
  * WebRTC retries by design.
+ *
+ * Returns `{ ok, etag? }`: the vendor rotates the ICE ETag on every accepted
+ * PATCH, and the negotiator must write the new one onto the session before
+ * its next (serialized) send — a stale If-Match is a 412 for a candidate
+ * that was perfectly good.
  */
 export async function sendCandidates(adminToken, session, candidates, base = API_BASE) {
-  if (!base || !session?.sessionId) return false;
+  if (!base || !session?.sessionId) return { ok: false };
   try {
-    const { status } = await postJson(
+    const { status, data } = await postJson(
       `${base}/api/video/session/${encodeURIComponent(session.sessionId)}/candidates`,
       {
         adminToken,
@@ -111,9 +116,9 @@ export async function sendCandidates(adminToken, session, candidates, base = API
         body: { controlToken: session.controlToken, candidates, etag: session.etag ?? undefined },
       },
     );
-    return status === 200;
+    return { ok: status === 200, ...(data?.etag ? { etag: data.etag } : {}) };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 
