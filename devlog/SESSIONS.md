@@ -34,8 +34,7 @@ H still gives the raw Clean View. Review: stacking context (isolate) +
 prefers-reduced-motion, both accepted and confirmed. Video failure
 degrades to voice with the reason on screen — never blocks.
 
-### Pre-start identity (this PR — her UX directive verbatim: configure
-### first, then Start keys everything in)
+### Pre-start identity (this PR): configure first, then Start keys everything in
 
 - src/lib/voiceManifest.json: the account's 31 voices (21 premade, 10
   cloned), captured from the agent's own broadcast in one connection.

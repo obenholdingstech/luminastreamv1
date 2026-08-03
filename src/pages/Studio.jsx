@@ -223,9 +223,13 @@ export default function Studio() {
   // tested in src/lib/unifiedLens.js). The agent stays the source of truth:
   // its broadcast overrides the manifest, and its confirmation is what the
   // connected selector displays.
-  const [chosenVoice, setChosenVoice] = useState(
-    () => globalThis.localStorage?.getItem('lens-voice-choice') || null,
-  );
+  const [chosenVoice, setChosenVoice] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem('lens-voice-choice') || null;
+    } catch {
+      return null; // sandboxed/privacy contexts throw on READ too
+    }
+  });
   const chooseVoice = useCallback((voiceId) => {
     setChosenVoice(voiceId);
     try {
@@ -442,7 +446,11 @@ export default function Studio() {
   // The pre-start voice choice keys in the moment the agent confirms the
   // session — once, and never against a choice the agent already holds.
   useEffect(() => {
+    // Gated on the CONFIRMED converted mode — the selector hides under
+    // Direct because voice changes are unsupported there, and the latch must
+    // not do behind the curtain what the UI refuses to offer in front of it.
     if (
+      agentMode === agentModeFor('converted') &&
       voicePref.shouldApply({
         sessionId: allocation?.identity ?? null,
         connected: isConnected,
@@ -452,7 +460,7 @@ export default function Studio() {
     ) {
       requestVoice(chosenVoice);
     }
-  }, [allocation, isConnected, chosenVoice, confirmedVoice, voicePref, requestVoice]);
+  }, [allocation, isConnected, chosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
   const status = useMemo(
