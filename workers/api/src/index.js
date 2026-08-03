@@ -672,6 +672,15 @@ async function decartFetch(env, path, init) {
 // never cost a hold.
 const MAX_IMAGE_B64_CHARS = 7_000_000; // ≈ 5 MB decoded
 
+// Lucy generates NOTHING on a session with no prompt and no reference image —
+// transport connects, ICE completes, the SSE stays silent, and the screen is
+// blank. Measured live 3 Aug 2026: promptless create → zero frames in 40s;
+// the same create with any prompt → frames in under 10s. This was the CEO's
+// blank drill after every other layer was fixed. A session the ledger is
+// paying for must always have work to do, so a create with neither gets the
+// lens's neutral default: the same person, faithfully.
+const DEFAULT_VIDEO_PROMPT = 'the same person, photorealistic, natural colors, true to life';
+
 function normalizeReferenceImage(raw) {
   if (typeof raw !== 'string' || !raw) return null;
   const b64 = raw.startsWith('data:') ? (raw.split(',', 2)[1] ?? '') : raw;
@@ -731,7 +740,14 @@ async function handleVideoSession(request, env, origin) {
       body: JSON.stringify({
         model: 'lucy-2.5',
         sdp: { type: 'offer', sdp: sdpOffer },
-        ...(typeof body?.prompt === 'string' && body.prompt ? { prompt: body.prompt } : {}),
+        // The user's prompt wins; a reference image is work in itself; a
+        // session with NEITHER gets the neutral default — a promptless
+        // session generates nothing and bills anyway (see DEFAULT_VIDEO_PROMPT).
+        ...(typeof body?.prompt === 'string' && body.prompt
+          ? { prompt: body.prompt }
+          : imageData
+            ? {}
+            : { prompt: DEFAULT_VIDEO_PROMPT }),
         ...(imageData ? { image_data: imageData } : {}),
       }),
     });
