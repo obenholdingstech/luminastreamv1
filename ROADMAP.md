@@ -387,6 +387,18 @@ previously-flagged hole; none of them exists until it does:
    by the remaining walls — the token's `maxSessionDuration` (wall #2, the
    probe calibrates it) and Decart's own inactivity/timeout auto-end. P2c
    ships the bounded-exposure arithmetic alongside the code.
+
+   **The orphan seam, named:** Decart's create succeeds, and OUR write of the
+   session id fails — a live media session no alarm can name. P2c's required
+   ordering: mark the reservation `pending-create` durably **before** calling
+   Decart; write the id **before** the event token is released to the
+   browser; on a failed id-write, issue a **compensating DELETE immediately**
+   with the id still in hand. If even that fails, the expired `pending-create`
+   marker makes the orphan *visible* (the alarm flags what it cannot kill),
+   and a quota cross-check (`GET /v1/realtime/quota` showing more live vendor
+   sessions than id-bearing reservations) alerts on anything that slipped
+   every net. Exposure stays bounded by wall #2 and vendor auto-end; the
+   orphan can be silent about its bill, never about its existence.
 2. **Settle becomes vendor-truth** *(P2c)* — with the trust boundary explicit:
    **the billing summary is only ever read by the Worker from Decart's own
    response** (the Worker issues the DELETE, the summary arrives in that
@@ -463,7 +475,11 @@ never sell compute at cost by accident.** The design:
 - **The wallet's unit of account is retail** — Lumina Credits, whose fiat
   purchase price bakes in margin — never a vendor unit. Vendor units (Decart
   seconds, ElevenLabs characters/seconds, compute overhead) convert to
-  credits at settlement through a configurable **rate table**, per meter.
+  credits **at reserve**, through a configurable **rate table**, per meter.
+  Settlement converts nothing: it uses vendor-reported usage only to compute
+  the refund of unused reserved credits at the reservation's pinned rate, and
+  to store the raw summary for reconciliation. One conversion per unit of
+  usage, ever.
 - **The margin floor is an enforced invariant, not a hope:** configuration
   declares both the estimated vendor COGS per unit and the retail rate per
   unit, and the ledger REFUSES TO BOOT with any retail rate below the COGS
