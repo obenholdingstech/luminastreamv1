@@ -44,6 +44,7 @@ export class NegotiationAborted extends Error {
  *   sendCandidates: (session: any, candidates: any) => any,
  *   getUserMedia: (constraints: any) => Promise<any>,
  *   PeerConnection: any,
+ *   EventSourceFactory?: ((url: string) => EventSource) | null,
  *   onStream?: (stream: any) => void,
  *   onPhase?: (phase: string) => void,
  *   onFailure?: (reason: string) => void,
@@ -55,6 +56,16 @@ export function createVideoNegotiator({
   sendCandidates,
   getUserMedia,
   PeerConnection,
+  // The vendor's RETURN path (P2e). Decart trickles ITS ICE candidates —
+  // and reports its errors, including the terminal duration limit — over a
+  // per-session SSE stream (`vendor.events`). Without a consumer the browser
+  // only ever SENDS candidates; the connection cannot complete, which
+  // presented as a session that opens, bills, and renders nothing (the
+  // render probe's finding, 3 Aug 2026). Injectable for tests; defaults to
+  // the platform EventSource, and is simply skipped where none exists.
+  EventSourceFactory = typeof globalThis.EventSource === 'function'
+    ? (url) => new globalThis.EventSource(url)
+    : null,
   onStream,
   onPhase,
   onFailure,
@@ -63,6 +74,7 @@ export function createVideoNegotiator({
   let pc = null;
   let localStream = null;
   let session = null;
+  let events = null; // the live session's SSE stream
   // GENERATION-SCOPED, not a shared flag. A stopped start whose getUserMedia
   // is still pending must never resume — and a restart used to clear the
   // shared flag, letting the abandoned start sail past its checkpoints and
@@ -123,7 +135,12 @@ export function createVideoNegotiator({
   }
 
   /** Close one start's own resources, without touching the shared slots. */
-  function closeLocal(peer, stream) {
+  function closeLocal(peer, stream, ownEvents) {
+    try {
+      ownEvents?.close?.();
+    } catch {
+      // A close that throws must not abort the rest of the cleanup.
+    }
     try {
       peer?.close();
     } catch {
@@ -138,7 +155,53 @@ export function createVideoNegotiator({
     }
   }
 
+  /**
+   * Open the vendor's SSE stream for one start. Returns the source, or null
+   * where the platform (or a test) provides none. All handlers are
+   * generation-guarded and route through `applyRemoteCandidate`, which the
+   * caller wires to queue until the remote description exists.
+   */
+  function openEvents(created, mine, applyRemoteCandidate) {
+    const info = created?.vendor?.events;
+    if (!EventSourceFactory || !info?.url || !info?.event_token) return null;
+    let source;
+    try {
+      const sep = info.url.includes('?') ? '&' : '?';
+      source = EventSourceFactory(`${info.url}${sep}event_token=${encodeURIComponent(info.event_token)}`);
+    } catch {
+      onFailure?.("the vendor's event stream could not be opened");
+      return null;
+    }
+    source.addEventListener?.('ice-candidate', (event) => {
+      if (mine !== generation) return;
+      try {
+        applyRemoteCandidate(JSON.parse(event.data));
+      } catch {
+        // one unparsable candidate is degradation, not teardown
+      }
+    });
+    // The named SSE event 'error' is the VENDOR speaking (it has data) — the
+    // terminal duration limit arrives here in the wild. The transport's own
+    // error event has no data and is not the vendor saying anything.
+    source.addEventListener?.('error', (event) => {
+      if (mine !== generation || !event?.data) return;
+      try {
+        const detail = JSON.parse(event.data);
+        onFailure?.(detail?.detail ?? detail?.title ?? 'vendor error');
+      } catch {
+        onFailure?.(String(event.data));
+      }
+    });
+    return source;
+  }
+
   function teardown() {
+    try {
+      events?.close?.();
+    } catch {
+      // A close that throws must not abort the rest of the teardown.
+    }
+    events = null;
     try {
       pc?.close();
     } catch {
@@ -182,6 +245,25 @@ export function createVideoNegotiator({
       let myStream = null;
       let myPc = null;
       let mySession = null;
+      let myEvents = null;
+      // The vendor may trickle its candidates the moment the session exists —
+      // before OUR setRemoteDescription has run, and addIceCandidate throws
+      // without a remote description. Queue, flush after answering: the same
+      // NAT lesson as the outbound side, mirrored.
+      let remoteReady = false;
+      const remoteQueue = [];
+      const applyRemoteCandidate = (candidate) => {
+        if (!remoteReady) {
+          remoteQueue.push(candidate);
+          return;
+        }
+        try {
+          // null is the vendor's own end-of-candidates marker.
+          Promise.resolve(myPc?.addIceCandidate(candidate ?? undefined)).catch(() => {});
+        } catch {
+          /* a single unusable candidate is degradation, not teardown */
+        }
+      };
 
       try {
         setPhase(NEGOTIATION.media);
@@ -202,10 +284,15 @@ export function createVideoNegotiator({
           // Exactly the vendor's three candidate fields — the browser's own
           // toJSON() adds usernameFragment, and a strict validator on the far
           // end makes "extra field" a failure mode we can rule out for free.
+          // End-of-candidates is `[null]` — the null goes INSIDE the list.
+          // The live API rejects a bare null ("Input should be a valid
+          // list", verified 3 Aug 2026); the docs' "or null" meant the list
+          // ITEM. This one line was the CEO's on-screen "an ICE candidate
+          // could not be delivered".
           const c = event?.candidate;
           const payload = c
             ? [{ candidate: c.candidate, sdpMid: c.sdpMid ?? null, sdpMLineIndex: c.sdpMLineIndex ?? null }]
-            : null;
+            : [null];
           if (session) trySendCandidates(session, payload);
           else pendingCandidates.push(payload);
         };
@@ -237,6 +324,12 @@ export function createVideoNegotiator({
         checkpoint(mine);
         session = mySession;
 
+        // The return path, opened as early as the session id allows — every
+        // millisecond before the SSE attaches is a window where the vendor's
+        // candidates fall on the floor with no replay.
+        myEvents = openEvents(created, mine, applyRemoteCandidate);
+        events = myEvents;
+
         // Flush what gathered while the session was being born.
         for (const queued of pendingCandidates) trySendCandidates(session, queued);
         pendingCandidates = [];
@@ -249,6 +342,11 @@ export function createVideoNegotiator({
         await myPc.setRemoteDescription({ type: 'answer', sdp: answer });
         checkpoint(mine);
 
+        // The remote description exists; the vendor's queued candidates can
+        // finally land, in arrival order.
+        remoteReady = true;
+        for (const queued of remoteQueue.splice(0)) applyRemoteCandidate(queued);
+
         setPhase(NEGOTIATION.live);
         return mySession;
       } catch (err) {
@@ -256,8 +354,9 @@ export function createVideoNegotiator({
         if (superseded) {
           // Someone else owns the shared slots now. Release ONLY what this
           // start made — its own session (real money), its own peer, its own
-          // camera — and report nothing: the phase belongs to the live start.
-          closeLocal(myPc, myStream);
+          // camera, its own event stream — and report nothing: the phase
+          // belongs to the live start.
+          closeLocal(myPc, myStream, myEvents);
           if (mySession) await endSession(mySession);
           return null;
         }

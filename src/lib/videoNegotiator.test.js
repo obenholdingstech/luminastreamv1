@@ -17,10 +17,12 @@ function fakePeer({ onCreated } = {}) {
     ontrack: null,
     onconnectionstatechange: null,
     closed: false,
+    remoteCandidates: [],
     addTrack: (t) => pc.tracks.push(t),
     createOffer: async () => ({ type: 'offer', sdp: 'v=0 offer' }),
     setLocalDescription: async () => {},
     setRemoteDescription: async (d) => (pc.remote = d),
+    addIceCandidate: async (c) => pc.remoteCandidates.push(c),
     close: () => (pc.closed = true),
     /** Test helpers */
     fireCandidate: (c) => pc.onicecandidate?.({ candidate: c }),
@@ -34,7 +36,7 @@ function fakePeer({ onCreated } = {}) {
   return pc;
 }
 
-function harness({ createSession, endSession, getUserMedia, sendCandidates } = {}) {
+function harness({ createSession, endSession, getUserMedia, sendCandidates, EventSourceFactory } = {}) {
   const calls = { candidates: [], ends: [], streams: [], phases: [], failures: [] };
   let peer = null;
   const track = { stop() { track.stopped = true; }, stopped: false };
@@ -57,6 +59,7 @@ function harness({ createSession, endSession, getUserMedia, sendCandidates } = {
     endSession: endSession ?? (async (s) => { calls.ends.push(s); return { ok: true, settled: true }; }),
     sendCandidates:
       sendCandidates ?? ((session, c) => calls.candidates.push({ sessionId: session?.sessionId, c })),
+    ...(EventSourceFactory ? { EventSourceFactory } : {}),
     onStream: (s) => calls.streams.push(s),
     onPhase: (p) => calls.phases.push(p),
     onFailure: (r) => calls.failures.push(r),
@@ -114,7 +117,11 @@ test('candidates gathered AFTER the session exists go straight out', async () =>
   h.peer().fireCandidate(null); // end-of-candidates
   await drain();
   assert.equal(h.calls.candidates.length, 2);
-  assert.equal(h.calls.candidates[1].c, null, 'the null sentinel the vendor expects');
+  // The live API rejects a bare null ("Input should be a valid list") — the
+  // end-of-candidates marker travels INSIDE the list. Verified 3 Aug 2026;
+  // the bare-null form was the on-screen "an ICE candidate could not be
+  // delivered" in the CEO's drill.
+  assert.deepEqual(h.calls.candidates[1].c, [null], 'the sentinel is [null], always a list');
 });
 
 test('ICE sends are SERIALIZED, each carrying the etag the previous send rotated in', async () => {
@@ -386,4 +393,132 @@ test('the reference avatar and prompt ride the create call untouched', async () 
   await h.negotiator.start({ imageData: 'data:image/png;base64,aGk=', prompt: 'blue cloth' });
   assert.equal(seen.imageData, 'data:image/png;base64,aGk=', 'the identity reaches the Worker');
   assert.equal(seen.prompt, 'blue cloth');
+});
+
+// ─── the vendor's RETURN path (P2e): SSE candidates and errors ─────────────
+
+function fakeEventSource() {
+  const listeners = {};
+  const source = {
+    url: null,
+    closed: false,
+    addEventListener: (type, fn) => (listeners[type] = fn),
+    close: () => (source.closed = true),
+    fire: (type, data) => listeners[type]?.(data === undefined ? {} : { data }),
+  };
+  return source;
+}
+
+const SESSION_WITH_EVENTS = () => ({
+  sessionId: 'sess-1',
+  controlToken: 'c',
+  vendor: {
+    sdp: { type: 'answer', sdp: 'v=0 answer' },
+    etag: 'e1',
+    events: {
+      url: 'https://api.decart.ai/v1/realtime/sessions/sess-1/events',
+      event_token: 'evt-tok',
+      expires_at: '2026-08-03T13:00:00Z',
+    },
+  },
+});
+
+test("the vendor's SSE candidates reach the peer connection — the missing half of ICE", async () => {
+  let source = null;
+  const h = harness({
+    createSession: async () => SESSION_WITH_EVENTS(),
+    EventSourceFactory: (url) => {
+      source = fakeEventSource();
+      source.url = url;
+      return source;
+    },
+  });
+  await h.negotiator.start({});
+
+  assert.ok(source, 'the event stream opens with the session');
+  assert.match(source.url, /event_token=evt-tok/, "authenticated with the vendor's own token");
+
+  source.fire('ice-candidate', JSON.stringify({ candidate: 'v-cand', sdpMLineIndex: 0, sdpMid: '0' }));
+  source.fire('ice-candidate', 'null'); // the vendor's own end-of-candidates
+  await drain();
+
+  assert.equal(h.peer().remoteCandidates.length, 2);
+  assert.equal(h.peer().remoteCandidates[0].candidate, 'v-cand');
+  assert.equal(h.peer().remoteCandidates[1], undefined, 'null becomes the DOM end-of-candidates call');
+});
+
+test('vendor candidates that arrive BEFORE the answer is applied are queued, then flushed', async () => {
+  // addIceCandidate throws without a remote description, and SSE has no
+  // replay — the same NAT lesson as the outbound side, mirrored.
+  let source = null;
+  let releaseAnswer;
+  const answerGate = new Promise((r) => (releaseAnswer = r));
+  // The gate is installed INSIDE the create call — the only moment that is
+  // guaranteed to be after the peer exists and before the answer is applied.
+  const h = harness({
+    createSession: async () => {
+      const peer = h.peer();
+      const realSetRemote = peer.setRemoteDescription;
+      peer.setRemoteDescription = async (d) => {
+        await answerGate;
+        return realSetRemote(d);
+      };
+      return SESSION_WITH_EVENTS();
+    },
+    EventSourceFactory: () => (source = fakeEventSource()),
+  });
+
+  const starting = h.negotiator.start({});
+  await drain();
+  assert.ok(source, 'stream open while the answer is still pending');
+  source.fire('ice-candidate', JSON.stringify({ candidate: 'early-vendor', sdpMLineIndex: 0, sdpMid: '0' }));
+  await drain();
+  assert.equal(h.peer().remoteCandidates.length, 0, 'nothing lands before the remote description');
+
+  releaseAnswer();
+  await starting;
+  await drain();
+  assert.equal(h.peer().remoteCandidates.length, 1, 'the queued candidate landed after the answer');
+  assert.equal(h.peer().remoteCandidates[0].candidate, 'early-vendor');
+});
+
+test("the vendor's SSE error event feeds onFailure with its message INTACT", async () => {
+  let source = null;
+  const h = harness({
+    createSession: async () => SESSION_WITH_EVENTS(),
+    EventSourceFactory: () => (source = fakeEventSource()),
+  });
+  await h.negotiator.start({});
+  source.fire(
+    'error',
+    JSON.stringify({ type: 'x', title: 'Session ended', detail: 'Session duration limit reached', status: 200 }),
+  );
+  assert.deepEqual(
+    h.calls.failures,
+    ['Session duration limit reached'],
+    "the classifier hears the vendor's own words — the wall's door, now with a caller",
+  );
+});
+
+test("a TRANSPORT error (no data) is not the vendor speaking — no failure is invented", async () => {
+  let source = null;
+  const h = harness({
+    createSession: async () => SESSION_WITH_EVENTS(),
+    EventSourceFactory: () => (source = fakeEventSource()),
+  });
+  await h.negotiator.start({});
+  source.fire('error'); // EventSource's own connection hiccup: no data
+  assert.deepEqual(h.calls.failures, [], 'a reconnecting stream is not a vendor error');
+});
+
+test('stop() closes the event stream with everything else', async () => {
+  let source = null;
+  const h = harness({
+    createSession: async () => SESSION_WITH_EVENTS(),
+    EventSourceFactory: () => (source = fakeEventSource()),
+  });
+  await h.negotiator.start({});
+  assert.equal(source.closed, false);
+  await h.negotiator.stop();
+  assert.equal(source.closed, true, 'no listener outlives the session it listened to');
 });
