@@ -754,6 +754,17 @@ async function handleVideoSession(request, env, origin) {
     const created = await createRes.json().catch(() => null);
     if (!createRes.ok || !created) {
       const detail = created?.detail ?? created?.title ?? '';
+      // The vendor's own broke-account signal (422 "Insufficient credits",
+      // seen live 3 Aug 2026 when the Decart balance ran dry) must surface AS
+      // ITSELF — it reached the CEO as a mystery 502 and read as a proxy bug.
+      // Money problems are named, never generic.
+      if (createRes.status === 422 && /insufficient credits/i.test(detail)) {
+        const err = /** @type {Error & {vendorCredits?: boolean}} */ (
+          new Error('vendor account out of credits')
+        );
+        err.vendorCredits = true;
+        throw err;
+      }
       throw new Error(`vendor session create failed: HTTP ${createRes.status}${detail ? ` — ${detail}` : ''}`);
     }
     decartSessionId = created.session_id ?? null;
@@ -829,6 +840,10 @@ async function handleVideoSession(request, env, origin) {
       settleToken: reserved.settleToken,
       usedSeconds: killed ? 0 : reserved.grantedSeconds,
     });
+    if (/** @type {any} */ (err)?.vendorCredits) {
+      // 402: the true condition. Only the CEO's hands can fix this one.
+      return json({ ok: false, error: 'vendor_credits_exhausted' }, { status: 402, origin });
+    }
     return json(
       { ok: false, error: killed ? 'vendor_session_failed' : 'vendor_session_orphaned' },
       { status: 502, origin },

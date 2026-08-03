@@ -13,6 +13,7 @@ import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
 import { shouldToggleCleanView } from '@/lib/cleanView';
+import { createAutoStartLatch } from '@/lib/unifiedLens';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -381,6 +382,33 @@ export default function Studio() {
   // Connecting and Reconnecting, so anything that publishes on the data channel
   // must ask this, not the negation above.
   const isConnected = connectionState === ConnectionState.Connected;
+
+  // ── the unified lens (CEO mandate, 3 Aug 2026) ────────────────────────
+  // ONE button starts the combined reality: the audio session opens, and the
+  // moment it is connected the video leg starts itself — once per session,
+  // never over a user's explicit stop (the latch, tested in
+  // src/lib/unifiedLens.js). A video failure degrades to voice with a
+  // visible reason; it never blocks the lens. When video goes LIVE the UI
+  // turns cinematic: the stream becomes the background and the chrome
+  // recedes (press H for the fully raw view).
+  const [autoLatch] = useState(() => createAutoStartLatch());
+  useEffect(() => {
+    if (
+      autoLatch.shouldStart({
+        sessionId: allocation?.identity ?? null,
+        connected: isConnected,
+        adminToken,
+        videoPhase: video.phase,
+      })
+    ) {
+      video.start({
+        ...(avatar ? { imageData: avatar.dataUrl } : {}),
+        ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
+      });
+    }
+  }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt]);
+
+  const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
   const hasCredentials = Boolean(url && token);
 
   const status = useMemo(
@@ -488,6 +516,11 @@ export default function Studio() {
     // reallocated slot is harmless — identities are unique per session, so no
     // eviction (see sessionRegistry.js).
     const released = holder.stop();
+    // The unified lens: ONE stop ends everything. Video first in the same
+    // breath (its settle is money), the latch re-arms for the next session,
+    // and none of it sequences behind anything that can hang.
+    autoLatch.reset();
+    video.stop();
     disconnect().catch(() => {});
     await released;
   }, [disconnect, holder]);
@@ -573,7 +606,10 @@ export default function Studio() {
         }}
       />
 
-      <header {...chromeInert} className="relative flex items-center justify-between px-6 sm:px-10 py-6">
+      <header
+        {...chromeInert}
+        className={`relative flex items-center justify-between px-6 sm:px-10 py-6 transition-opacity duration-500 ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
+      >
         <div className="flex items-baseline gap-3">
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/90">Lumina</span>
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/35">Stream</span>
@@ -587,7 +623,10 @@ export default function Studio() {
         </Link>
       </header>
 
-      <main {...chromeInert} className="relative flex-1 flex flex-col items-center justify-center px-6 pb-16">
+      <main
+        {...chromeInert}
+        className={`relative flex-1 flex flex-col items-center justify-center px-6 pb-16 ${cinematic ? 'cinematic-chrome' : ''}`}
+      >
         <Lens
           tone={status.tone}
           // status.id, not status.tone: 'waiting for the agent' shares the
@@ -739,77 +778,57 @@ export default function Studio() {
           </div>
         )}
 
-        {/* The video leg. Rendered behind the ring so the lens stays the
-            subject and the transformed face sits inside it — and NEVER as a
-            bare <video>: frames arrive through the pipeline (framePipeline.js)
-            so P3's aligner and upscaler are slot-fills, not a rebuild. */}
+        {/* The video leg — CINEMATIC when live (CEO mandate, 3 Aug): the
+            transformed stream becomes the full background and the chrome
+            recedes; while starting it sits softly behind the ring. Frames
+            still arrive only through the pipeline (framePipeline.js). */}
         {video.stream && (
-          <div className="absolute inset-0 -z-10 flex items-center justify-center overflow-hidden">
+          <div className="lens-backdrop absolute inset-0 -z-10 flex items-center justify-center overflow-hidden">
             <video
               ref={videoElRef}
               autoPlay
               playsInline
               muted
-              className="w-full h-full object-cover opacity-40"
+              className={`w-full h-full object-cover transition-opacity duration-700 ${
+                cinematic ? 'opacity-100' : 'opacity-40'
+              }`}
             />
             <div
               aria-hidden
-              className="absolute inset-0"
+              className="absolute inset-0 transition-opacity duration-700"
               style={{
                 background:
                   'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
+                opacity: cinematic ? 0 : 1,
               }}
             />
           </div>
         )}
 
-        {/* Video controls — separate from the audio session, because the two
-            are metered separately and either may run without the other. */}
+        {/* The lens's video state — no separate button (CEO mandate: ONE
+            universal Start). The lens starts audio and video together; what
+            remains here is the truth about the video leg, and the identity
+            controls that shape it. */}
         {adminToken && (
           <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
             <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() =>
-                  video.phase === VIDEO_PHASE.live || video.phase === VIDEO_PHASE.starting
-                    ? video.stop()
-                    : video.start({
-                        ...(avatar ? { imageData: avatar.dataUrl } : {}),
-                        ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
-                      })
-                }
-                /* NEVER disabled while starting. The negotiator's start is
-                   cancel-safe (checkpoints after every await), so Stop must
-                   stay reachable — an unanswered camera prompt or a stalled
-                   vendor would otherwise leave a paid slot with no way to
-                   give it back. The Starlink lesson, with a vendor bill. */
-                disabled={video.phase === VIDEO_PHASE.stopping}
-                className="flex items-center gap-2 rounded-full px-5 py-2 text-[10px] tracking-[0.18em] uppercase border transition-colors disabled:opacity-50"
-                style={{
-                  borderColor: video.phase === VIDEO_PHASE.live ? '#6366F1' : '#1A1A2E',
-                  color: video.phase === VIDEO_PHASE.live ? '#A5B4FC' : '#64748B',
-                }}
-              >
-                {video.phase === VIDEO_PHASE.starting ||
-                video.phase === VIDEO_PHASE.stopping ? (
+              {(video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping) && (
+                <span className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#64748B]">
                   <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <Video size={11} />
-                )}
-                {video.phase === VIDEO_PHASE.live || video.phase === VIDEO_PHASE.starting
-                  ? 'Stop video'
-                  : 'Add video'}
-              </button>
-
+                  {video.phase === VIDEO_PHASE.starting ? 'video joining the lens' : 'video closing'}
+                </span>
+              )}
               {/* The fidelity readout says what the pipeline ACTUALLY
                   delivers. While the upscale slot is empty it says 720p and
                   names what is pending — claiming FHD before the stage exists
                   would be the kind of lie this project keeps refusing. */}
               {video.phase === VIDEO_PHASE.live && (
                 <span className="text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
+                  <Video size={10} className="inline mr-1" aria-hidden />
                   {fidelity.delivering.height}p
                   {!fidelity.upscaleActive && ' · upscale pending'}
                   {fidelity.alignActive && ' · a/v synced'}
+                  {' · press H for clean view'}
                 </span>
               )}
             </div>
@@ -1067,7 +1086,10 @@ export default function Studio() {
           allocated rather than what this tab decided. Blank until a slot is
           held — showing a stale room after Stop would name one somebody else
           may already be using. */}
-      <footer {...chromeInert} className="relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide">
+      <footer
+        {...chromeInert}
+        className={`relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
+      >
         {allocation ? (
           <>
             Session <span className="font-mono text-[#4A5568]">{allocation.identity}</span> · room{' '}

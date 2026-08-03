@@ -42,6 +42,12 @@ function describeRefusal(status, data) {
   if (code === 'video_vendor_unconfigured') {
     return videoError('video is not configured on the server', { status, code });
   }
+  if (code === 'vendor_credits_exhausted') {
+    return videoError('the video provider account is out of credits — voice continues without video', {
+      status,
+      code,
+    });
+  }
   if (code === 'at_capacity') {
     return videoError('the lens is busy right now — try again in a moment', { status, code });
   }

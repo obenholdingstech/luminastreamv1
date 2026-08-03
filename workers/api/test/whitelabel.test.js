@@ -264,6 +264,30 @@ test('create: a 201 WITHOUT an ETag header fails closed and compensates', async 
   assert.equal(b.openReservations, 0);
 });
 
+test("create: the vendor's INSUFFICIENT CREDITS surfaces as itself, hold returned", async (t) => {
+  // Seen live 3 Aug 2026: Decart 422 'Insufficient credits' reached the CEO
+  // as a mystery 502 and read as a proxy regression. Money problems are
+  // named — 402, vendor_credits_exhausted — and cost nothing here either.
+  const { env } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    create: () =>
+      new Response(
+        JSON.stringify({ title: 'Insufficient credits', detail: 'Insufficient credits', status: 422 }),
+        { status: 422 },
+      ),
+  });
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token);
+  assert.equal(res.status, 402);
+  assert.equal((await res.json()).error, 'vendor_credits_exhausted');
+  const budget = await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env);
+  const b = await budget.json();
+  assert.equal(b.spentSeconds, 0, 'a broke vendor account must not eat OUR meter');
+  assert.equal(b.openReservations, 0);
+});
+
 test('create: a vendor create failure returns the hold and binds nothing', async (t) => {
   const { env } = setup();
   const token = await adminToken(env);
