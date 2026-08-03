@@ -4,6 +4,98 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 (overnight) — P2c + P2d: the topology implemented, video in the lens (#48 merged, #49)
+
+### Task (verbatim)
+
+> "P2 Research Closed: Verdict Approved & P2c Green Light and after its
+> comrfirmed and gone through tests as usual you can start P2d — video in the
+> lens + WebGL upscale slot (frame pipeline). keep the good job going am
+> proud, ill be sleeping now while you work on those."
+
+### P2c — the white-label topology, implemented (#48, merged & deployed)
+
+Create in the orphan-proof order: reserve (the unbound reservation IS the
+durable pending-create marker) → constrained client token minted for the
+WORKER'S OWN use (wall #2 rides on the session; the token is shown to nobody)
+→ vendor create → bind the session id BEFORE the browser sees a byte →
+respond. Control is stateless (HMAC token scoped to session+reservation+lease)
+so ICE and prompts cost ZERO Durable Object requests. End is vendor-truth: the
+Worker DELETEs and settles from Decart's own billing summary — the test enacts
+the canon's attack (browser claims `billedSeconds: 1` while Decart says 41.2;
+the ledger records 42). The executioner kills abandoned sessions with bounded
+retries (1+KILL_RETRIES alarms, asserted), 404 counts as success, exhausted
+retries flag an orphan.
+
+Full O(1) budget: **reserve + bind + settle = 3 DO requests per video
+session**, whatever its length. Verified live in production after deploy.
+
+**Review (3 findings, all mine):** the sharpest was that I built an
+executioner and then wrote two paths that destroy its ammunition — settling
+deletes the reservation, and a failed vendor DELETE would leave a running
+session with no server-side owner. `end` now refuses to settle on a failed
+kill; the create-compensation path (which cannot defer) settles FULLY SPENT
+and logs the orphan, because refunding a stream that may still run pays for
+someone else's video.
+
+### P2d — video in the lens (#49)
+
+The lens grows a second, independently metered leg. The frame pipeline is the
+CEO's day-one mandate made structural: frames never reach the screen as a bare
+`<video>` — they pass `receive → align → upscale → present`, with the middle
+stages declared, INERT, and named for the phase that fills them. The fidelity
+readout says **"720p · upscale pending"** because that is what the pipeline
+delivers; a mutation claiming FHD from an empty slot reddens two tests.
+
+### Key finding — the same lesson, twice, and what it cost
+
+**I put lifecycle logic in a React component again.** `sessionHolder.js` exists
+because I did it with the audio session at P1b; four rounds later I did it with
+the video's. The reviewer's tell was exact: `videoClient.js` and
+`framePipeline.js` each shipped with a test file and the hook did not — *a file
+with no test beside it, in a codebase where everything has one, is the shape of
+logic hiding in the wrong layer.*
+
+Extracting `videoNegotiator.js` (12 tests where there were none) immediately
+exposed, in order:
+
+1. **ICE candidates were silently dropped.** Gathering starts at
+   `setLocalDescription`; the handler went on after a network round trip, and
+   the DOM API does not replay missed events. Behind NAT: intermittent failure
+   with no error anywhere.
+2. **A hung start could not be cancelled** — an unanswered camera prompt left
+   a PAID slot unreleasable, with Stop disabled during exactly that phase. The
+   Starlink lesson reproduced in a new component within a day of citing it.
+3. **The terminal-limit classifier had no input.** `onFailure` only ever
+   emitted our own connection-failed string, so nothing could feed the vendor's
+   message to `isDurationLimitError`. A wall with a door onto blank wall.
+4. **Writing the test for a reported bug found a worse one underneath it.**
+   Fixing shared-flag cancellation revealed that an abandoned start's cleanup
+   tore down the session that had REPLACED it — closing the peer, stopping the
+   camera, clobbering the phase. It would have presented as "video dies a
+   second after I restart it", with nothing in any log. Starts now hold their
+   own resources and publish to the shared slots only after each checkpoint.
+
+Also caught: two tests asserting less than their names claimed, and one test of
+mine whose assertions lived in a bare `.catch()` — never executed if the call
+stopped rejecting.
+
+**The pattern worth keeping:** every one of these was findable only after the
+logic moved to `src/lib/`. The rule is not hygiene; it is the difference
+between a bug that can be broken on purpose and one that ships.
+
+### Verification
+
+166 frontend tests (was 133), 157 worker, lint, typecheck, build, markdown
+guard, dry-run. Twelve mutations across the two PRs, each convicting exactly
+its guard. P2c verified live in production post-deploy (routes gated 401/403,
+control token refused without its session, budget clean).
+
+**Not done, deliberately:** no live end-to-end video run — that spends vendor
+money and belongs to a CEO drill with its result logged same-day.
+
+---
+
 ## 3 August 2026 — THE PROBE VERDICT: maxSessionDuration is ENFORCED — against generation (#46 merged, #47)
 
 ### The experiment (the project's first metered vendor spend)

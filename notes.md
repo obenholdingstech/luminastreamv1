@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 (overnight) — P2c MERGED + P2d (#49): topology implemented, video in the lens
+
+- **P2c live:** white-label create (reserve → constrained token → vendor session → bind → respond), stateless control (ICE/prompts cost ZERO DO requests), vendor-truth settle, executioner with bounded retries. **3 DO requests per video session**, any length. Verified in production.
+- **P2d:** video leg in the lens, independently metered. **Frame pipeline** `receive → align → upscale → present` — middle stages inert and named for their phase, so P3's WebGL upscaler is a slot-fill. Readout says "720p · upscale pending" because that is what it delivers.
+- **The lesson, twice:** I put lifecycle logic in a component again (sessionHolder.js exists for the same mistake at P1b). Tell: the two extracted libs had tests, the hook did not. Extracting `videoNegotiator.js` then exposed **four real bugs** — dropped ICE candidates (silent NAT failures), an uncancellable start holding a paid slot, a terminal-limit classifier with no input path, and — found while fixing the first — **an abandoned start tearing down the session that replaced it** ("video dies a second after I restart it", nothing in the logs).
+- **Verified:** 166 frontend / 157 worker; 12 mutations across both PRs, each convicting its guard.
+- **Owed:** CEO's live video drill (first face through Lucy, spends vendor money, log same-day); analyzer report for the 9/10 audio drill if a capture exists.
+
 ## 3 August 2026 — PROBE VERDICT: wall #2 is REAL (#46 merged, #47)
 
 - **`maxSessionDuration` ENFORCED at runtime, against generation:** at the 30 s constraint Lucy stopped generating (+~2–3 s granularity), emitted `"Session duration limit reached"`, ticks froze — **billing bounded even if every server-side wall failed**. First metered vendor spend: $0.60, through our own ledger, settled clean.
