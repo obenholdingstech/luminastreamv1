@@ -10,6 +10,8 @@ import {
   hmacSha256,
   timingSafeEqual,
   constantTimeCompareSecrets,
+  seal,
+  unseal,
 } from '../src/crypto.js';
 
 const hex = (u8) => Buffer.from(u8).toString('hex');
@@ -66,4 +68,26 @@ test('constantTimeCompareSecrets: non-strings are rejected', async () => {
   assert.equal(await constantTimeCompareSecrets(undefined, 'x'), false);
   assert.equal(await constantTimeCompareSecrets('x', null), false);
   assert.equal(await constantTimeCompareSecrets(123, 123), false);
+});
+
+test('seal/unseal: roundtrip under the same secret+purpose, fresh IV per seal', async () => {
+  const a = await seal('secret', 'video-vendor-token', 'rt_client_abc123');
+  const b = await seal('secret', 'video-vendor-token', 'rt_client_abc123');
+  assert.notEqual(a, b, 'a repeated seal must not produce a recognizable ciphertext');
+  assert.equal(await unseal('secret', 'video-vendor-token', a), 'rt_client_abc123');
+  assert.equal(await unseal('secret', 'video-vendor-token', b), 'rt_client_abc123');
+  assert.ok(!a.includes('rt_client_abc123'), 'the plaintext never appears in the sealed form');
+});
+
+test('unseal: wrong secret, wrong purpose, tampering, and garbage all yield null', async () => {
+  const sealed = await seal('secret', 'video-vendor-token', 'rt_client_abc123');
+  assert.equal(await unseal('other-secret', 'video-vendor-token', sealed), null);
+  assert.equal(
+    await unseal('secret', 'some-other-purpose', sealed),
+    null,
+    'the purpose label partitions the keyspace — a seal for one job opens nothing else',
+  );
+  const tampered = sealed.slice(0, -2) + (sealed.endsWith('AA') ? 'BB' : 'AA');
+  assert.equal(await unseal('secret', 'video-vendor-token', tampered), null, 'GCM authenticates');
+  assert.equal(await unseal('secret', 'video-vendor-token', 'not-base64!!'), null);
 });

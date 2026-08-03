@@ -82,6 +82,20 @@ function stubVendor(overrides = {}) {
         )
       );
     }
+    // SESSION CONTROL AUTH, part of the contract: Decart accepts control ops
+    // (ICE PATCH, prompt, DELETE) only from the client token that created the
+    // session. The raw account key answers 401 — verified live 3 Aug 2026,
+    // where it broke the deployed end path and would have broken every kill.
+    const sessionControl =
+      (/\/v1\/realtime\/sessions\/[^/]+$/.test(u) &&
+        (entry.method === 'DELETE' || entry.method === 'PATCH')) ||
+      u.endsWith('/prompt');
+    if (sessionControl && entry.headers['x-api-key'] !== 'constrained-client-token') {
+      return new Response(
+        JSON.stringify({ title: 'Invalid API key', status: 401 }),
+        { status: 401 },
+      );
+    }
     if (/\/v1\/realtime\/sessions\/[^/]+$/.test(u) && entry.method === 'DELETE') {
       return (
         overrides.del?.(entry) ??
@@ -147,6 +161,11 @@ test('create: reserve → constrained token → vendor create → bind → THEN 
   assert.equal(vendor.calls[0].url.endsWith('/v1/client/tokens'), true);
   assert.equal(vendor.calls[0].headers['x-api-key'], 'raw-vendor-key');
   assert.equal(vendor.calls[0].body.constraints.realtime.maxSessionDuration, 45, 'wall #2 rides');
+  assert.equal(
+    vendor.calls[0].body.expiresIn,
+    45 + 300,
+    'the token outlives the grant by the settle+kill window — it is the ONLY credential that can end the session',
+  );
   assert.equal(vendor.calls[1].url.endsWith('/v1/realtime/sessions'), true);
   assert.equal(
     vendor.calls[1].headers['x-api-key'],
