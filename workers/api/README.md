@@ -19,6 +19,10 @@ take, replacing the DEV-ONLY `scripts/generate-livekit-token.js`.
 | POST   | `/api/video/settle`      | `X-Admin-Token`   | reports usage, credits the unused hold (idempotent)       |
 | GET    | `/api/video/budget`      | `X-Admin-Token`   | `{ enabled, perSessionSeconds, totalSeconds, spentSeconds, remainingSeconds, openReservations }` |
 | POST   | `/api/video/reset`       | `X-Admin-Token`   | zeroes the meter, drops every hold (dev-cap operator tool) |
+| POST   | `/api/video/session`     | `X-Admin-Token`   | white-label create: reserve → constrained token → vendor session → bind → `{ sessionId, controlToken, vendor }` |
+| POST   | `/api/video/session/:id/candidates` | `X-Admin-Token` + `controlToken` | ICE proxy (stateless auth, zero ledger cost) |
+| POST   | `/api/video/session/:id/prompt`     | `X-Admin-Token` + `controlToken` | prompt update proxy |
+| POST   | `/api/video/session/:id/end`        | `X-Admin-Token` + `controlToken` | Worker DELETEs at the vendor, settles **vendor-truth** |
 
 `/api/session/create` refuses with **503** and one of two distinct errors:
 `at_capacity` (every agent is busy — a queue that will clear) or
@@ -160,6 +164,36 @@ nobody is using it.
 
 `at_capacity` refusals now carry `live`, `capacity` and `pool`, so the next one
 says which case it is instead of leaving it to be inferred.
+
+### The white-label session (P2c)
+
+The committed topology (ROADMAP §P2), implemented: the Worker creates every
+Decart session — reserve → **constrained client token minted for the Worker's
+own use** (wall #2 rides on the session; the token is never shown to anyone) →
+vendor create → **bind the session id to the reservation BEFORE the browser
+sees a byte** → only then the response. A failed bind compensates with an
+immediate vendor DELETE, id in hand. Media flows browser↔Decart directly;
+the browser's SSE uses Decart's own session-scoped event token.
+
+Session control authenticates with a **stateless control token** (HMAC over
+`{sid, rid, exp}`), so ICE candidates and prompt updates cost **zero** Durable
+Object requests. The full O(1) budget: reserve + bind + settle = **3 DO
+requests per video session**, whatever its length.
+
+**End is vendor-truth:** the Worker performs the DELETE, reads Decart's
+billing summary from that server-to-server exchange, and settles the ledger
+with THAT — any browser-supplied summary is ignored (a client that could
+report its own bill would report a small one). Overage past the grant (~2–3 s
+of measured vendor granularity) is clamped for the dev meter and recorded on
+the settlement row, raw summary verbatim, for reconciliation.
+
+**The executioner:** an expired reservation carrying a session id gets its
+vendor session DELETEd by the reaper alarm — bounded retries
+(`1 + KILL_RETRIES` alarms per overrun, a constant), 404 counts as success
+(already dead), and a kill that exhausts its retries resolves the ledger
+anyway with an **orphan flag**: silent about its bill, never about its
+existence. Vendor calls happen ONLY in the alarm — a budget read never talks
+to Decart.
 
 ### The lease
 

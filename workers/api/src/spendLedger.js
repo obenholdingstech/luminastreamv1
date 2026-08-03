@@ -54,6 +54,11 @@ const MAX_DELETE_KEYS = 128;
 // punish slow networks for existing.
 export const SETTLE_SLACK_SECONDS = 120;
 
+// The executioner's retry budget (ROADMAP §P2): an overrun costs at most
+// 1 + KILL_RETRIES alarms. Small on purpose — beyond this, wall #2 holds.
+export const KILL_RETRIES = 2;
+export const KILL_RETRY_DELAY_MS = 30_000;
+
 // Dev ceilings (ROADMAP.md §P2): 180 s per session, 3000 s total ≈ $60 at the
 // verified $0.02/s. Env-overridable, strictly parsed, and the env can only
 // ever be the authority — there is no console knob below these yet.
@@ -139,18 +144,100 @@ export class SpendLedger {
     const { pathname } = new URL(request.url);
     if (pathname === '/reserve') return this.#reserve(config, await this.#readJson(request));
     if (pathname === '/settle') return this.#settle(await this.#readJson(request));
+    if (pathname === '/bind') return this.#bind(await this.#readJson(request));
+    if (pathname === '/settle-by-session') {
+      return this.#settleBySession(await this.#readJson(request));
+    }
     if (pathname === '/budget') return this.#budget(config);
     if (pathname === '/reset') return this.#reset();
     return json({ ok: false, error: 'not_found' }, 404);
   }
 
-  // The reaper: expired unsettled reservations resolve as FULLY SPENT — the
-  // debit taken at reserve simply stands, so reaping is deletion, never
-  // arithmetic. One demand-driven alarm at the earliest expiry, re-armed on
-  // wake (§P1 rule 5); a session that settles cleanly never wakes it.
+  // The reaper — and, since P2c, THE EXECUTIONER (ROADMAP §P2, committed
+  // topology): an expired reservation that carries a vendor session id gets
+  // its Decart session DELETEd from here. Server-authoritative,
+  // vendor-executed, and honest about the difference: the DELETE can fail, so
+  // it retries a BOUNDED number of times (KILL_RETRIES, each via alarm
+  // re-arm — an overrun costs at most 1 + KILL_RETRIES alarms, a constant),
+  // and a kill that exhausts its retries resolves the ledger anyway (the
+  // debit stands) while writing an ORPHAN-FLAGGED settlement: the session may
+  // be silent about its bill, never about its existence. Exposure past that
+  // is bounded by wall #2 (the token's maxSessionDuration, probe-verified to
+  // stop generation) and the vendor's own inactivity auto-end.
+  //
+  // Vendor calls happen ONLY here, never in the request-path sweep — a budget
+  // read must not talk to Decart.
   async alarm() {
-    const open = await this.#sweep(this.now());
+    const now = this.now();
+    const { open, due } = await this.#partition(now);
+
+    for (const record of due) {
+      if (record.decartSessionId && this.env.DECART_API_KEY) {
+        const killed = await this.#killVendorSession(record.decartSessionId);
+        if (!killed && (record.killAttempts ?? 0) < KILL_RETRIES) {
+          // Re-arm for another try; the record stays, nextKillAt schedules it.
+          record.killAttempts = (record.killAttempts ?? 0) + 1;
+          record.nextKillAt = now + KILL_RETRY_DELAY_MS;
+          await this.storage.put(reservationKey(record.id), record);
+          open.push(record);
+          continue;
+        }
+        await this.#writeSettlement(record, {
+          source: 'reaper',
+          usedSeconds: record.grantedSeconds,
+          vendorKilled: killed,
+          orphanFlag: !killed,
+        });
+      } else {
+        await this.#writeSettlement(record, {
+          source: 'reaper',
+          usedSeconds: record.grantedSeconds,
+          vendorKilled: null,
+          orphanFlag: Boolean(record.decartSessionId),
+        });
+      }
+      await this.storage.delete(reservationKey(record.id));
+    }
     await this.#rearm(open);
+  }
+
+  async #killVendorSession(decartSessionId) {
+    try {
+      const res = await fetch(
+        `${this.env.DECART_API_BASE ?? 'https://api.decart.ai'}/v1/realtime/sessions/${decartSessionId}`,
+        {
+          method: 'DELETE',
+          headers: { 'x-api-key': this.env.DECART_API_KEY },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      // 404 is a SUCCESS: the session is already gone (ended by the client,
+      // the vendor's own timeout, or a previous retry that we never heard
+      // confirm). Idempotent kills cannot double-fail.
+      return res.ok || res.status === 404;
+    } catch {
+      return false;
+    }
+  }
+
+  async #writeSettlement(record, { source, usedSeconds, vendorSummary = null, vendorKilled = null, orphanFlag = false }) {
+    // The audit trail (ROADMAP §P5): raw vendor summaries verbatim, distinct
+    // from the deduction, read by reconciliation (P8) — never by the wallet.
+    await this.storage.put(`settlement:${record.id}`, {
+      reservationId: record.id,
+      grantedSeconds: record.grantedSeconds,
+      usedSeconds,
+      overageSeconds: Math.max(
+        0,
+        (Number.isFinite(vendorSummary?.billedSeconds) ? Math.ceil(vendorSummary.billedSeconds) : usedSeconds) -
+          record.grantedSeconds,
+      ),
+      source,
+      vendorSummary,
+      vendorKilled,
+      orphanFlag,
+      settledAt: this.now(),
+    });
   }
 
   async #readJson(request) {
@@ -165,36 +252,71 @@ export class SpendLedger {
     return (await this.storage.get(SPENT_KEY)) ?? 0;
   }
 
-  // Delete expired reservations (their debit stands) and return the open ones.
-  // Malformed records are treated as expired: an unparseable hold must not
-  // occupy budget forever with no way to clear it.
-  async #sweep(now) {
+  // Which moment a record is DUE is its expiry — or, once the executioner has
+  // begun retrying its kill, the scheduled next attempt.
+  #dueAt(record) {
+    return Math.max(record.expiresAt ?? 0, record.nextKillAt ?? 0);
+  }
+
+  // Split records into open (not yet due) and due. Deletion of due records
+  // happens in exactly two places: the alarm (which may owe the vendor a
+  // DELETE first) and the request-path sweep below for records that carry NO
+  // vendor session — a budget read must never talk to Decart, and must never
+  // delete a record the executioner still owes a kill.
+  async #partition(now) {
     const stored = await this.storage.list({ prefix: KEY_PREFIX });
     const open = [];
-    const dead = [];
+    const due = [];
     for (const [key, record] of stored) {
-      if (!record || typeof record.expiresAt !== 'number' || record.expiresAt <= now) {
-        dead.push(key);
-      } else {
-        open.push(record);
+      if (!record || typeof record.expiresAt !== 'number') {
+        // Malformed: unkillable and unbillable — drop it rather than let an
+        // unparseable hold occupy budget forever.
+        await this.storage.delete(key);
+        continue;
       }
+      (this.#dueAt(record) <= now ? due : open).push(record);
     }
-    for (let i = 0; i < dead.length; i += MAX_DELETE_KEYS) {
-      await this.storage.delete(dead.slice(i, i + MAX_DELETE_KEYS));
+    return { open, due };
+  }
+
+  // Request-path sweep: resolves due records WITHOUT vendor sessions (their
+  // debit stands; settlement recorded as reaper-without-vendor). Records that
+  // owe a vendor kill stay for the alarm — they hold no extra budget (the
+  // debit was taken at reserve), so leaving them costs nothing but patience.
+  async #sweep(now) {
+    const { open, due } = await this.#partition(now);
+    const deferred = [];
+    for (const record of due) {
+      if (record.decartSessionId) {
+        deferred.push(record);
+        continue;
+      }
+      await this.#writeSettlement(record, {
+        source: 'reaper',
+        usedSeconds: record.grantedSeconds,
+      });
+      await this.storage.delete(reservationKey(record.id));
     }
-    return open;
+    return [...open, ...deferred];
   }
 
   async #rearm(open) {
     let next = null;
     for (const record of open) {
-      if (next === null || record.expiresAt < next) next = record.expiresAt;
+      const due = this.#dueAt(record);
+      if (next === null || due < next) next = due;
     }
     const current = await this.storage.getAlarm();
     if (next === null) {
       if (current !== null && current !== undefined) await this.storage.deleteAlarm();
       return;
     }
+    // A pending kill deferred by the request-path sweep can be due in the
+    // past; clamp forward so nothing ever schedules an alarm at or before
+    // now. The alarm handler itself always moves nextKillAt forward or
+    // resolves the record, so this cannot loop.
+    const floor = this.now() + 1000;
+    if (next < floor) next = floor;
     if (current !== next) await this.storage.setAlarm(next);
   }
 
@@ -309,6 +431,10 @@ export class SpendLedger {
     // The floor guards bookkeeping, not money: spent can never go negative
     // even if a bug elsewhere shrank it first.
     await this.storage.put(SPENT_KEY, Math.max(0, spent - refund));
+    // Every resolution leaves an audit row, whatever its source — the
+    // client-reported dev path included, so reconciliation can tell the
+    // trusted settlements from the merely clamped ones.
+    await this.#writeSettlement(record, { source: 'client', usedSeconds: used });
     await this.storage.delete(reservationKey(id));
     await this.#rearm(open.filter((r) => r.id !== id));
 
@@ -317,6 +443,82 @@ export class SpendLedger {
       settled: true,
       usedSeconds: used,
       refundedSeconds: refund,
+      spentSeconds: Math.max(0, spent - refund),
+    });
+  }
+
+  // Attach the vendor session id to its reservation — the executioner's
+  // ammunition, and the canon's required ordering: this happens BEFORE the
+  // event token reaches any browser. Idempotent; a second bind with a
+  // DIFFERENT id is refused (one reservation, one session, ever).
+  async #bind(body) {
+    const id = typeof body?.reservationId === 'string' ? body.reservationId.trim() : '';
+    const sid = typeof body?.decartSessionId === 'string' ? body.decartSessionId.trim() : '';
+    if (!id || !sid) return json({ ok: false, error: 'reservation_and_session_required' }, 400);
+
+    const record = await this.storage.get(reservationKey(id));
+    if (!record) return json({ ok: false, error: 'unknown_reservation' }, 404);
+    if (record.decartSessionId && record.decartSessionId !== sid) {
+      return json({ ok: false, error: 'already_bound' }, 409);
+    }
+    record.decartSessionId = sid;
+    await this.storage.put(reservationKey(id), record);
+    return json({ ok: true, bound: true });
+  }
+
+  // Vendor-truth settle (ROADMAP §P2): called ONLY by the Worker after it has
+  // performed the vendor DELETE itself and read the billing summary from that
+  // server-to-server exchange. No settle bearer here — the Durable Object is
+  // reachable only through the Worker binding, and the Worker verified the
+  // caller's control token before making the vendor call. Browser-supplied
+  // vendor fields never reach this path (index.js constructs the payload from
+  // Decart's response, not the request).
+  async #settleBySession(body) {
+    const sid = typeof body?.decartSessionId === 'string' ? body.decartSessionId.trim() : '';
+    if (!sid) return json({ ok: false, error: 'session_required' }, 400);
+
+    const now = this.now();
+    const stored = await this.storage.list({ prefix: KEY_PREFIX });
+    let record = null;
+    for (const [, r] of stored) {
+      if (r?.decartSessionId === sid) {
+        record = r;
+        break;
+      }
+    }
+    // Idempotent like /settle: already settled or reaped → success, no credit.
+    if (!record) {
+      const open = await this.#sweep(now);
+      await this.#rearm(open);
+      return json({ ok: true, settled: false, reason: 'unknown_session' });
+    }
+
+    const vendorSummary = body?.vendorSummary && typeof body.vendorSummary === 'object'
+      ? body.vendorSummary
+      : null;
+    const billed = Number.isFinite(vendorSummary?.billedSeconds)
+      ? Math.ceil(vendorSummary.billedSeconds)
+      : null;
+    // The vendor's number, clamped to the grant for the DEV meter (the
+    // granularity overage is recorded on the settlement for reconciliation —
+    // wall #2 was measured at ~2–3 s past the constraint). Absent a usable
+    // summary, conservative: fully spent.
+    const used = billed === null ? record.grantedSeconds : Math.min(billed, record.grantedSeconds);
+    const refund = record.grantedSeconds - used;
+
+    const spent = await this.#spent();
+    await this.storage.put(SPENT_KEY, Math.max(0, spent - refund));
+    await this.#writeSettlement(record, { source: 'vendor', usedSeconds: used, vendorSummary });
+    await this.storage.delete(reservationKey(record.id));
+    const open = await this.#sweep(now);
+    await this.#rearm(open);
+
+    return json({
+      ok: true,
+      settled: true,
+      usedSeconds: used,
+      refundedSeconds: refund,
+      overageSeconds: billed === null ? 0 : Math.max(0, billed - record.grantedSeconds),
       spentSeconds: Math.max(0, spent - refund),
     });
   }
