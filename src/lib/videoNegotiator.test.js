@@ -154,6 +154,12 @@ test('stop() is reachable from every phase and always stops the camera', async (
     release();
     await starting;
     assert.equal(h.negotiator.phase, NEGOTIATION.stopped, `stop reachable during ${phase}`);
+    if (phase === 'creating') {
+      // The half the title promises and the phase check alone cannot see:
+      // by 'creating' the camera IS open, so a teardown that stopped calling
+      // track.stop() would leave the light on with the test still green.
+      assert.equal(h.track.stopped, true, 'the camera light goes out during creating too');
+    }
   }
 });
 
@@ -167,6 +173,78 @@ test('stop() on a live session ends it and releases the camera', async () => {
   assert.equal(peer.closed, true, 'the peer connection is closed');
   assert.equal(h.track.stopped, true, 'the camera light goes out');
   assert.equal(h.calls.streams.at(-1), null, 'and the surface is cleared');
+});
+
+test('a RESTART cannot revive the start it replaced — no second paid session', async () => {
+  // The shared-flag bug: stop() cleared it, the next start() reset it, and the
+  // abandoned start sailed past its checkpoints to create a SECOND vendor
+  // session for a user who asked for one. Generation-scoped now.
+  let releaseFirst;
+  const firstGate = new Promise((r) => (releaseFirst = r));
+  let calls = 0;
+  const h = harness({
+    getUserMedia: async () => {
+      calls += 1;
+      if (calls === 1) await firstGate; // the first start hangs on the prompt
+      return { getTracks: () => [] };
+    },
+  });
+
+  const first = h.negotiator.start({});
+  await new Promise((r) => setImmediate(r));
+  await h.negotiator.stop(); // user gives up
+  const second = h.negotiator.start({}); // and immediately tries again
+  await second;
+  releaseFirst(); // the abandoned prompt finally resolves
+  assert.equal(await first, null, 'the replaced start stays dead');
+
+  assert.equal(
+    h.negotiator.phase,
+    NEGOTIATION.live,
+    "the abandoned start must not clobber the live start's phase",
+  );
+  assert.ok(h.negotiator.session, 'and the live session survives its predecessor unwinding');
+});
+
+test('a candidate send that REJECTS is reported, never an unhandled rejection', async () => {
+  const rejections = [];
+  const onUnhandled = (e) => rejections.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const calls = { failures: [] };
+    const negotiator = createVideoNegotiator({
+      getUserMedia: async () => ({ getTracks: () => [] }),
+      PeerConnection: function () {
+        return fakePeer({ onCreated: (p) => (negotiator.__peer = p) });
+      },
+      createSession: async () => ({ sessionId: 's', vendor: { sdpAnswer: 'a' } }),
+      endSession: async () => ({ ok: true }),
+      sendCandidates: async () => {
+        throw new Error('worker unreachable');
+      },
+      onFailure: (r) => calls.failures.push(r),
+    });
+    await negotiator.start({});
+    negotiator.__peer.fireCandidate({ candidate: 'c' });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(rejections, [], 'a failed send must not crash the page');
+    assert.deepEqual(calls.failures, ['an ICE candidate could not be delivered']);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('the vendor error channel carries its message to onFailure INTACT', async () => {
+  // Without this path the terminal duration-limit classifier had nothing to
+  // classify: the negotiator only ever emitted its own connection-failed
+  // string. A wall with no door.
+  const h = harness();
+  await h.negotiator.start({});
+  h.negotiator.reportVendorError('Session duration limit reached');
+  assert.deepEqual(h.calls.failures, ['Session duration limit reached']);
+
+  h.negotiator.reportVendorError(new Error('moderation violation'));
+  assert.equal(h.calls.failures.at(-1), 'moderation violation', 'Error objects unwrap too');
 });
 
 // ─── failures ──────────────────────────────────────────────────────────────
@@ -190,8 +268,18 @@ test('a create failure leaves nothing to release and stops the camera', async ()
 test('a failed peer connection reports once, without tearing down behind the caller', async () => {
   const h = harness();
   await h.negotiator.start({});
-  h.peer().fail();
+  const peer = h.peer();
+  peer.fail();
+
   assert.deepEqual(h.calls.failures, ['the video connection failed']);
+  // The second half of the title, which the failure list alone cannot check:
+  // reporting is not deciding. A teardown here would yank the connection out
+  // from under a caller that might want to retry, and the test would have
+  // passed regardless.
+  assert.equal(peer.closed, false, 'the peer connection is left for the caller to decide about');
+  assert.equal(h.track.stopped, false, 'and the camera stays open');
+  assert.equal(h.negotiator.phase, NEGOTIATION.live, 'phase is unchanged by a report');
+  assert.equal(h.calls.ends.length, 0, 'nothing is settled behind the caller');
 });
 
 test('a second start while one is live claims no second session', async () => {
