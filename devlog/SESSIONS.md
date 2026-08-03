@@ -168,8 +168,22 @@ live restyle prompt are LIVE on the studio page.
 Voice selection (this PR): the Studio dropdown wired to the existing
 machine — value is the agent-CONFIRMED voice, a pending request is named
 as pending (the mode toggle's rule), a rejection shows the agent's own
-reason. Rendered only for the Converted lens: Direct passes the real
-voice through, and a selector there would promise what the mode cannot do.
+reason. Rendered only when the agent's CONFIRMED mode is convert: Direct
+passes the real voice through, and a selector there would promise what
+the mode cannot do.
+
+CodeRabbit then caught the project's recurring mistake a THIRD time: the
+request lifecycle was a state machine living in Studio.jsx — same tell
+as sessionHolder (P1b) and videoNegotiator (P2d): no test file beside
+it — and, as both times before, the extraction surfaced real bugs the
+component version shipped: a stale rejection could resolve a fresh
+request; a failed/throwing publish left a pending state nothing could
+clear; re-selecting the confirmed voice re-armed an abandoned request;
+visibility keyed on the REQUESTED lens mode. All four accepted →
+`src/lib/voiceSelection.js` (+7 tests, stale-rejection guard
+mutation-tested). Three strikes makes it doctrine, not coincidence:
+**if UI state has a lifecycle, it is a lib with a test, from the first
+draft.**
 
 ### Files (all four PRs)
 

@@ -8,7 +8,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 - **The live verify then caught #51:** Decart accepts session control ONLY from the CREATING client token (raw key → 401). Fix: token sealed (AES-GCM) inside the control token (browser carries ciphertext, control stays zero-DO), persisted in the ledger record for the executioner, mint expiresIn = grant+300.
 - **Live create+END verification: PASS.** Drill unblocked. Budget 2730s (~$55); ~180s lost to a retry in the between-fixes window, reaped honestly (orphan-flagged, by design).
 - **#52:** reference avatar (image only, ≤3.5MB, refused before any hold) + realtime restyle prompt ("change cloth to blue") — both ride create AND work mid-stream. Deployed.
-- **Voice dropdown (this PR):** Stage 1 already built voice switching end-to-end (dynamic `voice` knob, `_switch_voice`, broadcast choices); only the console surfaced it. Studio now has the dropdown — confirmed-vs-requested honest, Converted lens only. Voice CLONING stays P4 (CEO aligned).
+- **Voice dropdown (this PR):** Stage 1 already built voice switching end-to-end (dynamic `voice` knob, `_switch_voice`, broadcast choices); only the console surfaced it. Studio now has the dropdown — confirmed-vs-requested honest, convert-confirmed only. CodeRabbit caught lifecycle-logic-in-a-component a THIRD time → extracted to `src/lib/voiceSelection.js` (+7 tests); new doctrine: **UI state with a lifecycle is a lib with a test, from the first draft.** Voice CLONING stays P4 (CEO aligned).
 - **Next:** CEO runs the drill (face + avatar through Lucy, logged same-day); P2e SSE consumer; P3 A/V sync + WebGL upscale.
 
 ## 3 August 2026 (overnight) — P2c MERGED + P2d (#49): topology implemented, video in the lens
