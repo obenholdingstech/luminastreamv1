@@ -11,7 +11,8 @@
     "typecheck": "tsc -p ./jsconfig.json",
     "preview": "vite preview",
     "e2e": "E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test",
-    "e2e:report": "playwright show-report"
+    "e2e:report": "playwright show-report",
+    "probe:decart": "E2E_DECART_PROBE=1 E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test e2e/decart-duration.probe.spec.js"
   },
   "dependencies": {
     "framer-motion": "^11.16.4",
