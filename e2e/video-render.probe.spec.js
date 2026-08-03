@@ -48,6 +48,32 @@ test('the transformed stream RENDERS: frames arrive and the clock advances', asy
   expect(before.enabled, 'video must be enabled to probe it').toBe(true);
   expect(before.remainingSeconds).toBeGreaterThan(60);
 
+  // EVERYTHING between start and stop runs inside try/finally: this probe
+  // spends real vendor money, and its own FIRST run proved what a failed
+  // assertion does without cleanup — the abandoned session orphan-reaped
+  // 180s. The finally presses the buttons a fleeing user would; if even that
+  // fails, the bound reservation is the executioner's ammunition and the
+  // alarm kills the vendor session with the session's own sealed credential.
+  try {
+    await runDrill(page, token, before);
+  } finally {
+    for (const label of ['Stop video', 'Stop']) {
+      try {
+        const button = page.getByRole('button', { name: label, exact: label === 'Stop' });
+        if (await button.isVisible({ timeout: 1_000 })) await button.click();
+      } catch {
+        // page already closed or button gone — the executioner inherits
+      }
+    }
+    await fetch(`${API}/api/session/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': token },
+      body: '{}',
+    }).catch(() => {});
+  }
+});
+
+async function runDrill(page, token, before) {
   // The real drill, exactly as the CEO performs it.
   await page.goto('/');
   await page.getByLabel('Early access key').fill(PASSWORD);
@@ -100,4 +126,4 @@ test('the transformed stream RENDERS: frames arrive and the clock advances', asy
   console.log(
     `RENDER PROBE PASS — billed ${spent}s, remaining ${after.remainingSeconds}s, evidence: playwright-report/video-render-evidence.png`,
   );
-});
+}

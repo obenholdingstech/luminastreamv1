@@ -44,6 +44,7 @@ export class NegotiationAborted extends Error {
  *   sendCandidates: (session: any, candidates: any) => any,
  *   getUserMedia: (constraints: any) => Promise<any>,
  *   PeerConnection: any,
+ *   EventSourceFactory?: ((url: string) => EventSource) | null,
  *   onStream?: (stream: any) => void,
  *   onPhase?: (phase: string) => void,
  *   onFailure?: (reason: string) => void,
