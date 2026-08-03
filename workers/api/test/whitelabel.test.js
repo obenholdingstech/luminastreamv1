@@ -282,6 +282,39 @@ test('create: a vendor create failure returns the hold and binds nothing', async
 
 // ─── control: stateless, scoped, zero ledger cost ──────────────────────────
 
+test('create: a session ALWAYS has work to do — promptless gets the default, yours wins, an image is enough', async (t) => {
+  // Measured live 3 Aug 2026: a create with no prompt and no reference image
+  // connects, bills, and generates NOTHING — the blank drill. The Worker
+  // guarantees the vendor is never asked to do nothing.
+  const { env } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor();
+  t.after(vendor.restore);
+
+  await createSession(env, token, { sdpOffer: 'v=0 offer' });
+  const bare = vendor.calls.find((c) => c.url.endsWith('/v1/realtime/sessions'));
+  assert.match(bare.body.prompt, /same person/, 'a promptless session gets the neutral default');
+
+  vendor.calls.length = 0;
+  await createSession(env, token, {
+    sdpOffer: 'v=0 offer',
+    prompt: 'anime style',
+    imageData: 'data:image/png;base64,aGVsbG8=',
+  });
+  const prompted = vendor.calls.find((c) => c.url.endsWith('/v1/realtime/sessions'));
+  assert.equal(prompted.body.prompt, 'anime style', "the user's prompt is never overridden");
+  assert.equal(prompted.body.image_data, 'aGVsbG8=', 'and it rides BESIDE a reference, not instead of one');
+
+  vendor.calls.length = 0;
+  await createSession(env, token, {
+    sdpOffer: 'v=0 offer',
+    imageData: 'data:image/png;base64,aGVsbG8=',
+  });
+  const withImage = vendor.calls.find((c) => c.url.endsWith('/v1/realtime/sessions'));
+  assert.equal(withImage.body.prompt, undefined, 'a reference image is work in itself — no default forced beside it');
+  assert.equal(withImage.body.image_data, 'aGVsbG8=');
+});
+
 test('create: a reference avatar rides the vendor create as image_data', async (t) => {
   const { env } = setup();
   const token = await adminToken(env);
