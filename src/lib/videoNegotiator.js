@@ -175,21 +175,24 @@ export function createVideoNegotiator({
     source.addEventListener?.('ice-candidate', (event) => {
       if (mine !== generation) return;
       try {
-        applyRemoteCandidate(JSON.parse(event.data));
+        applyRemoteCandidate(JSON.parse(/** @type {MessageEvent} */ (event).data));
       } catch {
         // one unparsable candidate is degradation, not teardown
       }
     });
     // The named SSE event 'error' is the VENDOR speaking (it has data) — the
     // terminal duration limit arrives here in the wild. The transport's own
-    // error event has no data and is not the vendor saying anything.
+    // error event has no data and is not the vendor saying anything. (The
+    // cast is the same distinction in the type system: a transport error is
+    // an Event, a vendor message is a MessageEvent.)
     source.addEventListener?.('error', (event) => {
-      if (mine !== generation || !event?.data) return;
+      const data = /** @type {MessageEvent} */ (event)?.data;
+      if (mine !== generation || !data) return;
       try {
-        const detail = JSON.parse(event.data);
+        const detail = JSON.parse(data);
         onFailure?.(detail?.detail ?? detail?.title ?? 'vendor error');
       } catch {
-        onFailure?.(String(event.data));
+        onFailure?.(String(data));
       }
     });
     return source;
