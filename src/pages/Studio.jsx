@@ -235,16 +235,37 @@ export default function Studio() {
         return;
       }
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         const dataUrl = String(reader.result ?? '');
+        // The pick always sticks — it rides the next start regardless. What
+        // must NOT be silent is the live swap's outcome: a refused swap means
+        // the stream keeps animating the PREVIOUS identity, and saying
+        // nothing would be the UI claiming something the vendor never did.
         setAvatar({ dataUrl, name: file.name });
-        // Already streaming: swap the identity live, no restart.
-        if (video.phase === VIDEO_PHASE.live) video.updateImage(dataUrl);
+        if (video.phase === VIDEO_PHASE.live) {
+          const ok = await video.updateImage(dataUrl);
+          if (!ok) {
+            setAvatarError(
+              'the live stream kept its previous look — this avatar will apply at the next start',
+            );
+          }
+        }
       };
       reader.readAsDataURL(file);
     },
     [video],
   );
+
+  const clearAvatar = useCallback(() => {
+    setAvatar(null);
+    // There is no vendor call to REMOVE a reference mid-session, so during a
+    // live stream "clear" can only be true of the next session. Say so.
+    setAvatarError(
+      video.phase === VIDEO_PHASE.live
+        ? 'cleared for the next session — the live stream keeps its current identity'
+        : '',
+    );
+  }, [video.phase]);
 
   const applyPrompt = useCallback(async () => {
     const prompt = livePrompt.trim();
@@ -683,7 +704,7 @@ export default function Studio() {
               {avatar && (
                 <button
                   type="button"
-                  onClick={() => setAvatar(null)}
+                  onClick={clearAvatar}
                   className="shrink-0 text-[9px] uppercase tracking-[0.14em] text-[#4A5568] hover:text-[#F59E0B]"
                 >
                   clear
@@ -691,6 +712,7 @@ export default function Studio() {
               )}
               <input
                 type="text"
+                aria-label="live restyle prompt"
                 value={livePrompt}
                 onChange={(e) => {
                   setLivePrompt(e.target.value);
