@@ -367,18 +367,26 @@ contact with real money — nothing here is throwaway.
 signaling path: our Worker creates and controls every session with the real
 key — which therefore never leaves the server in ANY form, not even ephemeral
 — while WebRTC media flows browser↔Decart directly ("media quality identical",
-control-only latency). Three consequences, each closing a previously-flagged
-hole:
+control-only latency).
 
-1. **The ledger's reaper is the executioner.** The Worker knows every session
-   id, so the existing demand-driven alarm gains one side effect: an expired
-   reservation DELETEs its Decart session by id. The hard stop is ours,
-   server-side, vendor-independent — and still O(1), one alarm per overrun.
-2. **Settle is vendor-truth.** Ending a session returns Decart's own billing
-   summary; the ledger settles against THEIR number, never the client's
-   claim. Wallet-grade reconciliation, arriving before wallets do.
-3. **The spoofing surface collapses.** The browser holds only Decart's own
-   session-scoped event token, designed to be browser-safe.
+**Status: committed design, not yet implemented.** What is LIVE today is P2a —
+reserve/settle bookkeeping, with settle taking a client-reported `usedSeconds`
+clamped to the grant, and a reaper that resolves ledger records only. The
+three consequences below are what **P2c builds**, each closing a
+previously-flagged hole; none of them exists until it does:
+
+1. **The ledger's reaper becomes the executioner** *(P2c)*: reservations gain
+   the Decart session id, and the existing demand-driven alarm gains one side
+   effect — an expired reservation DELETEs its vendor session, with the
+   idempotent retry and reconciliation that a vendor call from an alarm
+   handler requires. The hard stop becomes ours, server-side,
+   vendor-independent — and still O(1), one alarm per overrun.
+2. **Settle becomes vendor-truth** *(P2c)*: session end returns Decart's own
+   billing summary; the settle payload, storage schema, and tests extend to
+   carry raw-vendor fields distinct from the deduction, and the ledger settles
+   against THEIR number, never the client's claim.
+3. **The spoofing surface collapses** *(P2c)*: the browser holds only
+   Decart's own session-scoped event token, designed to be browser-safe.
 
 `constraints.realtime.maxSessionDuration` remains a SECOND wall (defense in
 depth on any token we mint); the probe that checks whether it cuts a running
@@ -453,10 +461,12 @@ never sell compute at cost by accident.** The design:
 - **Raw vendor billing summaries are stored verbatim alongside the retail
   deduction** — reconciliation and audit (P8) read the vendor's number; the
   user's wallet only ever sees retail.
-- **P2 builds the interface for this today:** settle already consumes the
-  vendor billing summary and carries raw-vendor fields distinct from the
-  deducted amount, so P5 is a rate-table change, not a refactor. Dev caps run
-  at rate 1:1 (a second is a second) until wallets exist.
+- **P2c builds the interface; P5 turns the rate table on.** Today's shipped
+  settle (P2a) carries `usedSeconds` only. P2c extends the payload, storage
+  schema, and tests to consume the vendor billing summary and carry raw-vendor
+  fields distinct from the deducted amount — so that P5 is a rate-table
+  change, not a refactor. Dev caps run at rate 1:1 (a second is a second)
+  until wallets exist.
 
 The 180 s / ~$60 caps that appear in older notes are **development** caps: a wall
 against a runaway loop burning the company's card during testing. They are not
