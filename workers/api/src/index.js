@@ -15,7 +15,7 @@
 import { handlePreflight, corsHeaders } from './cors.js';
 import { constantTimeCompareSecrets } from './crypto.js';
 import { signSession, verifySession } from './session.js';
-import { base64UrlEncode, base64UrlEncodeJson, base64UrlDecode, decodeJson, hmacSha256, timingSafeEqual } from './crypto.js';
+import { base64UrlEncode, base64UrlEncodeJson, base64UrlDecode, decodeJson, hmacSha256, timingSafeEqual, seal, unseal } from './crypto.js';
 import { mintLiveKitToken } from './livekit.js';
 import { SessionRegistry } from './sessionRegistry.js';
 import { SpendLedger } from './spendLedger.js';
@@ -531,10 +531,13 @@ async function mintDecartClientToken(env, { grantedSeconds, reservationId }) {
     signal: AbortSignal.timeout(10_000),
     headers: { 'x-api-key': env.DECART_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      // Long enough to establish the WebRTC session, short enough that a
-      // leaked-but-unused token dies quickly. Distinct from the session
-      // duration constraint below.
-      expiresIn: 120,
+      // The token IS the session's control credential for its whole life —
+      // Decart accepts session control (ICE PATCH, prompt, DELETE) only from
+      // the token that created the session (verified live 3 Aug 2026; the
+      // raw key answers 401). So it must outlive the grant by enough for the
+      // settle path and the executioner's bounded retries: a token that
+      // expires mid-session leaves a stop that cannot stop.
+      expiresIn: grantedSeconds + 300,
       constraints: { realtime: { maxSessionDuration: grantedSeconds } },
       metadata: { reservationId },
     }),
@@ -610,8 +613,21 @@ async function handleVideoToken(request, env, origin) {
 // secret — so an ICE candidate costs zero Durable Object requests. The O(1)
 // budget for a video session stays: reserve(1) + bind(1) + settle(1).
 
-async function signControlToken(env, { sid, rid, ttlSeconds }) {
-  const payload = { sub: 'video-session', sid, rid, exp: Math.floor(Date.now() / 1000) + ttlSeconds };
+// The purpose label for sealing the vendor client token into the control
+// token. The browser carries the ciphertext (it must — control ops cost zero
+// Durable Object reads precisely because the token is stateless), but only
+// this Worker's secret can open it, so the constrained vendor token still
+// never leaves the server in USABLE form.
+const VENDOR_TOKEN_SEAL = 'video-vendor-token';
+
+async function signControlToken(env, { sid, rid, ttlSeconds, vendorToken }) {
+  const payload = {
+    sub: 'video-session',
+    sid,
+    rid,
+    exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+    ...(vendorToken ? { vtk: await seal(env.ADMIN_SESSION_SECRET, VENDOR_TOKEN_SEAL, vendorToken) } : {}),
+  };
   const payloadB64 = base64UrlEncodeJson(payload);
   const sig = await hmacSha256(env.ADMIN_SESSION_SECRET, `video.${payloadB64}`);
   return `${payloadB64}.${base64UrlEncode(sig)}`;
@@ -669,12 +685,16 @@ async function handleVideoSession(request, env, origin) {
   }
 
   let decartSessionId = null;
+  // Hoisted so the compensation path can present the CREATING token to the
+  // vendor — the only credential Decart accepts for session control.
+  let mintedToken = null;
   try {
     // 2. Wall #2: a constrained client token, minted for the WORKER's own use.
     const minted = await mintDecartClientToken(env, {
       grantedSeconds: reserved.grantedSeconds,
       reservationId: reserved.reservationId,
     });
+    mintedToken = minted.clientToken;
 
     // 3. The session, created server-side with the constrained token.
     //
@@ -708,21 +728,26 @@ async function handleVideoSession(request, env, origin) {
     const vendorEtag = createRes.headers.get('etag');
     if (!vendorEtag) throw new Error('vendor session create returned no ETag');
 
-    // 4. The executioner's ammunition, persisted BEFORE anything reaches the
-    //    browser. A failed bind compensates immediately with the id in hand.
+    // 4. The executioner's ammunition — target AND credential — persisted
+    //    BEFORE anything reaches the browser. A failed bind compensates
+    //    immediately with the id in hand.
     const bindRes = await callLedger(env, '/bind', {
       reservationId: reserved.reservationId,
       decartSessionId,
+      vendorToken: mintedToken,
     });
     const bound = bindRes ? await bindRes.json().catch(() => null) : null;
     if (!bound?.ok) throw new Error('bind failed');
 
     // 5. Only now: the browser's share. Control token scoped to this session,
-    //    valid for the lease; Decart's own event token for the direct SSE.
+    //    valid for the lease, carrying the vendor token SEALED (the browser
+    //    transports it; only this Worker can open it); Decart's own event
+    //    token for the direct SSE.
     const controlToken = await signControlToken(env, {
       sid: decartSessionId,
       rid: reserved.reservationId,
       ttlSeconds: reserved.grantedSeconds + 300,
+      vendorToken: mintedToken,
     });
 
     return json(
@@ -751,6 +776,8 @@ async function handleVideoSession(request, env, origin) {
     if (decartSessionId) {
       const delRes = await decartFetch(env, `/v1/realtime/sessions/${decartSessionId}`, {
         method: 'DELETE',
+        // The creating token, or nothing works: the raw key answers 401 here.
+        headers: { 'x-api-key': mintedToken },
       }).catch(() => null);
       killed = Boolean(delRes && (delRes.ok || delRes.status === 404));
       if (!killed) {
@@ -781,6 +808,17 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
   const payload = await verifyControlToken(env, body?.controlToken, sid);
   if (!payload) return json({ ok: false, error: 'control_refused' }, { status: 403, origin });
 
+  // The session's creating client token, unsealed from the control token the
+  // browser transported. Decart accepts session control from NO other
+  // credential (raw key → 401, verified live 3 Aug 2026). The HMAC was
+  // checked above, so the ciphertext is exactly what this Worker sealed; a
+  // payload without one (pre-seal token) falls back to the raw key and fails
+  // at the vendor the way it always did.
+  const vendorKey = payload.vtk
+    ? await unseal(env.ADMIN_SESSION_SECRET, VENDOR_TOKEN_SEAL, payload.vtk)
+    : null;
+  const vendorAuth = { 'x-api-key': vendorKey ?? env.DECART_API_KEY };
+
   if (action === 'candidates') {
     // Decart's contract (signaling-proxy-http, verified 3 Aug 2026): If-Match
     // is REQUIRED and the ETag ROTATES — each PATCH answers 204 No Content
@@ -789,7 +827,7 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
     // earns a 412 from the vendor, not a guess from us.
     const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, {
       method: 'PATCH',
-      headers: body?.etag ? { 'If-Match': body.etag } : {},
+      headers: { ...vendorAuth, ...(body?.etag ? { 'If-Match': body.etag } : {}) },
       body: JSON.stringify({ candidates: body?.candidates ?? null }),
     }).catch(() => null);
     if (!res) return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
@@ -803,6 +841,7 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
   if (action === 'prompt') {
     const res = await decartFetch(env, `/v1/realtime/sessions/${sid}/prompt`, {
       method: 'POST',
+      headers: vendorAuth,
       body: JSON.stringify({ prompt: body?.prompt ?? '' }),
     }).catch(() => null);
     if (!res) return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
@@ -814,7 +853,10 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
     // The vendor-truth exchange, server-to-server: WE delete, WE read the
     // summary, and the ledger hears OUR copy of Decart's answer — never the
     // browser's opinion of it.
-    const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, { method: 'DELETE' }).catch(() => null);
+    const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, {
+      method: 'DELETE',
+      headers: vendorAuth,
+    }).catch(() => null);
     const killed = Boolean(res && (res.ok || res.status === 404));
 
     // A FAILED kill must not settle. Settling deletes the reservation, and

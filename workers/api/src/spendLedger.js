@@ -172,8 +172,8 @@ export class SpendLedger {
     const { open, due } = await this.#partition(now);
 
     for (const record of due) {
-      if (record.decartSessionId && this.env.DECART_API_KEY) {
-        const killed = await this.#killVendorSession(record.decartSessionId);
+      if (record.decartSessionId && (record.vendorToken || this.env.DECART_API_KEY)) {
+        const killed = await this.#killVendorSession(record);
         if (!killed && (record.killAttempts ?? 0) < KILL_RETRIES) {
           // Re-arm for another try; the record stays, nextKillAt schedules it.
           record.killAttempts = (record.killAttempts ?? 0) + 1;
@@ -201,13 +201,17 @@ export class SpendLedger {
     await this.#rearm(open);
   }
 
-  async #killVendorSession(decartSessionId) {
+  async #killVendorSession(record) {
     try {
       const res = await fetch(
-        `${this.env.DECART_API_BASE ?? 'https://api.decart.ai'}/v1/realtime/sessions/${decartSessionId}`,
+        `${this.env.DECART_API_BASE ?? 'https://api.decart.ai'}/v1/realtime/sessions/${record.decartSessionId}`,
         {
           method: 'DELETE',
-          headers: { 'x-api-key': this.env.DECART_API_KEY },
+          // The session's own creating token — the only credential Decart
+          // accepts for session control (raw key answers 401, verified live).
+          // The raw key remains only as a fallback for records bound before
+          // the token was persisted.
+          headers: { 'x-api-key': record.vendorToken ?? this.env.DECART_API_KEY },
           signal: AbortSignal.timeout(10_000),
         },
       );
@@ -467,6 +471,13 @@ export class SpendLedger {
       return json({ ok: false, error: 'already_bound' }, 409);
     }
     record.decartSessionId = sid;
+    // The executioner's CREDENTIAL, not just its target: Decart scopes
+    // session control to the client token that created the session (verified
+    // live 3 Aug 2026 — the raw key gets 401 on DELETE). A kill without this
+    // token is a kill that bounces.
+    if (typeof body?.vendorToken === 'string' && body.vendorToken) {
+      record.vendorToken = body.vendorToken;
+    }
     await this.storage.put(reservationKey(id), record);
     return json({ ok: true, bound: true });
   }
