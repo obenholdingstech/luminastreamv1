@@ -256,6 +256,18 @@ export default function Studio() {
   }, [video.stream]);
   const fidelity = video.pipeline.describe();
 
+  // ── A/V sync (P3): audio is the master clock ──────────────────────────
+  // The agent measures its own tail latency per utterance and broadcasts it;
+  // the align stage turns those samples into an elastic video delay. This is
+  // WIRING only — the policy (elasticDelay), the queue (delayQueue), and the
+  // stage (alignStage) each live in src/lib/ with their tests.
+  const latestTail = utterances[0]?.tail_latency_ms;
+  useEffect(() => {
+    if (Number.isFinite(latestTail)) {
+      video.pipeline.stages.align.observeTail?.(latestTail);
+    }
+  }, [latestTail, video.pipeline]);
+
   // ── the reference avatar + live prompt (CEO directive, 3 Aug 2026) ────
   // Presentation state only — the work lives in videoClient/videoNegotiator.
   // The avatar is a static identity image Lucy animates with the camera feed;
@@ -797,6 +809,7 @@ export default function Studio() {
                 <span className="text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
                   {fidelity.delivering.height}p
                   {!fidelity.upscaleActive && ' · upscale pending'}
+                  {fidelity.alignActive && ' · a/v synced'}
                 </span>
               )}
             </div>
