@@ -89,7 +89,8 @@ function stubVendor(overrides = {}) {
     const sessionControl =
       (/\/v1\/realtime\/sessions\/[^/]+$/.test(u) &&
         (entry.method === 'DELETE' || entry.method === 'PATCH')) ||
-      u.endsWith('/prompt');
+      u.endsWith('/prompt') ||
+      u.endsWith('/image');
     if (sessionControl && entry.headers['x-api-key'] !== 'constrained-client-token') {
       return new Response(
         JSON.stringify({ title: 'Invalid API key', status: 401 }),
@@ -115,6 +116,9 @@ function stubVendor(overrides = {}) {
     }
     if (u.endsWith('/prompt')) {
       return overrides.prompt?.(entry) ?? new Response('{"prompt":"ok"}', { status: 200 });
+    }
+    if (u.endsWith('/image')) {
+      return overrides.image?.(entry) ?? new Response('{}', { status: 200 });
     }
     return new Response('{"error":"unstubbed"}', { status: 500 });
   };
@@ -277,6 +281,76 @@ test('create: a vendor create failure returns the hold and binds nothing', async
 });
 
 // ─── control: stateless, scoped, zero ledger cost ──────────────────────────
+
+test('create: a reference avatar rides the vendor create as image_data', async (t) => {
+  const { env } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor();
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token, {
+    sdpOffer: 'v=0 offer',
+    imageData: 'data:image/png;base64,aGVsbG8=',
+  });
+  assert.equal(res.status, 200);
+  const create = vendor.calls.find((c) => c.url.endsWith('/v1/realtime/sessions'));
+  assert.equal(create.body.image_data, 'aGVsbG8=', 'data-URL prefix stripped, bare base64 to the vendor');
+});
+
+test('create: an invalid avatar is refused BEFORE any hold is taken', async (t) => {
+  const { env, h } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor();
+  t.after(vendor.restore);
+
+  h.resetCounts();
+  const res = await createSession(env, token, {
+    sdpOffer: 'v=0 offer',
+    imageData: 'not/base64 at all!!',
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, 'image_invalid');
+  assert.equal(h.counts().requests, 0, 'no reservation was ever created for a bad upload');
+  assert.equal(vendor.calls.length, 0, 'and the vendor never heard about it');
+});
+
+test('the image action swaps identity mid-session with the CREATING token, zero ledger cost', async (t) => {
+  const { env, h } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor();
+  t.after(vendor.restore);
+
+  const out = await (await createSession(env, token)).json();
+  h.resetCounts();
+
+  const res = await worker.fetch(
+    req(`/api/video/session/${out.sessionId}/image`, {
+      token,
+      body: {
+        controlToken: out.controlToken,
+        imageData: 'data:image/jpeg;base64,bmV3LWZhY2U=',
+        prompt: 'keep the lighting',
+      },
+    }),
+    env,
+  );
+  assert.equal(res.status, 200);
+  const img = vendor.calls.find((c) => c.url.endsWith('/image'));
+  // The fixture 401s any credential but the creating token, so a 200 IS the
+  // proof the sealed token was unsealed and presented.
+  assert.equal(img.body.image_data, 'bmV3LWZhY2U=');
+  assert.equal(img.body.prompt, 'keep the lighting');
+  assert.equal(h.counts().requests, 0, 'identity swaps never touch the Durable Object');
+
+  const bad = await worker.fetch(
+    req(`/api/video/session/${out.sessionId}/image`, {
+      token,
+      body: { controlToken: out.controlToken, imageData: '!!' },
+    }),
+    env,
+  );
+  assert.equal(bad.status, 400, 'a bad image is refused before a byte reaches the vendor');
+});
 
 test('control ops verify the token statelessly and cost ZERO ledger requests', async (t) => {
   const { env, h } = setup();

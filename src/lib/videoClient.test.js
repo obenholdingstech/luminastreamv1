@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import {
   createVideoSession,
   sendCandidates,
+  setVideoImage,
   setVideoPrompt,
   endVideoSession,
   readVideoBudget,
@@ -103,6 +104,31 @@ test('candidates and prompts never throw — a lost candidate is not a teardown'
     ok: false,
   });
   assert.equal(await setVideoPrompt('t', { sessionId: 's', controlToken: 'c' }, 'p', BASE), false);
+  assert.equal(
+    await setVideoImage('t', { sessionId: 's', controlToken: 'c' }, 'data:image/png;base64,x', 'p', BASE),
+    false,
+    'a lost identity swap degrades, it does not throw',
+  );
+});
+
+test('the identity swap carries the control token, the image, and the optional prompt', async () => {
+  let body = null;
+  stub(async (url, opts) => {
+    body = JSON.parse(opts.body);
+    assert.match(String(url), /\/api\/video\/session\/s1\/image$/);
+    return json(200, { ok: true });
+  });
+  const ok = await setVideoImage(
+    't',
+    { sessionId: 's1', controlToken: 'c1' },
+    'data:image/png;base64,aGk=',
+    'same pose',
+    BASE,
+  );
+  assert.equal(ok, true);
+  assert.equal(body.controlToken, 'c1');
+  assert.equal(body.imageData, 'data:image/png;base64,aGk=');
+  assert.equal(body.prompt, 'same pose');
 });
 
 test('candidates carry the control token and the ETag — and return the ROTATED one', async () => {

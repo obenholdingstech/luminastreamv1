@@ -664,6 +664,22 @@ async function decartFetch(env, path, init) {
   });
 }
 
+// The reference avatar (CEO directive, 3 Aug 2026): a static image whose
+// identity Lucy animates with the live camera feed. Decart takes it as
+// `image_data` — base64, JPEG/PNG/WebP, "keep under 5MB". The browser sends a
+// data URL or bare base64; both are normalized here, and anything oversized
+// or non-base64 is refused BEFORE a reservation exists, so a bad upload can
+// never cost a hold.
+const MAX_IMAGE_B64_CHARS = 7_000_000; // ≈ 5 MB decoded
+
+function normalizeReferenceImage(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  const b64 = raw.startsWith('data:') ? (raw.split(',', 2)[1] ?? '') : raw;
+  if (!b64 || b64.length > MAX_IMAGE_B64_CHARS) return null;
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(b64)) return null;
+  return b64;
+}
+
 async function handleVideoSession(request, env, origin) {
   const refusal = await videoGate(request, env, origin);
   if (refusal) return refusal;
@@ -674,6 +690,10 @@ async function handleVideoSession(request, env, origin) {
   const body = await readJson(request);
   const sdpOffer = typeof body?.sdpOffer === 'string' ? body.sdpOffer : '';
   if (!sdpOffer) return json({ ok: false, error: 'sdp_offer_required' }, { status: 400, origin });
+  const imageData = normalizeReferenceImage(body?.imageData);
+  if (body?.imageData && !imageData) {
+    return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
+  }
 
   // 1. The durable intent: the reservation exists before Decart hears a word
   //    (the canon's pending-create marker IS the unbound reservation).
@@ -712,6 +732,7 @@ async function handleVideoSession(request, env, origin) {
         model: 'lucy-2.5',
         sdp: { type: 'offer', sdp: sdpOffer },
         ...(typeof body?.prompt === 'string' && body.prompt ? { prompt: body.prompt } : {}),
+        ...(imageData ? { image_data: imageData } : {}),
       }),
     });
     const created = await createRes.json().catch(() => null);
@@ -849,6 +870,25 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
     return json({ ok: res.ok, status: res.status, vendor: out }, { status: res.ok ? 200 : 502, origin });
   }
 
+  if (action === 'image') {
+    // Mid-session identity swap — Decart allows changing the reference image
+    // without reconnecting. Same normalization as create: a bad image is a
+    // 400 here, never a byte to the vendor.
+    const imageData = normalizeReferenceImage(body?.imageData);
+    if (!imageData) return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
+    const res = await decartFetch(env, `/v1/realtime/sessions/${sid}/image`, {
+      method: 'POST',
+      headers: vendorAuth,
+      body: JSON.stringify({
+        image_data: imageData,
+        ...(typeof body?.prompt === 'string' && body.prompt ? { prompt: body.prompt } : {}),
+      }),
+    }).catch(() => null);
+    if (!res) return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
+    const out = await res.json().catch(() => ({}));
+    return json({ ok: res.ok, status: res.status, vendor: out }, { status: res.ok ? 200 : 502, origin });
+  }
+
   if (action === 'end') {
     // The vendor-truth exchange, server-to-server: WE delete, WE read the
     // summary, and the ledger hears OUR copy of Decart's answer — never the
@@ -958,7 +998,7 @@ export default {
       if (pathname === '/api/video/session') return handleVideoSession(request, env, origin);
       {
         const m = pathname.match(
-          /^\/api\/video\/session\/([A-Za-z0-9_-]{1,128})\/(candidates|prompt|end)$/,
+          /^\/api\/video\/session\/([A-Za-z0-9_-]{1,128})\/(candidates|prompt|image|end)$/,
         );
         if (m) return handleVideoSessionControl(request, env, origin, m[1], m[2]);
       }

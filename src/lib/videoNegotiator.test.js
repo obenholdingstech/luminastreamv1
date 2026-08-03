@@ -370,3 +370,20 @@ test('phases advance through the negotiation in order', async () => {
     NEGOTIATION.live,
   ]);
 });
+
+test('the reference avatar and prompt ride the create call untouched', async () => {
+  let seen = null;
+  const h = harness({
+    createSession: async (args) => {
+      seen = args;
+      return {
+        sessionId: 'sess-1',
+        controlToken: 'c',
+        vendor: { sdp: { type: 'answer', sdp: 'v=0 answer' }, etag: 'e1' },
+      };
+    },
+  });
+  await h.negotiator.start({ imageData: 'data:image/png;base64,aGk=', prompt: 'blue cloth' });
+  assert.equal(seen.imageData, 'data:image/png;base64,aGk=', 'the identity reaches the Worker');
+  assert.equal(seen.prompt, 'blue cloth');
+});
