@@ -36,6 +36,14 @@ function setup({ perSession = 60, total = 600 } = {}) {
 // A scriptable Decart: every vendor route in one stub, with a call journal so
 // tests can assert what the vendor was told — and, as important, what it was
 // never told.
+//
+// CONTRACT FIXTURE, not an invention. Every default response below mirrors
+// the live API as verified on 3 Aug 2026 (signaling-proxy-http docs + a real
+// 201 exchange): snake_case fields, the answer as an RTCSessionDescription-
+// shaped object, the ICE ETag as a response HEADER, PATCH answering 204, and
+// the DELETE summary's `billed_seconds`. The previous stub spoke this file's
+// own camelCase back to it — which is precisely how 17 green tests shipped a
+// Worker whose first real vendor call was an HTTP 400.
 function stubVendor(overrides = {}) {
   const original = globalThis.fetch;
   const calls = [];
@@ -60,27 +68,39 @@ function stubVendor(overrides = {}) {
         overrides.create?.(entry) ??
         new Response(
           JSON.stringify({
-            sessionId: 'decart-sess-1',
-            sdpAnswer: 'v=0 answer',
-            iceServers: [{ urls: 'stun:stun.decart.ai' }],
-            eventToken: 'sse-event-token',
-            etag: 'etag-1',
+            session_id: 'decart-sess-1',
+            sdp: { type: 'answer', sdp: 'v=0 answer' },
+            ice_servers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+            events: {
+              url: 'https://api.decart.ai/v1/realtime/sessions/decart-sess-1/events',
+              event_token: 'sse-event-token',
+              expires_at: '2026-08-03T13:00:00Z',
+            },
+            expires_at: '2026-08-03T13:00:00Z',
           }),
-          { status: 200 },
+          { status: 201, headers: { ETag: '"1"' } },
         )
       );
     }
     if (/\/v1\/realtime\/sessions\/[^/]+$/.test(u) && entry.method === 'DELETE') {
       return (
         overrides.del?.(entry) ??
-        new Response(JSON.stringify({ billedSeconds: 41.2, currency: 'usd' }), { status: 200 })
+        new Response(
+          JSON.stringify({
+            session_id: 'decart-sess-1',
+            duration_seconds: 41.2,
+            billed_seconds: 41.2,
+            reason: 'disconnect',
+          }),
+          { status: 200 },
+        )
       );
     }
     if (/\/v1\/realtime\/sessions\/[^/]+$/.test(u) && entry.method === 'PATCH') {
-      return overrides.patch?.(entry) ?? new Response('{}', { status: 200 });
+      return overrides.patch?.(entry) ?? new Response(null, { status: 204, headers: { ETag: '"2"' } });
     }
     if (u.endsWith('/prompt')) {
-      return overrides.prompt?.(entry) ?? new Response('{}', { status: 200 });
+      return overrides.prompt?.(entry) ?? new Response('{"prompt":"ok"}', { status: 200 });
     }
     return new Response('{"error":"unstubbed"}', { status: 500 });
   };
@@ -134,12 +154,20 @@ test('create: reserve → constrained token → vendor create → bind → THEN 
     'the session is created with the CONSTRAINED token, not the raw key',
   );
   assert.equal(vendor.calls[1].body.model, 'lucy-2.5');
+  // The offer travels in Decart's dialect — the exact field the live API
+  // refused with "body.sdp: Field required" when this was `sdpOffer`.
+  assert.deepEqual(
+    vendor.calls[1].body.sdp,
+    { type: 'offer', sdp: 'v=0 offer' },
+    'the offer is an RTCSessionDescription-shaped object named sdp',
+  );
 
   // What the browser gets — and does not.
   assert.equal(out.sessionId, 'decart-sess-1');
   assert.ok(out.controlToken.includes('.'));
-  assert.equal(out.vendor.sdpAnswer, 'v=0 answer');
-  assert.equal(out.vendor.eventToken, 'sse-event-token', 'SSE auth passes through');
+  assert.equal(out.vendor.sdp.sdp, 'v=0 answer');
+  assert.equal(out.vendor.events.event_token, 'sse-event-token', 'SSE auth passes through');
+  assert.equal(out.vendor.etag, '"1"', "the create response's ETag HEADER is lifted into the payload");
   const raw = JSON.stringify(out);
   assert.ok(!raw.includes('raw-vendor-key'), 'the raw key never leaves');
   assert.ok(!raw.includes('constrained-client-token'), 'neither does the Worker-only token');
@@ -186,6 +214,33 @@ test('create: a failed BIND compensates with a vendor DELETE and returns the hol
   assert.equal(h.pendingAlarm(), null);
 });
 
+test('create: a 201 WITHOUT an ETag header fails closed and compensates', async (t) => {
+  // The ETag is the If-Match seed for every ICE PATCH; a session born without
+  // one is paid and mute. The Worker must refuse it — and because the vendor
+  // DID create it, the compensation path must kill it and return the hold.
+  const { env } = setup();
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    create: () =>
+      new Response(
+        JSON.stringify({ session_id: 'decart-sess-1', sdp: { type: 'answer', sdp: 'v=0 answer' } }),
+        { status: 201 }, // no ETag header
+      ),
+  });
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token);
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, 'vendor_session_failed');
+  const del = vendor.calls.find((c) => c.method === 'DELETE');
+  assert.ok(del, 'the mute session was killed, not abandoned');
+  assert.match(del.url, /decart-sess-1$/);
+  const budget = await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env);
+  const b = await budget.json();
+  assert.equal(b.spentSeconds, 0, 'and the hold came home');
+  assert.equal(b.openReservations, 0);
+});
+
 test('create: a vendor create failure returns the hold and binds nothing', async (t) => {
   const { env } = setup();
   const token = await adminToken(env);
@@ -223,6 +278,11 @@ test('control ops verify the token statelessly and cost ZERO ledger requests', a
   assert.equal(cand.status, 200);
   const patch = vendor.calls.find((c) => c.method === 'PATCH');
   assert.equal(patch.headers['If-Match'], 'etag-1', 'ETag forwarded');
+  assert.equal(
+    (await cand.json()).etag,
+    '"2"',
+    "the vendor's ROTATED ETag comes back to the browser — the next send's If-Match",
+  );
 
   const prompt = await worker.fetch(
     req(`/api/video/session/${out.sessionId}/prompt`, {
@@ -268,7 +328,7 @@ test('end: the Worker deletes, reads the summary, settles — the browser\'s "su
   const { env, h } = setup({ perSession: 60 });
   const token = await adminToken(env);
   const vendor = stubVendor({
-    del: () => new Response(JSON.stringify({ billedSeconds: 41.2 }), { status: 200 }),
+    del: () => new Response(JSON.stringify({ billed_seconds: 41.2 }), { status: 200 }),
   });
   t.after(vendor.restore);
 
@@ -280,7 +340,7 @@ test('end: the Worker deletes, reads the summary, settles — the browser\'s "su
       token,
       // The attack from the canon: a client that could report its own bill
       // would report a small one.
-      body: { controlToken: out.controlToken, vendorSummary: { billedSeconds: 1 } },
+      body: { controlToken: out.controlToken, vendorSummary: { billed_seconds: 1 } },
     }),
     env,
   );
@@ -298,7 +358,7 @@ test('end: vendor overage past the grant is clamped for the meter, recorded for 
   const { env, h } = setup({ perSession: 30 });
   const token = await adminToken(env);
   const vendor = stubVendor({
-    del: () => new Response(JSON.stringify({ billedSeconds: 32.4 }), { status: 200 }),
+    del: () => new Response(JSON.stringify({ billed_seconds: 32.4 }), { status: 200 }),
   });
   t.after(vendor.restore);
 
@@ -314,7 +374,7 @@ test('end: vendor overage past the grant is clamped for the meter, recorded for 
   const rows = [...h.stored().entries()].filter(([k]) => k.startsWith('settlement:'));
   assert.equal(rows.length, 1);
   assert.equal(rows[0][1].source, 'vendor');
-  assert.equal(rows[0][1].vendorSummary.billedSeconds, 32.4, 'raw summary stored VERBATIM');
+  assert.equal(rows[0][1].vendorSummary.billed_seconds, 32.4, 'raw summary stored VERBATIM');
 });
 
 test('end is idempotent: a second end settles nothing and refunds nothing twice', async (t) => {
@@ -559,7 +619,7 @@ test('a negative vendor billed value cannot become an over-refund', async (t) =>
   const { env } = setup({ perSession: 30 });
   const token = await adminToken(env);
   const vendor = stubVendor({
-    del: () => new Response(JSON.stringify({ billedSeconds: -100 }), { status: 200 }),
+    del: () => new Response(JSON.stringify({ billed_seconds: -100 }), { status: 200 }),
   });
   t.after(vendor.restore);
 

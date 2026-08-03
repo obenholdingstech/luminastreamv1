@@ -229,7 +229,7 @@ export class SpendLedger {
       usedSeconds,
       overageSeconds: Math.max(
         0,
-        (Number.isFinite(vendorSummary?.billedSeconds) ? Math.ceil(vendorSummary.billedSeconds) : usedSeconds) -
+        (Number.isFinite(vendorSummary?.billed_seconds) ? Math.ceil(vendorSummary.billed_seconds) : usedSeconds) -
           record.grantedSeconds,
       ),
       source,
@@ -503,9 +503,12 @@ export class SpendLedger {
       : null;
     // Clamped at zero: a negative or nonsense billed value must never become
     // a refund larger than the grant. Vendor numbers are trusted over the
-    // client's, not over arithmetic.
-    const billed = Number.isFinite(vendorSummary?.billedSeconds)
-      ? Math.max(0, Math.ceil(vendorSummary.billedSeconds))
+    // client's, not over arithmetic. `billed_seconds` is Decart's own field
+    // name (DELETE summary, verified live 3 Aug 2026) — the camelCase this
+    // used to read existed only in our test stub, which is how a green suite
+    // shipped a settle path that treated every real summary as unusable.
+    const billed = Number.isFinite(vendorSummary?.billed_seconds)
+      ? Math.max(0, Math.ceil(vendorSummary.billed_seconds))
       : null;
     // The vendor's number, clamped to the grant for the DEV meter (the
     // granularity overage is recorded on the settlement for reconciliation —
