@@ -17,6 +17,7 @@ import { constantTimeCompareSecrets } from './crypto.js';
 import { signSession, verifySession } from './session.js';
 import { mintLiveKitToken } from './livekit.js';
 import { SessionRegistry } from './sessionRegistry.js';
+import { SpendLedger } from './spendLedger.js';
 
 const VERSION = '0.1.0';
 
@@ -395,6 +396,140 @@ async function handleSessionCapacity(request, env, origin) {
   );
 }
 
+// ─── the video spend wall ───────────────────────────────────────────────────
+//
+// One SpendLedger instance, one name, for the same reason the registry has
+// one: a budget with two authorities is not a budget. Same fail-closed
+// posture — a deploy that drops the binding refuses video rather than serving
+// it unmetered, because an unmetered vendor is the named disaster here.
+const LEDGER_NAME = 'global';
+
+async function callLedger(env, path, body) {
+  const ns = env?.VIDEO_LEDGER;
+  if (!ns || typeof ns.idFromName !== 'function' || typeof ns.get !== 'function') return null;
+  try {
+    const stub = ns.get(ns.idFromName(LEDGER_NAME));
+    return await stub.fetch(
+      new Request(`https://spend-ledger.internal${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      }),
+    );
+  } catch (err) {
+    console.error('spend ledger binding failed', err);
+    return null;
+  }
+}
+
+const ledgerUnavailable = (origin) =>
+  json({ ok: false, error: 'video_ledger_unavailable' }, { status: 503, origin });
+
+// Rate-limit BEFORE auth, like every other route family here.
+async function videoGate(request, env, origin) {
+  const limit = rateLimitRefusal(
+    await checkRateLimit(env.VIDEO_LIMITER, clientIp(request)),
+    origin,
+  );
+  if (limit) return limit;
+  if (!env.ADMIN_SESSION_SECRET) {
+    return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
+  }
+  const session = await verifySession(env.ADMIN_SESSION_SECRET, request.headers.get('X-Admin-Token'));
+  if (!session.valid) return json({ ok: false, error: 'unauthorized' }, { status: 401, origin });
+  return null;
+}
+
+// Ledger refusals → HTTP, each distinct so a client can say something true.
+// video_budget_exhausted is the wall WORKING, not an outage; video_disabled is
+// a kill switch; misconfiguration logs the detail and never echoes it.
+function ledgerRefusal(payload, origin) {
+  if (payload?.error === 'ledger_misconfigured') {
+    console.error('spend ledger misconfigured:', payload.detail);
+    return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
+  }
+  if (payload?.error === 'video_disabled') {
+    return json({ ok: false, error: 'video_disabled' }, { status: 503, origin });
+  }
+  if (payload?.error === 'video_budget_exhausted') {
+    return json(
+      {
+        ok: false,
+        error: 'video_budget_exhausted',
+        spentSeconds: payload.spentSeconds,
+        totalSeconds: payload.totalSeconds,
+      },
+      { status: 503, origin },
+    );
+  }
+  if (payload?.error === 'settle_refused') {
+    return json({ ok: false, error: 'settle_refused' }, { status: 403, origin });
+  }
+  return null;
+}
+
+async function handleVideoReserve(request, env, origin) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+  const body = await readJson(request);
+  const res = await callLedger(env, '/reserve', {
+    requestedSeconds: body?.requestedSeconds,
+  });
+  if (!res) return ledgerUnavailable(origin);
+  const out = await res.json().catch(() => null);
+  if (!out?.ok) {
+    return ledgerRefusal(out, origin) ?? json({ ok: false, error: 'reserve_failed' }, { status: 502, origin });
+  }
+  return json(out, { origin });
+}
+
+async function handleVideoSettle(request, env, origin) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+  const body = await readJson(request);
+  const reservationId = typeof body?.reservationId === 'string' ? body.reservationId.trim() : '';
+  const settleToken = typeof body?.settleToken === 'string' ? body.settleToken : '';
+  if (!reservationId || !settleToken) {
+    return json({ ok: false, error: 'reservation_and_token_required' }, { status: 400, origin });
+  }
+  const res = await callLedger(env, '/settle', {
+    reservationId,
+    settleToken,
+    usedSeconds: body?.usedSeconds,
+  });
+  if (!res) return ledgerUnavailable(origin);
+  const out = await res.json().catch(() => null);
+  if (!out?.ok) {
+    return ledgerRefusal(out, origin) ?? json({ ok: false, error: 'settle_failed' }, { status: 502, origin });
+  }
+  return json(out, { origin });
+}
+
+async function handleVideoBudget(request, env, origin) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+  const res = await callLedger(env, '/budget');
+  if (!res) return ledgerUnavailable(origin);
+  const out = await res.json().catch(() => null);
+  if (!out?.ok) {
+    return ledgerRefusal(out, origin) ?? json({ ok: false, error: 'budget_read_failed' }, { status: 502, origin });
+  }
+  return json(out, { status: 200, origin, headers: { 'Cache-Control': 'private, max-age=5' } });
+}
+
+async function handleVideoReset(request, env, origin) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+  const res = await callLedger(env, '/reset');
+  if (!res) return ledgerUnavailable(origin);
+  const out = await res.json().catch(() => null);
+  if (!out?.ok) {
+    return ledgerRefusal(out, origin) ?? json({ ok: false, error: 'video_reset_failed' }, { status: 502, origin });
+  }
+  console.warn('spend ledger reset — released', out.released, 'reservation(s), meter zeroed');
+  return json(out, { origin });
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin');
@@ -422,6 +557,20 @@ export default {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       return handleToken(request, env, origin);
+    }
+
+    if (pathname.startsWith('/api/video/')) {
+      const wrongMethod =
+        (pathname === '/api/video/budget' && request.method !== 'GET') ||
+        (pathname !== '/api/video/budget' && request.method !== 'POST');
+      if (wrongMethod) {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      if (pathname === '/api/video/reserve') return handleVideoReserve(request, env, origin);
+      if (pathname === '/api/video/settle') return handleVideoSettle(request, env, origin);
+      if (pathname === '/api/video/budget') return handleVideoBudget(request, env, origin);
+      if (pathname === '/api/video/reset') return handleVideoReset(request, env, origin);
+      return json({ ok: false, error: 'not_found' }, { status: 404, origin });
     }
 
     if (pathname === '/api/session/create') {
@@ -459,4 +608,4 @@ export default {
 // Re-exported because a Durable Object class must be reachable from the
 // Worker's entrypoint — that is how the runtime resolves `class_name` in the
 // wrangler.jsonc binding and how the migration finds it.
-export { VERSION, SessionRegistry };
+export { VERSION, SessionRegistry, SpendLedger };
