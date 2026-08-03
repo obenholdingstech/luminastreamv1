@@ -58,6 +58,20 @@ Stop, on unmount, and on `pagehide`. A slot nobody releases stays held until its
 lease expires (2h), which on a one-agent system means one closed tab locks
 everyone else out for the afternoon.
 
+**Video (P2d).** The lens has a second, independently metered leg: *Add
+video* opens a white-label Decart session — the Worker holds the key and
+brokers control, media is peer-to-peer, and the vendor's per-second spend runs
+through the `SpendLedger`. It starts and stops without disturbing a
+conversation in progress, because the two are metered separately.
+
+Frames never reach the screen as a bare `<video>`: they pass through
+`src/lib/framePipeline.js` — **receive → align → upscale → present** — whose
+middle stages are declared, inert, and named for the phase that fills them
+(P3's elastic A/V buffer, P3's WebGL FSR-class upscaler, P6's MetalFX). Lucy
+outputs 720p, period, so the fidelity readout says **720p · upscale pending**
+until a real stage exists. Claiming FHD before the stage that produces it
+would be exactly the kind of lie this codebase keeps refusing.
+
 `/livekit-test` still picks its own room and identity by hand — it is the
 instrument panel, and a drill must not depend on the session layer being up.
 

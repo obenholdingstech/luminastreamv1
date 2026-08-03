@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ConnectionState, RoomEvent, Track } from 'livekit-client';
-import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Volume2 } from 'lucide-react';
+import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
 
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useMicLevel } from '@/hooks/useMicLevel';
@@ -10,6 +10,7 @@ import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
 import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
+import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -195,6 +196,17 @@ export default function Studio() {
   const unlocking = held.phase === PHASE.starting;
 
   const [lensMode, setLensMode] = useState('converted');
+
+  // ── the video leg (P2d) ───────────────────────────────────────────────
+  // Independent of the audio session on purpose: video is metered separately
+  // (the SpendLedger), costs vendor money per second, and must be startable
+  // and stoppable without disturbing a conversation in progress.
+  const video = useLensVideo(adminToken);
+  const videoElRef = useRef(null);
+  useEffect(() => {
+    if (videoElRef.current) videoElRef.current.srcObject = video.stream ?? null;
+  }, [video.stream]);
+  const fidelity = video.pipeline.describe();
   // Set when credentials arrive, cleared when the connect fires. See `start`.
   const [pendingConnect, setPendingConnect] = useState(false);
 
@@ -517,6 +529,88 @@ export default function Studio() {
             </span>
           )}
         </p>
+
+        {/* The video leg. Rendered behind the ring so the lens stays the
+            subject and the transformed face sits inside it — and NEVER as a
+            bare <video>: frames arrive through the pipeline (framePipeline.js)
+            so P3's aligner and upscaler are slot-fills, not a rebuild. */}
+        {video.stream && (
+          <div className="absolute inset-0 -z-10 flex items-center justify-center overflow-hidden">
+            <video
+              ref={videoElRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover opacity-40"
+            />
+            <div
+              aria-hidden
+              className="absolute inset-0"
+              style={{
+                background:
+                  'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
+              }}
+            />
+          </div>
+        )}
+
+        {/* Video controls — separate from the audio session, because the two
+            are metered separately and either may run without the other. */}
+        {adminToken && (
+          <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  video.phase === VIDEO_PHASE.live ? video.stop() : video.start({})
+                }
+                disabled={
+                  video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping
+                }
+                className="flex items-center gap-2 rounded-full px-5 py-2 text-[10px] tracking-[0.18em] uppercase border transition-colors disabled:opacity-50"
+                style={{
+                  borderColor: video.phase === VIDEO_PHASE.live ? '#6366F1' : '#1A1A2E',
+                  color: video.phase === VIDEO_PHASE.live ? '#A5B4FC' : '#64748B',
+                }}
+              >
+                {video.phase === VIDEO_PHASE.starting ||
+                video.phase === VIDEO_PHASE.stopping ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Video size={11} />
+                )}
+                {video.phase === VIDEO_PHASE.live ? 'Stop video' : 'Add video'}
+              </button>
+
+              {/* The fidelity readout says what the pipeline ACTUALLY
+                  delivers. While the upscale slot is empty it says 720p and
+                  names what is pending — claiming FHD before the stage exists
+                  would be the kind of lie this project keeps refusing. */}
+              {video.phase === VIDEO_PHASE.live && (
+                <span className="text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
+                  {fidelity.delivering.height}p
+                  {!fidelity.upscaleActive && ' · upscale pending'}
+                </span>
+              )}
+            </div>
+
+            {video.budget && (
+              <span className="text-[9px] text-[#3E4A5F] tabular-nums">
+                video budget {Math.floor(video.budget.remainingSeconds / 60)}m{' '}
+                {video.budget.remainingSeconds % 60}s remaining
+              </span>
+            )}
+
+            {video.error && (
+              <p
+                role="alert"
+                className="flex items-center gap-1.5 text-[10px] text-[#F59E0B] text-center"
+              >
+                <AlertTriangle size={10} /> {video.error}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Action */}
         <div className="mt-10 w-full max-w-sm">
