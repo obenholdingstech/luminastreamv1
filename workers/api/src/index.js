@@ -15,6 +15,7 @@
 import { handlePreflight, corsHeaders } from './cors.js';
 import { constantTimeCompareSecrets } from './crypto.js';
 import { signSession, verifySession } from './session.js';
+import { base64UrlEncode, base64UrlEncodeJson, base64UrlDecode, decodeJson, hmacSha256, timingSafeEqual } from './crypto.js';
 import { mintLiveKitToken } from './livekit.js';
 import { SessionRegistry } from './sessionRegistry.js';
 import { SpendLedger } from './spendLedger.js';
@@ -596,6 +597,233 @@ async function handleVideoToken(request, env, origin) {
   }
 }
 
+// ─── the white-label session (P2c: the committed topology) ─────────────────
+//
+// The Worker creates and controls every Decart session; media flows
+// browser↔Decart directly. The raw key never leaves this file's env — and
+// neither does the constrained client token it mints for itself: wall #2
+// rides on the session because the Worker CREATES the session with a token it
+// never shows anyone.
+//
+// Browser-side session control (ICE, prompt, end) authenticates with a
+// STATELESS control token — HMAC over {sid, rid, exp} with the admin session
+// secret — so an ICE candidate costs zero Durable Object requests. The O(1)
+// budget for a video session stays: reserve(1) + bind(1) + settle(1).
+
+async function signControlToken(env, { sid, rid, ttlSeconds }) {
+  const payload = { sub: 'video-session', sid, rid, exp: Math.floor(Date.now() / 1000) + ttlSeconds };
+  const payloadB64 = base64UrlEncodeJson(payload);
+  const sig = await hmacSha256(env.ADMIN_SESSION_SECRET, `video.${payloadB64}`);
+  return `${payloadB64}.${base64UrlEncode(sig)}`;
+}
+
+async function verifyControlToken(env, token, sid) {
+  if (typeof token !== 'string' || !token.includes('.')) return null;
+  const [payloadB64, sigB64] = token.split('.');
+  let provided;
+  try {
+    provided = base64UrlDecode(sigB64);
+  } catch {
+    return null;
+  }
+  const expected = await hmacSha256(env.ADMIN_SESSION_SECRET, `video.${payloadB64}`);
+  if (!timingSafeEqual(expected, provided)) return null;
+  let payload;
+  try {
+    payload = decodeJson(base64UrlDecode(payloadB64));
+  } catch {
+    return null;
+  }
+  if (payload.sub !== 'video-session') return null;
+  if (payload.sid !== sid) return null;
+  if (typeof payload.exp !== 'number' || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+  return payload;
+}
+
+async function decartFetch(env, path, init) {
+  return fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}${path}`, {
+    ...init,
+    signal: AbortSignal.timeout(15_000),
+    headers: { 'x-api-key': env.DECART_API_KEY, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+  });
+}
+
+async function handleVideoSession(request, env, origin) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+  if (!env.DECART_API_KEY) {
+    return json({ ok: false, error: 'video_vendor_unconfigured' }, { status: 503, origin });
+  }
+
+  const body = await readJson(request);
+  const sdpOffer = typeof body?.sdpOffer === 'string' ? body.sdpOffer : '';
+  if (!sdpOffer) return json({ ok: false, error: 'sdp_offer_required' }, { status: 400, origin });
+
+  // 1. The durable intent: the reservation exists before Decart hears a word
+  //    (the canon's pending-create marker IS the unbound reservation).
+  const res = await callLedger(env, '/reserve', { requestedSeconds: body?.requestedSeconds });
+  if (!res) return ledgerUnavailable(origin);
+  const reserved = await res.json().catch(() => null);
+  if (!reserved?.ok) {
+    return ledgerRefusal(reserved, origin) ?? json({ ok: false, error: 'reserve_failed' }, { status: 502, origin });
+  }
+
+  let decartSessionId = null;
+  try {
+    // 2. Wall #2: a constrained client token, minted for the WORKER's own use.
+    const minted = await mintDecartClientToken(env, {
+      grantedSeconds: reserved.grantedSeconds,
+      reservationId: reserved.reservationId,
+    });
+
+    // 3. The session, created server-side with the constrained token.
+    const createRes = await fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}/v1/realtime/sessions`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(15_000),
+      headers: { 'x-api-key': minted.clientToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'lucy-2.5',
+        sdpOffer,
+        ...(typeof body?.prompt === 'string' && body.prompt ? { prompt: body.prompt } : {}),
+      }),
+    });
+    const created = await createRes.json().catch(() => null);
+    if (!createRes.ok || !created) {
+      throw new Error(`vendor session create failed: HTTP ${createRes.status}`);
+    }
+    decartSessionId = created.sessionId ?? created.id ?? null;
+    if (!decartSessionId) throw new Error('vendor session create returned no id');
+
+    // 4. The executioner's ammunition, persisted BEFORE anything reaches the
+    //    browser. A failed bind compensates immediately with the id in hand.
+    const bindRes = await callLedger(env, '/bind', {
+      reservationId: reserved.reservationId,
+      decartSessionId,
+    });
+    const bound = bindRes ? await bindRes.json().catch(() => null) : null;
+    if (!bound?.ok) throw new Error('bind failed');
+
+    // 5. Only now: the browser's share. Control token scoped to this session,
+    //    valid for the lease; Decart's own event token for the direct SSE.
+    const controlToken = await signControlToken(env, {
+      sid: decartSessionId,
+      rid: reserved.reservationId,
+      ttlSeconds: reserved.grantedSeconds + 300,
+    });
+
+    return json(
+      {
+        ok: true,
+        sessionId: decartSessionId,
+        controlToken,
+        grantedSeconds: reserved.grantedSeconds,
+        remainingSeconds: reserved.remainingSeconds,
+        // Vendor payload passthrough: answer SDP, ICE servers, SSE auth, ETag.
+        vendor: created,
+      },
+      { origin },
+    );
+  } catch (err) {
+    console.error('white-label session create failed', err);
+    // Compensating DELETE with the id in hand — and its RESULT decides what
+    // the money does. Refunding a session that may still be running would pay
+    // for someone else's stream: a failed kill settles FULLY SPENT and logs
+    // the orphan, because the ledger record is about to be destroyed either
+    // way and this is the last moment anyone can account for it.
+    let killed = decartSessionId === null; // nothing to kill = nothing running
+    if (decartSessionId) {
+      const delRes = await decartFetch(env, `/v1/realtime/sessions/${decartSessionId}`, {
+        method: 'DELETE',
+      }).catch(() => null);
+      killed = Boolean(delRes && (delRes.ok || delRes.status === 404));
+      if (!killed) {
+        console.error(
+          'ORPHAN: vendor session survived its compensating delete',
+          JSON.stringify({ decartSessionId, reservationId: reserved.reservationId }),
+        );
+      }
+    }
+    await callLedger(env, '/settle', {
+      reservationId: reserved.reservationId,
+      settleToken: reserved.settleToken,
+      usedSeconds: killed ? 0 : reserved.grantedSeconds,
+    });
+    return json(
+      { ok: false, error: killed ? 'vendor_session_failed' : 'vendor_session_orphaned' },
+      { status: 502, origin },
+    );
+  }
+}
+
+// Control-plane proxy: ICE candidates and prompt updates. Zero ledger cost —
+// the control token is verified statelessly.
+async function handleVideoSessionControl(request, env, origin, sid, action) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+  const body = await readJson(request);
+  const payload = await verifyControlToken(env, body?.controlToken, sid);
+  if (!payload) return json({ ok: false, error: 'control_refused' }, { status: 403, origin });
+
+  if (action === 'candidates') {
+    const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, {
+      method: 'PATCH',
+      headers: body?.etag ? { 'If-Match': body.etag } : {},
+      body: JSON.stringify({ candidates: body?.candidates ?? null }),
+    }).catch(() => null);
+    if (!res) return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
+    const out = await res.json().catch(() => ({}));
+    return json({ ok: res.ok, status: res.status, vendor: out }, { status: res.ok ? 200 : 502, origin });
+  }
+
+  if (action === 'prompt') {
+    const res = await decartFetch(env, `/v1/realtime/sessions/${sid}/prompt`, {
+      method: 'POST',
+      body: JSON.stringify({ prompt: body?.prompt ?? '' }),
+    }).catch(() => null);
+    if (!res) return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
+    const out = await res.json().catch(() => ({}));
+    return json({ ok: res.ok, status: res.status, vendor: out }, { status: res.ok ? 200 : 502, origin });
+  }
+
+  if (action === 'end') {
+    // The vendor-truth exchange, server-to-server: WE delete, WE read the
+    // summary, and the ledger hears OUR copy of Decart's answer — never the
+    // browser's opinion of it.
+    const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, { method: 'DELETE' }).catch(() => null);
+    const killed = Boolean(res && (res.ok || res.status === 404));
+
+    // A FAILED kill must not settle. Settling deletes the reservation, and
+    // the reservation is the executioner's ammunition — destroying it here
+    // would leave a running vendor session with no server-side owner, which
+    // is precisely the orphan this whole ordering exists to prevent. Leave
+    // the record; the alarm inherits the kill with its bounded retries.
+    if (!killed) {
+      console.error(
+        'end: vendor delete failed — deferring to the executioner',
+        JSON.stringify({ decartSessionId: sid, status: res?.status ?? null }),
+      );
+      return json(
+        { ok: false, error: 'vendor_delete_failed', vendorDeleteStatus: res?.status ?? null },
+        { status: 502, origin },
+      );
+    }
+
+    const summary = await res.json().catch(() => null);
+    const settleRes = await callLedger(env, '/settle-by-session', {
+      decartSessionId: sid,
+      vendorSummary: summary,
+    });
+    if (!settleRes) return ledgerUnavailable(origin);
+    const settled = await settleRes.json().catch(() => null);
+    if (!settled?.ok) {
+      return json({ ok: false, error: 'session_end_failed' }, { status: 502, origin });
+    }
+    return json({ ok: true, ...settled, vendorDeleteStatus: res.status }, { origin });
+  }
+
+  return json({ ok: false, error: 'not_found' }, { status: 404, origin });
+}
+
 async function handleVideoBudget(request, env, origin) {
   const refusal = await videoGate(request, env, origin);
   if (refusal) return refusal;
@@ -654,10 +882,19 @@ export default {
       const wrongMethod =
         (pathname === '/api/video/budget' && request.method !== 'GET') ||
         (pathname !== '/api/video/budget' && request.method !== 'POST');
+      // Everything video is POST except the budget read; the vendor-side PATCH
+      // for ICE happens inside the Worker, not on our surface.
       if (wrongMethod) {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       if (pathname === '/api/video/token') return handleVideoToken(request, env, origin);
+      if (pathname === '/api/video/session') return handleVideoSession(request, env, origin);
+      {
+        const m = pathname.match(
+          /^\/api\/video\/session\/([A-Za-z0-9_-]{1,128})\/(candidates|prompt|end)$/,
+        );
+        if (m) return handleVideoSessionControl(request, env, origin, m[1], m[2]);
+      }
       if (pathname === '/api/video/reserve') return handleVideoReserve(request, env, origin);
       if (pathname === '/api/video/settle') return handleVideoSettle(request, env, origin);
       if (pathname === '/api/video/budget') return handleVideoBudget(request, env, origin);
