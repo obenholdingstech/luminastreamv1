@@ -58,7 +58,11 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
   let observed = { fatal: 'probe crashed before observation', lastTickSeconds: 0, log: [] };
   let settleOutcome = null;
   try {
-  await page.goto('about:blank');
+  // A SECURE CONTEXT, not about:blank — navigator.mediaDevices does not exist
+  // on a blank page, and the first live run failed on exactly that. The
+  // probe runs inside our own deployed origin: real https, our product's
+  // page, and the same origin P2c's integration will actually use.
+  await page.goto('https://studio.luminastream.live/');
   observed = await page.evaluate(
     async ({ clientToken, watchMs }) => {
       const log = [];
@@ -79,20 +83,25 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
       let lastTickSeconds = 0;
       let ended = null;
 
-      const models = ['lucy-2.5', 'lucy-2.1', 'lucy_v2_5'];
+      // The SDK validates `model` as an OBJECT — the models.realtime() helper
+      // builds it (first live run failed with "expected object, received
+      // string" for every id). Candidate ids still probed in order.
+      const modelsApi = sdk.models ?? sdk.default?.models;
+      if (!modelsApi?.realtime) return { fatal: 'SDK shape: models.realtime not found', log };
+      const modelIds = ['lucy-2.5', 'lucy-2.1'];
       let rt = null;
       let modelUsed = null;
-      for (const model of models) {
+      for (const id of modelIds) {
         try {
           rt = await client.realtime.connect(stream, {
-            model,
+            model: modelsApi.realtime(id),
             onRemoteStream: () => mark('remoteStream'),
           });
-          modelUsed = model;
-          mark('connected', { model });
+          modelUsed = id;
+          mark('connected', { model: id });
           break;
         } catch (err) {
-          mark('connectError', { model, message: String(err?.message ?? err).slice(0, 200) });
+          mark('connectError', { model: id, message: String(err?.message ?? err).slice(0, 300) });
         }
       }
       if (!rt) return { fatal: 'no model id accepted', log };
@@ -109,8 +118,13 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
         mark('connectionChange', { state });
         if (state === 'disconnected') ended = ended ?? Date.now() - t0;
       });
+      let lastTickAdvanceAtMs = null;
       rt.on('generationTick', (tick) => {
-        lastTickSeconds = tick?.seconds ?? lastTickSeconds;
+        const seconds = tick?.seconds ?? lastTickSeconds;
+        // Record when the meter last MOVED — cessation is a claim about
+        // advancement stopping, and only an advancement timestamp can prove it.
+        if (seconds > lastTickSeconds) lastTickAdvanceAtMs = Date.now() - t0;
+        lastTickSeconds = seconds;
       });
       rt.on('error', (err) =>
         mark('sdkError', { message: String(err?.message ?? err).slice(0, 200) }),
@@ -132,7 +146,7 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
       try {
         rt.disconnect?.();
       } catch {}
-      return { modelUsed, endedAtMs: ended, lastTickSeconds, log };
+      return { modelUsed, endedAtMs: ended, lastTickSeconds, lastTickAdvanceAtMs, log };
     },
     { clientToken: grant.clientToken, watchMs: WATCH_SECONDS * 1000 },
   );
@@ -155,13 +169,35 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
       .catch((err) => ({ status: 0, ok: false, error: String(err).slice(0, 120) }));
   }
 
+  // On ANY outcome, the raw event log reaches the console first — a fatal
+  // with its evidence trapped inside the page is undiagnosable.
+  console.log('probe events:', JSON.stringify(observed.log ?? [], null, 1));
   expect(observed.fatal, observed.fatal ?? '').toBeFalsy();
   expect(settleOutcome?.ok, `settle must succeed: ${JSON.stringify(settleOutcome)}`).toBeTruthy();
 
-  const enforced =
-    observed.endedAtMs !== null &&
-    observed.endedAtMs >= (PROBE_GRANT_SECONDS - 5) * 1000 &&
-    observed.endedAtMs <= (PROBE_GRANT_SECONDS + 20) * 1000;
+  // Enforcement manifests as GENERATION stopping, not the connection dying:
+  // the live run showed "Session duration limit reached" at ~33 generated
+  // seconds, followed by an SDK auto-reconnect into a connected-but-not-
+  // generating zombie with ticks frozen. Classify on the vendor's own error
+  // and the tick freeze near the constraint; connection death alone was the
+  // first classifier's mistake.
+  const limitError = (observed.log ?? []).find(
+    (e) => e.event === 'sdkError' && /duration limit/i.test(e.message ?? ''),
+  );
+  const ticksNearConstraint =
+    (observed.lastTickSeconds ?? 0) >= PROBE_GRANT_SECONDS - 2 &&
+    (observed.lastTickSeconds ?? 0) <= PROBE_GRANT_SECONDS + 10;
+  // The error alone proves the vendor SPOKE; enforcement means the meter
+  // STOPPED. Require that no tick advanced after the limit error (small slack
+  // for one in-flight tick) across the remaining watch window — a vendor that
+  // announces the limit and keeps billing through the band must classify as
+  // NOT enforced.
+  const GENERATION_STOP_SLACK_MS = 5_000;
+  const ticksCeasedAfterError =
+    Boolean(limitError) &&
+    (observed.lastTickAdvanceAtMs === null ||
+      observed.lastTickAdvanceAtMs <= limitError.atMs + GENERATION_STOP_SLACK_MS);
+  const enforced = Boolean(limitError) && ticksNearConstraint && ticksCeasedAfterError;
   const verdict = {
     question: 'does maxSessionDuration cut a RUNNING session?',
     maxSessionDuration: PROBE_GRANT_SECONDS,
@@ -169,11 +205,14 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
     sessionEndedAtMs: observed.endedAtMs,
     lastGenerationTickSeconds: observed.lastTickSeconds,
     watchedForMs: WATCH_SECONDS * 1000,
+    limitErrorAtMs: limitError?.atMs ?? null,
+    lastTickAdvanceAtMs: observed.lastTickAdvanceAtMs ?? null,
+    ticksCeasedAfterError,
     verdict: enforced
-      ? 'ENFORCED — the running session was cut at the constraint'
-      : observed.endedAtMs === null
-        ? 'NOT ENFORCED at runtime — session outlived the constraint for the whole watch window'
-        : `ended at ${observed.endedAtMs}ms — outside the enforcement band; read the log`,
+      ? 'ENFORCED against generation — vendor stopped generating at the constraint and said so; connection may linger (treat the limit error as terminal)'
+      : observed.endedAtMs === null && !limitError
+        ? 'NOT ENFORCED at runtime — generation outlived the constraint for the whole watch window'
+        : 'ambiguous — read the log',
     ledgerSettle: settleOutcome,
     recordedAt: new Date().toISOString(),
     log: observed.log,

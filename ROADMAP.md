@@ -413,9 +413,17 @@ previously-flagged hole; none of them exists until it does:
    Decart's own session-scoped event token, designed to be browser-safe.
 
 `constraints.realtime.maxSessionDuration` remains a SECOND wall (defense in
-depth on any token we mint); the probe that checks whether it cuts a running
-session calibrates that layer, and its result can no longer weaken the
-primary enforcement. Lucy 2.5 is **720p fixed** (1280×720, WebRTC) — which
+depth on any token we mint) — **and the probe has calibrated it (3 Aug 2026,
+verdict in `devlog/SESSIONS.md`): ENFORCED at runtime, against generation.**
+At the constraint the vendor stops generating and emits `"Session duration
+limit reached"` (~2–3 s of granularity past the limit — reserve accounting
+must tolerate that margin until vendor-truth settle reconciles it). Two
+traps the probe surfaced for P2c's client: the SDK **auto-reconnects into a
+connected-but-not-generating zombie** after the limit — precisely the silent
+freeze this section forbids, so the limit error is TERMINAL and the client
+hard-stops with a visible reason; and enforcement announces itself in the
+error stream, not by connection death, so that error event is the signal to
+listen for. Lucy 2.5 is **720p fixed** (1280×720, WebRTC) — which
 makes the upscaling mandate below real rather than optional.
 
 ### P3 — A/V sync *(~1 week)*

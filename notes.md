@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 — PROBE VERDICT: wall #2 is REAL (#46 merged, #47)
+
+- **`maxSessionDuration` ENFORCED at runtime, against generation:** at the 30 s constraint Lucy stopped generating (+~2–3 s granularity), emitted `"Session duration limit reached"`, ticks froze — **billing bounded even if every server-side wall failed**. First metered vendor spend: $0.60, through our own ledger, settled clean.
+- **Two traps for P2c, both canonized:** enforcement announces itself in the ERROR stream (not connection death — my first classifier got this wrong and said "ambiguous" over a clean enforcement); and the SDK auto-reconnects into a connected-but-NOT-generating zombie after the limit — the exact silent freeze the canon forbids. The limit error is terminal; the client hard-stops with a visible reason.
+- Probe hardened by its own live run: secure-context origin (about:blank has no mediaDevices), model OBJECT via `models.realtime(id)`, fatal paths print their evidence. Refuse-to-conclude discipline earned its keep twice before the real verdict.
+- **Next: P2c** — white-label session routes, executioner alarm, vendor-truth settle; then video in the lens.
+
 ## 3 August 2026 — DRILL 9/10 + topology/upscaler/retail canon (#45)
 
 - **Scored voice drill: 9/10** (July: 8.7) — on the P1 session flow, post-DNS-fix. Sub-scores + analyzer report not provided; invited, gap named in the log.
