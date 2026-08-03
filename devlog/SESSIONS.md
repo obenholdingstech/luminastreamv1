@@ -4,6 +4,51 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 — SCORED VOICE DRILL: 9/10 — and the topology, upscaler, and retail canon land
+
+### The drill (CEO-run, logged same day per convention)
+
+**Overall: 9/10** — up from July's 8.7, and scored on a materially different
+system: the P1 session flow (server-allocated room and identity, slot held
+Start→Stop), post-DNS-fix, through the deployed lens. The first scored drill
+since the session layer, the release paths, and the two-agent pool shipped.
+
+**What this entry does NOT have, named rather than implied:** sub-scores
+(July carried clean 8 / latency-feel 8.3 / is-it-ME 8.5) and an analyzer
+report (`--capture-dir` + `analyze_capture.py`). The CEO reported the overall
+score in chat; if a capture exists, its report joins this entry when provided.
+The 29 Jul convention exists because a drill that lives only in chat becomes a
+hole — this one is logged the same day with exactly what is known.
+
+### Decisions taken (CEO, 3 Aug 2026) — now canon in ROADMAP.md
+
+1. **Topology approved:** control plane through the Worker (white-label
+   signaling, real key never leaves the server in any form), media plane
+   direct browser↔Decart. The ledger's reaper alarm becomes the executioner
+   (expired reservation → DELETE the vendor session by id); settle consumes
+   Decart's own billing summary — vendor-truth before wallets exist.
+   `maxSessionDuration` demoted to defense-in-depth; the probe calibrates it.
+2. **Upscaler approved:** client-side, staged — WebGL FSR-class in the studio
+   (P3), MetalFX in the native lens (P6), FHD/2K mandate; backend GPU
+   upscaling rejected (GPU-free doctrine, lip-sync, COGS). The render path is
+   a composable frame pipeline from day one.
+3. **Retail decoupling mandated:** the wallet's unit of account is retail
+   (Lumina Credits), vendor units convert via a rate table at settlement, raw
+   vendor summaries stored verbatim for audit, and — the enforceable part —
+   **a margin floor the ledger refuses to boot below**: retail rate below
+   declared COGS is fatal config, never silent. "Never sell compute at cost
+   by accident" became an invariant, not an intention.
+
+### Next
+
+The P2b probe build: `/api/video/token` (reserve-bound client token, one mint
+per reservation) + a Playwright probe that streams past a small
+`maxSessionDuration` and clocks whether Decart cuts a RUNNING session. ~$1–2,
+ledger-reserved. Then the white-label session routes (P2c) implementing the
+committed topology.
+
+---
+
 ## 3 August 2026 — P2a: the SpendLedger — the wall stands before the money exists (#43 merged)
 
 ### What shipped

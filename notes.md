@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 — DRILL 9/10 + topology/upscaler/retail canon (#45)
+
+- **Scored voice drill: 9/10** (July: 8.7) — on the P1 session flow, post-DNS-fix. Sub-scores + analyzer report not provided; invited, gap named in the log.
+- **CEO approvals canonized:** white-label topology (Worker control plane, direct media, reaper-as-executioner, billing-summary settle); client-side staged upscaler (WebGL→MetalFX, FHD/2K mandate, frame-pipeline constraint); **retail decoupling** — Lumina Credits as unit of account, rate table at settlement, raw vendor summaries stored verbatim, and a **margin floor the ledger refuses to boot below** (fatal config, never silent).
+- **Next: P2b probe** — reserve-bound client token route + Playwright probe of `maxSessionDuration` against a running session (~$1–2, ledger-reserved), then P2c white-label session routes.
+
 ## 3 August 2026 — P2a SHIPPED: the SpendLedger wall, live and drilled (#43 merged)
 
 - **The wall exists before the key does.** `/api/video/reserve|settle|budget|reset` + `SpendLedger` DO deployed (v2 migration); dev ceilings 180 s / 3000 s (~$60); reserve→settle = 2 DO requests per video session (O(1) with money attached); debit-on-reserve; abandonment reaps as spent.

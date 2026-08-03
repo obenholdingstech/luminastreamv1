@@ -361,6 +361,63 @@ contact with real money — nothing here is throwaway.
   an utterance is never truncated): stop cleanly with a visible reason, never a
   silent freeze.
 
+#### The committed topology *(verified against Decart's docs and CEO-approved, 3 Aug 2026)*
+
+**Control plane through the Worker; media plane direct.** Decart's white-label
+signaling path: our Worker creates and controls every session with the real
+key — which therefore never leaves the server in ANY form, not even ephemeral
+— while WebRTC media flows browser↔Decart directly ("media quality identical",
+control-only latency).
+
+**Status: committed design, not yet implemented.** What is LIVE today is P2a —
+reserve/settle bookkeeping, with settle taking a client-reported `usedSeconds`
+clamped to the grant, and a reaper that resolves ledger records only. The
+three consequences below are what **P2c builds**, each closing a
+previously-flagged hole; none of them exists until it does:
+
+1. **The ledger's reaper becomes the executioner** *(P2c)* — **server-
+   authoritative, vendor-executed**, and honest about the difference: the
+   Worker orders the kill, but only Decart can sever a direct media stream,
+   so a failed DELETE means media may keep flowing until a backstop bites.
+   Mechanics: reservations gain the Decart session id; the expiry alarm
+   issues an idempotent DELETE with a timeout and **bounded retries** (a
+   small constant R, each via alarm re-arm — so an overrun costs **at most
+   1+R alarms**, a constant, never a function of anything). If all retries
+   fail: the overrun is flagged for reconciliation, and exposure is BOUNDED
+   by the remaining walls — the token's `maxSessionDuration` (wall #2, the
+   probe calibrates it) and Decart's own inactivity/timeout auto-end. P2c
+   ships the bounded-exposure arithmetic alongside the code.
+
+   **The orphan seam, named:** Decart's create succeeds, and OUR write of the
+   session id fails — a live media session no alarm can name. P2c's required
+   ordering: mark the reservation `pending-create` durably **before** calling
+   Decart; write the id **before** the event token is released to the
+   browser; on a failed id-write, issue a **compensating DELETE immediately**
+   with the id still in hand. If even that fails, the expired `pending-create`
+   marker makes the orphan *visible* (the alarm flags what it cannot kill),
+   and a quota cross-check (`GET /v1/realtime/quota` showing more live vendor
+   sessions than id-bearing reservations) alerts on anything that slipped
+   every net. Exposure stays bounded by wall #2 and vendor auto-end; the
+   orphan can be silent about its bill, never about its existence.
+2. **Settle becomes vendor-truth** *(P2c)* — with the trust boundary explicit:
+   **the billing summary is only ever read by the Worker from Decart's own
+   response** (the Worker issues the DELETE, the summary arrives in that
+   server-to-server exchange). No browser-submitted `billingSummary`, usage
+   count, or raw-vendor field is EVER an accounting input — a client that
+   could report its own bill would report a small one. The browser may at most
+   say "end session X"; the Worker verifies X belongs to that session's
+   reservation, performs the vendor call itself, and accounts from what the
+   vendor returned. Client-reported usage survives only in dev-cap mode, as
+   today: a hint, clamped to the grant.
+3. **The spoofing surface collapses** *(P2c)*: the browser holds only
+   Decart's own session-scoped event token, designed to be browser-safe.
+
+`constraints.realtime.maxSessionDuration` remains a SECOND wall (defense in
+depth on any token we mint); the probe that checks whether it cuts a running
+session calibrates that layer, and its result can no longer weaken the
+primary enforcement. Lucy 2.5 is **720p fixed** (1280×720, WebRTC) — which
+makes the upscaling mandate below real rather than optional.
+
 ### P3 — A/V sync *(~1 week)*
 
 **Audio is the master clock.** Video buffers to match audio; audio never waits.
@@ -371,6 +428,22 @@ contact with real money — nothing here is throwaway.
   speech takes about as long to play as it took to say, so continuous talking
   accumulates a backlog that drains at pauses. A fixed delay either desyncs under
   load or adds permanent latency.
+
+**Upscaling mandate (CEO, 3 Aug 2026): enterprise-grade fidelity to FHD/2K,
+client-side, staged.** Lucy outputs 720p, period; crispness beyond that is our
+pipeline's job. Backend/edge GPU upscaling is **rejected** — it reintroduces a
+GPU server per stream (the architecture is deliberately GPU-free and
+stateless), inserts a network hop inside the video path directly against
+lip-sync, and at scale rivals the vendor's own fee. Client-side, the two goals
+stop competing: **WebGL spatial upscaling (FSR-class, <2 ms/frame) in the
+browser studio with this phase; Apple MetalFX spatial in the native lens
+(P6)**, publishing a crisp 1080p/1440p virtual camera while Decart bills 720p;
+WebGPU ML super-resolution kept open as a later upgrade.
+
+**The constraint that makes "day one" true:** the video render path is a
+composable frame pipeline — receive → align (this phase's elastic buffer) →
+upscale → present/publish — never a raw `<video>` element bolted to the
+screen. Costs nothing now; skipping it makes FHD a retrofit later.
 
 ### P4 — Identity & persistence *(~1½ weeks)*
 
@@ -394,6 +467,47 @@ set only after running costs are known, margins baked into credit pricing).
 The tier gates *features*; the wallet gates *usage*. Tier scope is a
 discussion for when this phase opens. The enforcement machinery is P2's
 `SpendLedger`, graduated from dev caps to wallets — same object, same paths.
+
+**Retail decoupling (CEO mandate, 3 Aug 2026): the ledger must inherently
+decouple raw vendor cost from the retail price deducted from the user — we
+never sell compute at cost by accident.** The design:
+
+- **The wallet's unit of account is retail** — Lumina Credits, whose fiat
+  purchase price bakes in margin — never a vendor unit. Vendor units (Decart
+  seconds, ElevenLabs characters/seconds, compute overhead) convert to
+  credits **at reserve**, through a configurable **rate table**, per meter.
+  Settlement converts nothing: it uses vendor-reported usage only to compute
+  the refund of unused reserved credits at the reservation's pinned rate, and
+  to store the raw summary for reconciliation. One conversion per unit of
+  usage, ever.
+- **The margin floor is an enforced invariant, not a hope:** configuration
+  declares both the estimated vendor COGS per unit and the retail rate per
+  unit, and the ledger REFUSES TO BOOT with any retail rate below the COGS
+  floor — fatal, never silent, exactly like every other malformed-config rule
+  in this codebase. Selling at cost requires a deliberate, reviewed config
+  change, not an oversight.
+- **Raw vendor billing summaries are stored verbatim alongside the retail
+  deduction** — reconciliation and audit (P8) read the vendor's number; the
+  user's wallet only ever sees retail.
+- **P2c builds the interface; P5 turns the rate table on.** Today's shipped
+  settle (P2a) carries `usedSeconds` only. P2c extends the payload, storage
+  schema, and tests to consume the vendor billing summary and carry raw-vendor
+  fields distinct from the deducted amount — so that P5 is a rate-table
+  change, not a refactor. Dev caps run at rate 1:1 (a second is a second)
+  until wallets exist.
+- **Rate-table mechanics, defined before anyone builds against them.** The
+  single unit of account is **credit-cents** (integer; no floats near money).
+  COGS floors and retail rates are both declared in credit-cents per vendor
+  unit, so the boot-time floor check compares like with like. **Conversion
+  happens at RESERVE** — the wallet is debited `grant × rate` up front, in
+  credits, consistent with P2a's debit-on-reserve — and the reservation
+  record **pins the rate-table version it converted under**. Settle refunds
+  `(granted − used) × the PINNED rate`, never the current one: the same usage
+  can never convert twice or under two prices, and a mid-session rate change
+  affects only reservations created after it. Rounding is house-favouring and
+  fixed: **ceil at debit, floor at refund.** Reconciliation (P8) re-derives
+  the deduction from the stored raw vendor summary and the pinned version;
+  any mismatch is an alert, not an adjustment.
 
 The 180 s / ~$60 caps that appear in older notes are **development** caps: a wall
 against a runaway loop burning the company's card during testing. They are not
