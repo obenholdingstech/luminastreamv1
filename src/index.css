@@ -127,3 +127,21 @@
 video::-webkit-media-controls {
   display: none !important;
 }
+/* Cinematic mode (the unified lens): while the transformed stream is the
+   background, the chrome recedes — visible enough to find, quiet enough to
+   ignore. Pointer or keyboard attention brings it back. The backdrop itself
+   is exempt: dimming the thing being watched would defeat the mode. */
+.cinematic-chrome > *:not(.lens-backdrop) {
+  opacity: 0.25;
+  transition: opacity 0.5s ease;
+}
+.cinematic-chrome:hover > *:not(.lens-backdrop),
+.cinematic-chrome:focus-within > *:not(.lens-backdrop) {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cinematic-chrome > *:not(.lens-backdrop) {
+    transition: none;
+  }
+}
