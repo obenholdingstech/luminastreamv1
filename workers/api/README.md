@@ -187,6 +187,14 @@ report its own bill would report a small one). Overage past the grant (~2–3 s
 of measured vendor granularity) is clamped for the dev meter and recorded on
 the settlement row, raw summary verbatim, for reconciliation.
 
+**A failed kill never settles.** Settling deletes the reservation, and the
+reservation is the executioner's ammunition — so `end` returns
+`vendor_delete_failed` and leaves the record for the alarm to retry. The
+create-path compensation is the mirror image: it cannot defer (the record is
+being destroyed either way), so an unkillable session settles **fully spent**
+and logs the orphan — refunding a stream that may still be running would pay
+for someone else's video.
+
 **The executioner:** an expired reservation carrying a session id gets its
 vendor session DELETEd by the reaper alarm — bounded retries
 (`1 + KILL_RETRIES` alarms per overrun, a constant), 404 counts as success

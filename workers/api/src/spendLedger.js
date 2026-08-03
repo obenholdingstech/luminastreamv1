@@ -312,11 +312,16 @@ export class SpendLedger {
       return;
     }
     // A pending kill deferred by the request-path sweep can be due in the
-    // past; clamp forward so nothing ever schedules an alarm at or before
-    // now. The alarm handler itself always moves nextKillAt forward or
-    // resolves the record, so this cannot loop.
-    const floor = this.now() + 1000;
-    if (next < floor) next = floor;
+    // past; clamp forward so nothing ever schedules an alarm at or before now.
+    // But ONLY when nothing is already pending in the future: recomputing the
+    // floor from now() on every sweep would rewrite the alarm on every budget
+    // read and push the kill a second further out each time — a read path
+    // that delays the executioner AND writes storage for the privilege.
+    const now = this.now();
+    if (next <= now) {
+      if (typeof current === 'number' && current > now) return; // already armed
+      next = now + 1000;
+    }
     if (current !== next) await this.storage.setAlarm(next);
   }
 
@@ -496,8 +501,11 @@ export class SpendLedger {
     const vendorSummary = body?.vendorSummary && typeof body.vendorSummary === 'object'
       ? body.vendorSummary
       : null;
+    // Clamped at zero: a negative or nonsense billed value must never become
+    // a refund larger than the grant. Vendor numbers are trusted over the
+    // client's, not over arithmetic.
     const billed = Number.isFinite(vendorSummary?.billedSeconds)
-      ? Math.ceil(vendorSummary.billedSeconds)
+      ? Math.max(0, Math.ceil(vendorSummary.billedSeconds))
       : null;
     // The vendor's number, clamped to the grant for the DEV meter (the
     // granularity overage is recorded on the settlement for reconciliation —

@@ -454,3 +454,122 @@ test('ORACLE white-label: a full session costs exactly 3 DO requests — create(
   assert.equal(h.counts().requests, 3, 'reserve + bind + settle, whatever the session length');
   assert.equal(h.counts().alarms, 0);
 });
+
+// ─── a failed kill must never destroy the executioner's ammunition ─────────
+
+test('end: a FAILED vendor delete does NOT settle — the reservation survives for the alarm', async (t) => {
+  const { env, h } = setup({ perSession: 30 });
+  const token = await adminToken(env);
+  let deleteAttempts = 0;
+  const vendor = stubVendor({
+    del: () => {
+      deleteAttempts += 1;
+      // Down for the user's end, and for every retry after it.
+      return new Response('{"error":"vendor down"}', { status: 503 });
+    },
+  });
+  t.after(vendor.restore);
+
+  const out = await (await createSession(env, token, { sdpOffer: 'v=0', requestedSeconds: 30 })).json();
+  const end = await worker.fetch(
+    req(`/api/video/session/${out.sessionId}/end`, { token, body: { controlToken: out.controlToken } }),
+    env,
+  );
+  assert.equal(end.status, 502);
+  assert.equal((await end.json()).error, 'vendor_delete_failed');
+
+  // The money is still held AND the record is still there — settling would
+  // have deleted the reservation and left a running session unowned.
+  const mid = await (await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env)).json();
+  assert.equal(mid.spentSeconds, 30, 'no refund for a session that may still run');
+  assert.equal(mid.openReservations, 1, "the executioner's ammunition survives");
+
+  // And the alarm inherits the kill, with its bounded retries.
+  await h.advanceBy((30 + SETTLE_SLACK_SECONDS + 300) * 1000);
+  assert.equal(deleteAttempts, 1 + 1 + KILL_RETRIES, 'the user end, then the bounded retry budget');
+  const rows = [...h.stored().entries()].filter(([k]) => k.startsWith('settlement:'));
+  assert.equal(rows[0][1].orphanFlag, true, 'flagged, never silent');
+});
+
+test('create: a compensating delete that FAILS settles fully spent, not zero', async (t) => {
+  // Refunding a session that may still be running pays for someone else's
+  // stream. The ledger record is about to be destroyed either way, so this is
+  // the last moment anyone can account for it.
+  const { env } = setup({ perSession: 40 });
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    del: () => new Response('{"error":"down"}', { status: 500 }),
+  });
+  t.after(vendor.restore);
+
+  const realGet = env.VIDEO_LEDGER.get.bind(env.VIDEO_LEDGER);
+  env.VIDEO_LEDGER = {
+    idFromName: env.VIDEO_LEDGER.idFromName.bind(env.VIDEO_LEDGER),
+    get(id) {
+      const stub = realGet(id);
+      return {
+        async fetch(request) {
+          if (new URL(request.url).pathname === '/bind') {
+            return new Response('{"ok":false,"error":"unknown_reservation"}', { status: 404 });
+          }
+          return stub.fetch(request);
+        },
+      };
+    },
+  };
+
+  const res = await createSession(env, token, { sdpOffer: 'v=0', requestedSeconds: 40 });
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, 'vendor_session_orphaned', 'named, not generic');
+
+  const budget = await (await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env)).json();
+  assert.equal(budget.spentSeconds, 40, 'an unkillable session is charged, not refunded');
+});
+
+test('a budget read does not push a pending kill further out', async (t) => {
+  const { env, h } = setup({ perSession: 30 });
+  const token = await adminToken(env);
+  const vendor = stubVendor();
+  t.after(vendor.restore);
+
+  await (await createSession(env, token, { sdpOffer: 'v=0', requestedSeconds: 30 })).json();
+  h.warpBy((30 + SETTLE_SLACK_SECONDS + 1) * 1000); // due, alarm not delivered
+
+  const first = await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env);
+  assert.equal(first.status, 200);
+  const armedAfterFirst = h.pendingAlarm();
+  assert.ok(armedAfterFirst > h.now(), 'the deferred kill is armed just ahead');
+
+  // Repeated reads WITHIN the armed window — the case that matters. A clamp
+  // recomputed from now() on every sweep would push the kill a second further
+  // out on each read and write storage for the privilege.
+  h.warpBy(200);
+  await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env);
+  h.warpBy(200);
+  await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env);
+
+  assert.equal(
+    h.pendingAlarm(),
+    armedAfterFirst,
+    'repeated reads must not rewrite the alarm and delay the executioner',
+  );
+});
+
+test('a negative vendor billed value cannot become an over-refund', async (t) => {
+  const { env } = setup({ perSession: 30 });
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    del: () => new Response(JSON.stringify({ billedSeconds: -100 }), { status: 200 }),
+  });
+  t.after(vendor.restore);
+
+  const out = await (await createSession(env, token, { sdpOffer: 'v=0', requestedSeconds: 30 })).json();
+  const settled = await (await worker.fetch(
+    req(`/api/video/session/${out.sessionId}/end`, { token, body: { controlToken: out.controlToken } }),
+    env,
+  )).json();
+  assert.equal(settled.usedSeconds, 0);
+  assert.equal(settled.refundedSeconds, 30, 'refund is bounded by the grant, never more');
+  const budget = await (await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env)).json();
+  assert.equal(budget.spentSeconds, 0, 'and never negative');
+});

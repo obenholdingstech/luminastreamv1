@@ -725,16 +725,33 @@ async function handleVideoSession(request, env, origin) {
     );
   } catch (err) {
     console.error('white-label session create failed', err);
-    // Compensating DELETE with the id in hand, then the hold goes back.
+    // Compensating DELETE with the id in hand — and its RESULT decides what
+    // the money does. Refunding a session that may still be running would pay
+    // for someone else's stream: a failed kill settles FULLY SPENT and logs
+    // the orphan, because the ledger record is about to be destroyed either
+    // way and this is the last moment anyone can account for it.
+    let killed = decartSessionId === null; // nothing to kill = nothing running
     if (decartSessionId) {
-      await decartFetch(env, `/v1/realtime/sessions/${decartSessionId}`, { method: 'DELETE' }).catch(() => {});
+      const delRes = await decartFetch(env, `/v1/realtime/sessions/${decartSessionId}`, {
+        method: 'DELETE',
+      }).catch(() => null);
+      killed = Boolean(delRes && (delRes.ok || delRes.status === 404));
+      if (!killed) {
+        console.error(
+          'ORPHAN: vendor session survived its compensating delete',
+          JSON.stringify({ decartSessionId, reservationId: reserved.reservationId }),
+        );
+      }
     }
     await callLedger(env, '/settle', {
       reservationId: reserved.reservationId,
       settleToken: reserved.settleToken,
-      usedSeconds: 0,
+      usedSeconds: killed ? 0 : reserved.grantedSeconds,
     });
-    return json({ ok: false, error: 'vendor_session_failed' }, { status: 502, origin });
+    return json(
+      { ok: false, error: killed ? 'vendor_session_failed' : 'vendor_session_orphaned' },
+      { status: 502, origin },
+    );
   }
 }
 
@@ -773,7 +790,25 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
     // summary, and the ledger hears OUR copy of Decart's answer — never the
     // browser's opinion of it.
     const res = await decartFetch(env, `/v1/realtime/sessions/${sid}`, { method: 'DELETE' }).catch(() => null);
-    const summary = res ? await res.json().catch(() => null) : null;
+    const killed = Boolean(res && (res.ok || res.status === 404));
+
+    // A FAILED kill must not settle. Settling deletes the reservation, and
+    // the reservation is the executioner's ammunition — destroying it here
+    // would leave a running vendor session with no server-side owner, which
+    // is precisely the orphan this whole ordering exists to prevent. Leave
+    // the record; the alarm inherits the kill with its bounded retries.
+    if (!killed) {
+      console.error(
+        'end: vendor delete failed — deferring to the executioner',
+        JSON.stringify({ decartSessionId: sid, status: res?.status ?? null }),
+      );
+      return json(
+        { ok: false, error: 'vendor_delete_failed', vendorDeleteStatus: res?.status ?? null },
+        { status: 502, origin },
+      );
+    }
+
+    const summary = await res.json().catch(() => null);
     const settleRes = await callLedger(env, '/settle-by-session', {
       decartSessionId: sid,
       vendorSummary: summary,
@@ -783,10 +818,7 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
     if (!settled?.ok) {
       return json({ ok: false, error: 'session_end_failed' }, { status: 502, origin });
     }
-    return json(
-      { ok: true, ...settled, vendorDeleteStatus: res?.status ?? null },
-      { origin },
-    );
+    return json({ ok: true, ...settled, vendorDeleteStatus: res.status }, { origin });
   }
 
   return json({ ok: false, error: 'not_found' }, { status: 404, origin });
