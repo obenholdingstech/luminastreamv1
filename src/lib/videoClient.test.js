@@ -65,11 +65,18 @@ test('every named refusal gets prose, never the raw code', async () => {
     'some_future_code',
   ]) {
     stub(async () => json(503, { ok: false, error: code }));
-    await createVideoSession('t', { sdpOffer: 'o' }, BASE).catch((err) => {
-      assert.ok(!err.message.includes(code), `${code} leaked into the message`);
-      assert.match(err.message, /[a-z]{3,} [a-z]{2,}/i, `${code} does not read as English`);
-      assert.equal(err.code, code, 'the code stays available to callers');
-    });
+    // assert.rejects, NOT a bare .catch: assertions inside a catch that never
+    // runs are assertions that never execute — the test would pass with zero
+    // checks if the refusal ever stopped rejecting.
+    await assert.rejects(
+      () => createVideoSession('t', { sdpOffer: 'o' }, BASE),
+      (err) => {
+        assert.ok(!err.message.includes(code), `${code} leaked into the message`);
+        assert.match(err.message, /[a-z]{3,} [a-z]{2,}/i, `${code} does not read as English`);
+        assert.equal(err.code, code, 'the code stays available to callers');
+        return true;
+      },
+    );
   }
 });
 

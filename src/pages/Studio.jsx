@@ -562,11 +562,16 @@ export default function Studio() {
               <button
                 type="button"
                 onClick={() =>
-                  video.phase === VIDEO_PHASE.live ? video.stop() : video.start({})
+                  video.phase === VIDEO_PHASE.live || video.phase === VIDEO_PHASE.starting
+                    ? video.stop()
+                    : video.start({})
                 }
-                disabled={
-                  video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping
-                }
+                /* NEVER disabled while starting. The negotiator's start is
+                   cancel-safe (checkpoints after every await), so Stop must
+                   stay reachable — an unanswered camera prompt or a stalled
+                   vendor would otherwise leave a paid slot with no way to
+                   give it back. The Starlink lesson, with a vendor bill. */
+                disabled={video.phase === VIDEO_PHASE.stopping}
                 className="flex items-center gap-2 rounded-full px-5 py-2 text-[10px] tracking-[0.18em] uppercase border transition-colors disabled:opacity-50"
                 style={{
                   borderColor: video.phase === VIDEO_PHASE.live ? '#6366F1' : '#1A1A2E',
@@ -579,7 +584,9 @@ export default function Studio() {
                 ) : (
                   <Video size={11} />
                 )}
-                {video.phase === VIDEO_PHASE.live ? 'Stop video' : 'Add video'}
+                {video.phase === VIDEO_PHASE.live || video.phase === VIDEO_PHASE.starting
+                  ? 'Stop video'
+                  : 'Add video'}
               </button>
 
               {/* The fidelity readout says what the pipeline ACTUALLY

@@ -1,20 +1,18 @@
-// The video half of the lens: a peer connection to Decart, brokered by our
-// Worker.
+// The video leg of the lens: a thin React binding over videoNegotiator.js.
 //
-// Media is peer-to-peer with the vendor (ROADMAP §P2's committed topology), so
-// lip-sync pays no proxy tax; every control message goes through the Worker,
-// which holds the key. This hook owns the RTCPeerConnection lifecycle and
-// nothing else — the decisions about WHEN a session may exist live in the
-// Worker and the ledger, and the frame path lives in framePipeline.js.
+// Every lifecycle decision — offer/answer, ICE queueing, cancellation,
+// teardown, releasing a session that arrived for a page nobody is looking at
+// — lives in `src/lib/videoNegotiator.js`, where it can be tested without a
+// browser (AGENTS.md). What remains here is publishing that state into React
+// and owning the frame pipeline instance.
 //
 // The terminal-limit rule, measured by the probe on 3 Aug: at the constraint
-// Decart stops generating, says "Session duration limit reached", and the SDK
-// (and a bare RTCPeerConnection alike) may then sit CONNECTED while producing
-// nothing. That zombie is the silent freeze the canon forbids, so the limit
-// error is terminal here: we stop, we say why, and we do not let a
-// reconnection pretend the session survived.
+// Decart stops generating, says "Session duration limit reached", and may then
+// sit CONNECTED producing nothing. That zombie is the silent freeze the canon
+// forbids, so the limit error is terminal WHEREVER it surfaces — during the
+// negotiation or long after the session went live.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   createVideoSession,
@@ -25,6 +23,7 @@ import {
   setVideoPrompt,
 } from '@/lib/videoClient';
 import { createFramePipeline } from '@/lib/framePipeline';
+import { createVideoNegotiator, NEGOTIATION } from '@/lib/videoNegotiator';
 
 export const VIDEO_PHASE = {
   off: 'off',
@@ -35,20 +34,66 @@ export const VIDEO_PHASE = {
   error: 'error',
 };
 
+const PHASE_FROM_NEGOTIATION = {
+  [NEGOTIATION.idle]: VIDEO_PHASE.off,
+  [NEGOTIATION.media]: VIDEO_PHASE.starting,
+  [NEGOTIATION.offering]: VIDEO_PHASE.starting,
+  [NEGOTIATION.creating]: VIDEO_PHASE.starting,
+  [NEGOTIATION.answering]: VIDEO_PHASE.starting,
+  [NEGOTIATION.live]: VIDEO_PHASE.live,
+  [NEGOTIATION.stopped]: VIDEO_PHASE.off,
+};
+
 export function useLensVideo(adminToken) {
   const [phase, setPhase] = useState(VIDEO_PHASE.off);
   const [error, setError] = useState('');
   const [budget, setBudget] = useState(null);
   const [stream, setStream] = useState(null);
 
-  const pcRef = useRef(null);
-  const sessionRef = useRef(null);
-  const localRef = useRef(null);
   const mountedRef = useRef(true);
-  // One pipeline instance for the component's life: P3 swaps a stage in
-  // without this hook or the surface changing shape.
-  const pipelineRef = useRef(null);
-  if (!pipelineRef.current) pipelineRef.current = createFramePipeline();
+  // Terminal states must survive the negotiator's own phase reports: once the
+  // duration wall is hit, "stopped" would erase the reason from the screen.
+  const terminalRef = useRef(false);
+
+  // useMemo, not a ref written during render — React may replay or discard
+  // render work, and a mutation there can leak from UI that never commits.
+  const pipeline = useMemo(() => createFramePipeline(), []);
+
+  const negotiator = useMemo(
+    () =>
+      createVideoNegotiator({
+        PeerConnection: globalThis.RTCPeerConnection,
+        getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+        createSession: (args) => createVideoSession(adminToken, args),
+        endSession: (session) => endVideoSession(adminToken, session),
+        sendCandidates: (session, candidates) => sendCandidates(adminToken, session, candidates),
+        // Every remote frame enters through the pipeline — receive → align →
+        // upscale → present — even while the middle stages are inert.
+        onStream: (raw) => {
+          if (mountedRef.current) setStream(pipeline.run(raw).stream);
+        },
+        onPhase: (next) => {
+          if (mountedRef.current && !terminalRef.current) {
+            setPhase(PHASE_FROM_NEGOTIATION[next] ?? VIDEO_PHASE.off);
+          }
+        },
+        onFailure: (reason) => {
+          if (!mountedRef.current) return;
+          // A failure AFTER live is where the duration wall shows up in the
+          // wild — the start() catch cannot see it, and treating it as a
+          // generic error would invite a retry into a zombie.
+          if (isDurationLimitError(reason)) {
+            terminalRef.current = true;
+            setError('the session reached its time limit');
+            setPhase(VIDEO_PHASE.limited);
+          } else {
+            setError(reason);
+            setPhase(VIDEO_PHASE.error);
+          }
+        },
+      }),
+    [adminToken, pipeline],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -57,167 +102,71 @@ export function useLensVideo(adminToken) {
     };
   }, []);
 
-  const teardown = useCallback(() => {
-    try {
-      pcRef.current?.close();
-    } catch {
-      // A close that throws must not stop the rest of the teardown.
-    }
-    pcRef.current = null;
-    localRef.current?.getTracks?.().forEach((t) => {
-      try {
-        t.stop();
-      } catch {
-        /* already stopped */
-      }
+  const refreshBudget = useCallback(() => {
+    readVideoBudget(adminToken).then((b) => {
+      if (mountedRef.current && b) setBudget(b);
     });
-    localRef.current = null;
-    setStream(null);
-  }, []);
-
-  /** Give the slot back. Best-effort like every release in this codebase. */
-  const stop = useCallback(async () => {
-    const session = sessionRef.current;
-    sessionRef.current = null;
-    if (mountedRef.current) setPhase(VIDEO_PHASE.stopping);
-    teardown();
-    if (!session) {
-      if (mountedRef.current) setPhase(VIDEO_PHASE.off);
-      return;
-    }
-    const result = await endVideoSession(adminToken, session);
-    if (!mountedRef.current) return;
-    // `deferred` means the vendor delete failed and the server kept the
-    // reservation for its executioner. Saying "stopped" would be the one lie
-    // this whole topology is built to avoid.
-    if (result.deferred) {
-      setError('closing — the server is still ending the session with the vendor');
-    }
-    setPhase(VIDEO_PHASE.off);
-    readVideoBudget(adminToken).then((b) => mountedRef.current && b && setBudget(b));
-  }, [adminToken, teardown]);
+  }, [adminToken]);
 
   const start = useCallback(
-    async (/** @type {{prompt?: string, requestedSeconds?: number}} */ { prompt, requestedSeconds } = {}) => {
-      if (phase === VIDEO_PHASE.starting || phase === VIDEO_PHASE.live) return;
-      setPhase(VIDEO_PHASE.starting);
+    async (/** @type {{prompt?: string, requestedSeconds?: number}} */ options = {}) => {
+      terminalRef.current = false;
       setError('');
-
-      let pc = null;
       try {
-        const local = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720 },
-          audio: false, // audio is the agent's job; this is the video leg only
-        });
-        localRef.current = local;
-
-        pc = new RTCPeerConnection();
-        pcRef.current = pc;
-        for (const track of local.getTracks()) pc.addTrack(track, local);
-
-        pc.ontrack = (event) => {
-          if (!mountedRef.current) return;
-          // Every remote frame enters through the pipeline — receive → align
-          // → upscale → present — even while the middle stages are inert.
-          // Bypassing it "just for now" is how FHD becomes a retrofit.
-          const frames = pipelineRef.current.run(event.streams[0] ?? null);
-          setStream(frames.stream);
-        };
-        pc.onconnectionstatechange = () => {
-          if (!mountedRef.current) return;
-          if (pc.connectionState === 'failed') {
-            setError('the video connection failed');
-            setPhase(VIDEO_PHASE.error);
-            teardown();
-          }
-        };
-
-        const offer = await pc.createOffer({ offerToReceiveVideo: true });
-        await pc.setLocalDescription(offer);
-
-        const session = await createVideoSession(adminToken, {
-          sdpOffer: offer.sdp ?? '',
-          requestedSeconds,
-          prompt,
-        });
-        // Record BEFORE any await that could interleave with an unmount —
-        // the sessionHolder lesson: a slot that arrives for a page nobody is
-        // looking at still has to be given back.
-        sessionRef.current = { ...session, etag: session.vendor?.etag };
-
+        const session = await negotiator.start(options);
         if (!mountedRef.current) {
-          await endVideoSession(adminToken, sessionRef.current);
-          sessionRef.current = null;
-          teardown();
+          // Arrived for a page nobody is looking at — the sessionHolder
+          // lesson, and here it costs vendor money per second.
+          if (session) await negotiator.stop();
           return;
         }
-
-        const answer = session.vendor?.sdpAnswer;
-        if (!answer) throw new Error('the server returned no answer');
-        await pc.setRemoteDescription({ type: 'answer', sdp: answer });
-
-        pc.onicecandidate = (event) => {
-          // null candidate = end-of-candidates, which the vendor expects.
-          sendCandidates(adminToken, sessionRef.current, event.candidate ? [event.candidate] : null);
-        };
-
-        if (mountedRef.current) {
-          setPhase(VIDEO_PHASE.live);
-          readVideoBudget(adminToken).then((b) => mountedRef.current && b && setBudget(b));
-        }
+        if (session) refreshBudget();
       } catch (err) {
-        if (!mountedRef.current) {
-          if (sessionRef.current) await endVideoSession(adminToken, sessionRef.current);
-          sessionRef.current = null;
-          teardown();
-          return;
-        }
-        // The vendor's duration wall is TERMINAL — never a retry, never a
-        // reconnect into a session that generates nothing.
+        if (!mountedRef.current) return;
         if (isDurationLimitError(err)) {
+          terminalRef.current = true;
           setError('the session reached its time limit');
           setPhase(VIDEO_PHASE.limited);
         } else {
           setError(err?.message || 'could not start video');
           setPhase(VIDEO_PHASE.error);
         }
-        teardown();
-        if (sessionRef.current) {
-          await endVideoSession(adminToken, sessionRef.current);
-          sessionRef.current = null;
-        }
       }
     },
-    [adminToken, phase, teardown],
+    [negotiator, refreshBudget],
   );
+
+  const stop = useCallback(async () => {
+    terminalRef.current = false;
+    if (mountedRef.current) setPhase(VIDEO_PHASE.stopping);
+    const result = await negotiator.stop();
+    if (!mountedRef.current) return;
+    // `deferred` means the vendor delete failed and the server kept the
+    // reservation for its executioner. Saying "stopped" would be the one lie
+    // this whole topology exists to avoid.
+    setError(result?.deferred ? 'closing — the server is still ending the session' : '');
+    setPhase(VIDEO_PHASE.off);
+    refreshBudget();
+  }, [negotiator, refreshBudget]);
 
   const updatePrompt = useCallback(
-    (prompt) => setVideoPrompt(adminToken, sessionRef.current, prompt),
-    [adminToken],
+    (prompt) => setVideoPrompt(adminToken, negotiator.session, prompt),
+    [adminToken, negotiator],
   );
 
-  // Leaving the page releases the vendor session, same discipline as the
-  // audio slot: the executioner alarm is a backstop, not an operation.
+  // Leaving the page releases the vendor session — the executioner alarm is a
+  // backstop, not an operation.
   useEffect(() => {
     const release = () => {
-      if (sessionRef.current) endVideoSession(adminToken, sessionRef.current);
+      if (negotiator.session) endVideoSession(adminToken, negotiator.session);
     };
     globalThis.addEventListener?.('pagehide', release);
     return () => {
       globalThis.removeEventListener?.('pagehide', release);
       release();
-      teardown();
+      negotiator.stop();
     };
-  }, [adminToken, teardown]);
+  }, [adminToken, negotiator]);
 
-  return {
-    phase,
-    error,
-    budget,
-    stream,
-    pipeline: pipelineRef.current,
-    start,
-    stop,
-    updatePrompt,
-  };
+  return { phase, error, budget, stream, pipeline, start, stop, updatePrompt };
 }
