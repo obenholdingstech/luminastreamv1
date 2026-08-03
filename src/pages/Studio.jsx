@@ -13,7 +13,8 @@ import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
 import { shouldToggleCleanView } from '@/lib/cleanView';
-import { createAutoStartLatch } from '@/lib/unifiedLens';
+import { createAutoStartLatch, createVoicePreference } from '@/lib/unifiedLens';
+import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -214,6 +215,38 @@ export default function Studio() {
   const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
   const voiceLabels = voiceMeta?.choice_labels ?? {};
 
+  // Pre-start identity (CEO directive, 3 Aug evening): the voice is chosen
+  // BEFORE the lens starts. The selector is populated from the agent's live
+  // broadcast when there is one, else from the committed manifest (a capture
+  // of that same broadcast) — and the choice persists across visits, then
+  // keys in the moment the agent confirms the session (the latch below,
+  // tested in src/lib/unifiedLens.js). The agent stays the source of truth:
+  // its broadcast overrides the manifest, and its confirmation is what the
+  // connected selector displays.
+  const [chosenVoice, setChosenVoice] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem('lens-voice-choice') || null;
+    } catch {
+      return null; // sandboxed/privacy contexts throw on READ too
+    }
+  });
+  const chooseVoice = useCallback((voiceId) => {
+    setChosenVoice(voiceId);
+    try {
+      globalThis.localStorage?.setItem('lens-voice-choice', voiceId);
+    } catch {
+      /* private mode — the choice still holds for this visit */
+    }
+  }, []);
+  const liveVoiceList = voiceChoices.length > 0;
+  const effectiveVoiceChoices = liveVoiceList
+    ? voiceChoices
+    : voiceManifest.voices.map((v) => v.id);
+  const effectiveVoiceLabels = liveVoiceList
+    ? voiceLabels
+    : Object.fromEntries(voiceManifest.voices.map((v) => [v.id, v.label]));
+  const [voicePref] = useState(() => createVoicePreference());
+
   const voiceSelector = useMemo(
     () => createVoiceSelector({ publish: requestAgentConfig }),
     [requestAgentConfig],
@@ -409,6 +442,25 @@ export default function Studio() {
   }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt]);
 
   const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
+
+  // The pre-start voice choice keys in the moment the agent confirms the
+  // session — once, and never against a choice the agent already holds.
+  useEffect(() => {
+    // Gated on the CONFIRMED converted mode — the selector hides under
+    // Direct because voice changes are unsupported there, and the latch must
+    // not do behind the curtain what the UI refuses to offer in front of it.
+    if (
+      agentMode === agentModeFor('converted') &&
+      voicePref.shouldApply({
+        sessionId: allocation?.identity ?? null,
+        connected: isConnected,
+        chosen: chosenVoice,
+        confirmedVoice,
+      })
+    ) {
+      requestVoice(chosenVoice);
+    }
+  }, [allocation, isConnected, chosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
   const status = useMemo(
@@ -741,7 +793,16 @@ export default function Studio() {
             has not agreed to), and the <select> shows the agent-confirmed
             voice — a pending request is a labeled message, never the value.
             Same honesty rule as the mode toggle above. */}
-        {isConnected && agentMode === agentModeFor('converted') && voiceChoices.length > 0 && (
+        {/* Voice selection — PRE-START FIRST (CEO directive): pick before the
+            lens starts, from the agent's live list when connected or the
+            committed manifest before that. Connected, the value shown is the
+            agent-CONFIRMED voice (the mode toggle's honesty rule); before
+            the lens starts it is the stored choice, labeled as such. Hidden
+            only when the agent has confirmed Direct — a voice selector there
+            would promise what the mode cannot do. */}
+        {adminToken &&
+          effectiveVoiceChoices.length > 0 &&
+          !(isConnected && agentMode && agentMode !== agentModeFor('converted')) && (
           <div className="mt-4 flex flex-col items-center gap-1">
             <div className="flex items-center gap-2">
               <label
@@ -752,17 +813,25 @@ export default function Studio() {
               </label>
               <select
                 id="lens-voice"
-                value={confirmedVoice ?? ''}
-                onChange={(e) => requestVoice(e.target.value)}
+                value={isConnected && confirmedVoice ? confirmedVoice : (chosenVoice ?? confirmedVoice ?? '')}
+                onChange={(e) => {
+                  chooseVoice(e.target.value);
+                  if (isConnected) requestVoice(e.target.value);
+                }}
                 className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
               >
-                {voiceChoices.map((id) => (
+                {effectiveVoiceChoices.map((id) => (
                   <option key={id} value={id} className="bg-[#08080F]">
-                    {voiceLabels[id] ?? id}
+                    {effectiveVoiceLabels[id] ?? id}
                   </option>
                 ))}
               </select>
             </div>
+            {!isConnected && chosenVoice && (
+              <span className="text-[9px] text-[#3E4A5F]">
+                applies when the lens starts
+              </span>
+            )}
             {voiceSel.requested && (
               <span className="text-[9px] text-[#F59E0B]">
                 Requested {voiceLabels[voiceSel.requested] ?? voiceSel.requested} — waiting for

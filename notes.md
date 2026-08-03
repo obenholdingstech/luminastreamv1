@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 (night) — halt-and-fix done; unified lens + pre-start identity shipped
+
+- **Triage:** agent = template instance down (primary was up 23h — check EVERY unit); "502" = **Decart 422 Insufficient credits** (now 402 vendor_credits_exhausted, honest prose; top-up = her wall); mic indicator = camera behind split buttons (no leak — instrumented).
+- **#60:** ONE Start-the-Lens button (video auto-starts once/session, latch-tested), unified Stop, cinematic mode (stream becomes background, chrome recedes, H = raw), degrade-to-voice.
+- **This PR:** pre-start identity — 31-voice manifest (captured from agent broadcast), persistent choice, applies at agent-confirm via latch; voice+avatar+prompt all configured BEFORE Start.
+- **Blocked on her:** Decart top-up (video pixels), P3 acceptance drill (ears).
+
 ## 3 August 2026 (evening) — mandate discharged: render PROVEN, Clean View live, P3 A/V sync built
 
 - **Blank render: five stacked causes.** #55 ([null] sentinel + SSE return path/P2e), #56 (typecheck escape — ritual fixed), #57 (**root cause: Lucy generates nothing on a promptless/imageless session, while billing** — Worker now injects a neutral identity default). Render probe **PASS, billed 0s**.
