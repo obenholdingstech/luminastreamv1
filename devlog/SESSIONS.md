@@ -4,6 +4,60 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 — THE PROBE VERDICT: maxSessionDuration is ENFORCED — against generation (#46 merged, #47)
+
+### The experiment (the project's first metered vendor spend)
+
+`npm run probe:decart`, against production, through our own wall: a 30-second
+reservation ($0.60 at the verified $0.02/s), a fake-camera Chromium page on
+`studio.luminastream.live`, Lucy 2.5 connected with a client token constrained
+to `maxSessionDuration: 30`, watched to 75 s. Settled honestly (`usedSeconds:
+30`, clamped), ledger left clean. Full verdict + event log:
+`test-results/decart-probe.json`, key events reproduced here per convention:
+
+| t (wall) | event |
+|---|---|
+| 5.7 s | connected, model `lucy-2.5` |
+| 6.1 s | state `generating`; ticks climb 0 → 26 |
+| **39.1 s** | **`sdkError: "Session duration limit reached"`** (~33 generated s vs the 30 s constraint) |
+| 39.1 s | SDK auto-reconnect: `reconnecting` → `connected`, new remote stream |
+| 46–75 s | **ticks frozen at 32 — no further generation, no further billing** |
+| 75.8 s | our watch window closes; we disconnect |
+
+### The verdict
+
+**ENFORCED at runtime, against GENERATION** — with three findings P2c builds on:
+
+1. **The money stops at the constraint** (+~2–3 s of vendor granularity).
+   Wall #2 is real: even if our executioner alarm and its retries all failed,
+   a constrained token bounds the burn. Reserve accounting tolerates the
+   granularity margin until vendor-truth settle reconciles it.
+2. **Enforcement announces itself in the error stream, not by connection
+   death.** The first classifier looked for the connection dying and returned
+   "ambiguous" while the log showed a clean enforcement — the client (and the
+   probe, now fixed) must listen for the limit error, not the hangup.
+3. **The zombie-reconnect trap:** the SDK auto-reconnects after the limit into
+   a connected-but-not-generating session — exactly the "silent freeze" the
+   canon forbids the user ever seeing. The limit error is TERMINAL; P2c's
+   client hard-stops with a visible reason.
+
+### Instrumentation lessons (three live-run fixes, each its own commit)
+
+`about:blank` has no `navigator.mediaDevices` — the probe now runs in our own
+deployed origin, the same one P2c will use. The SDK takes a model OBJECT
+(`models.realtime(id)`), not a string — every candidate id "failed" until the
+shape was right, and the probe's refuse-to-conclude discipline (a probe that
+cannot hear must not conclude) is what kept those from becoming verdicts. And
+the fatal path now prints its event log — evidence trapped inside the page is
+no evidence.
+
+### Money
+
+Reserved 30 s, generated ~32 s (vendor granularity), settled 30 s. Dev budget:
+30/3000 s consumed ≈ $0.60. The wall metered its own calibration.
+
+---
+
 ## 3 August 2026 — SCORED VOICE DRILL: 9/10 — and the topology, upscaler, and retail canon land
 
 ### The drill (CEO-run, logged same day per convention)
