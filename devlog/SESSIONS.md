@@ -82,7 +82,7 @@ from — a stub whose shapes have no citation is asserting my imagination.
 
 ### Act two: the live verification caught what the dialect fix could not (#51)
 
-#50 merged (CodeRabbit: 2 findings, both accepted — resolved-refusal
+PR #50 merged (CodeRabbit: 2 findings, both accepted — resolved-refusal
 observability + fail-closed on a missing create ETag — both confirmed ✅ by
 the bot) and deployed. The $0 live verification then did its job twice over:
 **create 201'd — and the vendor DELETE answered 401.** Tested live:
@@ -158,7 +158,7 @@ orphan flag, debit stands. ~$3.60 of tuition. 2730s (~$55) remain.
 
 ### Act five: shipping the directives
 
-#52 (avatar + live prompt): CodeRabbit found 2 — an honesty bug (the UI
+PR #52 (avatar + live prompt): CodeRabbit found 2 — an honesty bug (the UI
 said "Avatar set" even when the live swap was refused, and "clear" during
 a stream cleared only local state while the vendor kept animating the old
 identity) and a missing accessible name on the prompt input. Both accepted,
@@ -187,9 +187,9 @@ draft.**
 
 ### Files (all four PRs)
 
-#50/#51: `workers/api/src/{index,spendLedger,crypto}.js` (+tests),
+PR #50/#51: `workers/api/src/{index,spendLedger,crypto}.js` (+tests),
 `src/lib/{videoNegotiator,videoClient}.js` (+tests)
-#52: those plus `src/hooks/useLensVideo.js`, `src/pages/Studio.jsx`
+PR #52: those plus `src/hooks/useLensVideo.js`, `src/pages/Studio.jsx`
 this PR: `src/pages/Studio.jsx`, `devlog/SESSIONS.md`, `notes.md`
 
 ## 3 August 2026 (overnight) — P2c + P2d: the topology implemented, video in the lens (#48 merged, #49)
