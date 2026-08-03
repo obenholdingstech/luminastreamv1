@@ -4,6 +4,194 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 — the CEO's drill finds the invented dialect (#50)
+
+### Task (verbatim)
+
+> "Live Video Drill Error (HTTP 502) & Feature Alignment — I ran the live
+> drill on studio.luminastream.live, but clicking ADD VIDEO failed with a
+> runtime error ... Reference Avatar Upload: I expect this phase to support
+> uploading a reference avatar image/video so the output stream transforms
+> into the selected reference identity. Voice Cloning & Voice Selection: Per
+> our roadmap, voice cloning and user voice selection need to be integrated
+> into this stage so users can select their cloned voice for the session.
+> Please resolve the 502 error so I can complete the live drill."
+
+### What the 502 was
+
+Her first click on *Add video* was the first time the white-label create path
+ever spoke to the real vendor — and Decart answered **HTTP 400,
+"body.sdp: Field required"**. The adapter (#47) was coded against field names
+I invented, and `whitelabel.test.js`'s vendor stub spoke that same invented
+dialect back to the code: 17 green tests around a Worker whose first real
+vendor call was a 400. The probe (#45) could not have caught it — it used
+Decart's SDK, which speaks the real dialect internally.
+
+### Diagnosis, for $0
+
+`wrangler tail` + a scripted reproduction (fake SDP through the production
+Worker; a failed create settles its own hold at zero). The vendor's error body
+named the missing field outright; a constrained client token (the P2b path)
+let me iterate the create shape directly against the live API. One real 201
+exchange settled at zero taught the whole response contract:
+
+- offer travels as `sdp: {type:'offer', sdp}` — not `sdpOffer`
+- response is snake_case: `session_id`; the answer is at `sdp.sdp`
+- the ICE ETag is a **rotating response header**, required as `If-Match` on
+  every PATCH — not an optional body field
+- `events: {url, event_token, expires_at}` is the SSE leg (P2e's input)
+- DELETE's billing summary field is `billed_seconds` — the ledger's camelCase
+  read treated every real summary as unusable and would have silently settled
+  every clean stop as FULLY SPENT (over-charge, never under — but wrong)
+
+One test session was orphaned by my own cleanup script reading the id at the
+invented field name — 60s-constrained, zero generation, self-expired at
+13:00Z. Poetic: the bug ate the bug-hunter's teardown too.
+
+### The fix (#50)
+
+Worker create sends the real dialect and lifts the ETag header into the vendor
+passthrough; the candidates route returns each PATCH's rotated ETag; the
+negotiator **serializes** ICE sends and chains the rotation (concurrent sends
+would 412 against a rotated If-Match — a new discrimination test breaks the
+chain and fails); candidates are mapped to exactly the three documented fields
+(browser `toJSON()` adds `usernameFragment`, and the far end validates
+strictly); the ledger reads `billed_seconds`.
+
+The vendor stub is now a **contract fixture** mirroring the verified live
+shapes (201 + ETag header, 204 PATCH + rotated ETag, snake_case DELETE
+summary), with a header comment saying why. Mutation-tested: reverting the id
+parse alone fails 16 of 17.
+
+### The lesson (a new one, worth the name)
+
+**A mock you invented is a mirror, not a wall.** Every prior test-blindness in
+this project was a test asserting less than its name; this one was a test
+asserting against a fantasy. The fixture rule going forward: any stub that
+stands in for a vendor must cite the doc or live exchange its shapes came
+from — a stub whose shapes have no citation is asserting my imagination.
+
+### Scope asks (answered in chat, decided here)
+
+- **Reference avatar**: native Lucy 2.5 capability (`image_data` at create,
+  `POST /{id}/image` mid-session; JPEG/PNG/WebP; images only — video
+  references are not a vendor capability). Next PR.
+- **Voice cloning/selection**: per-session voice **selection** is an agent
+  parameter and can land as a console knob; self-serve **cloning** requires
+  user accounts + consent + wallet (P4) — sequenced there.
+
+### Act two: the live verification caught what the dialect fix could not (#51)
+
+#50 merged (CodeRabbit: 2 findings, both accepted — resolved-refusal
+observability + fail-closed on a missing create ETag — both confirmed ✅ by
+the bot) and deployed. The $0 live verification then did its job twice over:
+**create 201'd — and the vendor DELETE answered 401.** Tested live:
+
+> Decart accepts session control (ICE PATCH, prompt, DELETE) **only from the
+> client token that created the session.** The raw account key is refused;
+> the creating token gets 200 + billing summary (`reason: client_ended`).
+
+Blast radius of the wrong assumption: the end path, both compensating
+deletes, every executioner kill, and ICE candidate delivery — the CEO's
+drill would have failed to connect even with the dialect fix.
+
+The design answer keeps every canon intact (#51):
+- the control token carries the vendor token **sealed** (AES-256-GCM, key
+  derived from ADMIN_SESSION_SECRET + purpose label): the browser transports
+  ciphertext it cannot open, control ops stay zero-DO-cost, O(1) stays 3,
+  and the constrained token still never leaves the Worker in usable form;
+- bind persists the vendor token in the ledger record — the alarm has no
+  request to unseal from, so the executioner carries its own credential;
+- mint expiresIn 120 → grantedSeconds+300: the token is the session's only
+  control credential for life, so it must outlive settle + retries;
+- the contract fixture enforces the 401 rule, so every control/end/kill test
+  now discriminates on credential choice.
+
+The reservation stranded by the failed end resolved EXACTLY as designed:
+kills bounced 401, bounded retries exhausted, orphan-flagged settlement,
+debit stood. openReservations 0; spent 90/3000 (probe 30 + orphan 60).
+
+### Act three: the drill gate opens
+
+CodeRabbit #50: 2 findings, both accepted (resolved-refusal observability;
+fail-closed on a create without an ETag), both confirmed ✅ by the bot.
+CodeRabbit #51: full review, zero findings. Both merged; Worker deploys
+green. **Live create+END verification: PASS** — create 200 (session id,
+control token, answer, etag), end 200 with vendor DELETE 200 and
+vendor-truth settle (60s refunded), budget byte-identical before/after,
+zero open reservations. The drill is unblocked.
+
+Budget note for the record: spent moved 90 → 270 during the fix window.
+The shape matches one 180s reservation reaped fully-spent — almost
+certainly an Add-video retry landing between #50 (create works) and #51
+(control works), where ICE couldn't flow and the tab closed on a bound
+session. The ledger did exactly what it promises: bounded kill retries,
+orphan flag, debit stands. ~$3.60 of tuition. 2730s (~$55) remain.
+
+### Act four: the CEO's feature directives (same message as the 502)
+
+- **Reference avatar (image only — she confirmed the video mention was a
+  misstatement) + realtime prompting** → #52: Worker create takes
+  `imageData` (normalized, refused before any hold), new `image` control
+  action (mid-session identity swap, sealed creating token, zero DO
+  cost), `setVideoImage`/`updateImage` plumbing, Studio avatar picker +
+  live prompt field with Apply. 171 frontend + 167 worker green.
+- **Voice selection dropdown on the studio page** → the discovery of the
+  night: the ENGINE ALREADY HAS IT. `knobs.py` has a dynamic `voice`
+  enum; `convert_agent._switch_voice` validates against the account's
+  live voices; `agent_config` broadcasts choices + labels; the hook
+  already ships `requestAgentConfig` and `refreshVoices`. Stage 1 built
+  the whole machine and only the console ever surfaced it. The studio
+  dropdown is a pure UI addition — next PR.
+- **Voice cloning**: aligned at P4 (Identity & Persistence), her words.
+
+### Verification
+
+- #50: mutations (un-serialize chain; camelCase id parse → 16/17 fail).
+- #51: mutations (control ops on raw key → 7 fail; executioner on raw
+  key → 4 fail); seal/unseal unit tests (roundtrip, fresh IV,
+  tamper/wrong-secret/wrong-purpose → null).
+- Live: create+end $0 verification PASS (above); same-token DELETE 200
+  with billing summary; raw-key DELETE 401 (twice, independently).
+- #52: refuse-before-reserve asserts ZERO ledger requests for a bad
+  upload; mid-session swap proven against the fixture's 401 rule.
+
+### Act five: shipping the directives
+
+#52 (avatar + live prompt): CodeRabbit found 2 — an honesty bug (the UI
+said "Avatar set" even when the live swap was refused, and "clear" during
+a stream cleared only local state while the vendor kept animating the old
+identity) and a missing accessible name on the prompt input. Both accepted,
+fixed, confirmed ✅, merged, Worker+Pages deploys green. The avatar and
+live restyle prompt are LIVE on the studio page.
+
+Voice selection (this PR): the Studio dropdown wired to the existing
+machine — value is the agent-CONFIRMED voice, a pending request is named
+as pending (the mode toggle's rule), a rejection shows the agent's own
+reason. Rendered only when the agent's CONFIRMED mode is convert: Direct
+passes the real voice through, and a selector there would promise what
+the mode cannot do.
+
+CodeRabbit then caught the project's recurring mistake a THIRD time: the
+request lifecycle was a state machine living in Studio.jsx — same tell
+as sessionHolder (P1b) and videoNegotiator (P2d): no test file beside
+it — and, as both times before, the extraction surfaced real bugs the
+component version shipped: a stale rejection could resolve a fresh
+request; a failed/throwing publish left a pending state nothing could
+clear; re-selecting the confirmed voice re-armed an abandoned request;
+visibility keyed on the REQUESTED lens mode. All four accepted →
+`src/lib/voiceSelection.js` (+7 tests, stale-rejection guard
+mutation-tested). Three strikes makes it doctrine, not coincidence:
+**if UI state has a lifecycle, it is a lib with a test, from the first
+draft.**
+
+### Files (all four PRs)
+
+#50/#51: `workers/api/src/{index,spendLedger,crypto}.js` (+tests),
+`src/lib/{videoNegotiator,videoClient}.js` (+tests)
+#52: those plus `src/hooks/useLensVideo.js`, `src/pages/Studio.jsx`
+this PR: `src/pages/Studio.jsx`, `devlog/SESSIONS.md`, `notes.md`
+
 ## 3 August 2026 (overnight) — P2c + P2d: the topology implemented, video in the lens (#48 merged, #49)
 
 ### Task (verbatim)

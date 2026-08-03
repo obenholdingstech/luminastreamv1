@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 3 August 2026 — CEO's first video drill 502 → two live-API contract fixes → drill UNBLOCKED; avatar + live prompt + voice dropdown shipped
+
+- **Her 502 (#50):** the white-label adapter spoke field names I invented; the test stub spoke them back. Real contract (verified live, $0): `sdp:{type,sdp}` object, snake_case `session_id`, answer at `sdp.sdp`, ICE ETag = rotating HEADER required as If-Match (sends now SERIALIZED with rotation chained), DELETE summary = `billed_seconds`. Stub → contract fixture; new lesson: **a mock you invented is a mirror, not a wall** — vendor stubs must cite the doc/live exchange their shapes came from.
+- **The live verify then caught #51:** Decart accepts session control ONLY from the CREATING client token (raw key → 401). Fix: token sealed (AES-GCM) inside the control token (browser carries ciphertext, control stays zero-DO), persisted in the ledger record for the executioner, mint expiresIn = grant+300.
+- **Live create+END verification: PASS.** Drill unblocked. Budget 2730s (~$55); ~180s lost to a retry in the between-fixes window, reaped honestly (orphan-flagged, by design).
+- **#52:** reference avatar (image only, ≤3.5MB, refused before any hold) + realtime restyle prompt ("change cloth to blue") — both ride create AND work mid-stream. Deployed.
+- **Voice dropdown (this PR):** Stage 1 already built voice switching end-to-end (dynamic `voice` knob, `_switch_voice`, broadcast choices); only the console surfaced it. Studio now has the dropdown — confirmed-vs-requested honest, convert-confirmed only. CodeRabbit caught lifecycle-logic-in-a-component a THIRD time → extracted to `src/lib/voiceSelection.js` (+7 tests); new doctrine: **UI state with a lifecycle is a lib with a test, from the first draft.** Voice CLONING stays P4 (CEO aligned).
+- **Next:** CEO runs the drill (face + avatar through Lucy, logged same-day); P2e SSE consumer; P3 A/V sync + WebGL upscale.
+
 ## 3 August 2026 (overnight) — P2c MERGED + P2d (#49): topology implemented, video in the lens
 
 - **P2c live:** white-label create (reserve → constrained token → vendor session → bind → respond), stateless control (ICE/prompts cost ZERO DO requests), vendor-truth settle, executioner with bounded retries. **3 DO requests per video session**, any length. Verified in production.

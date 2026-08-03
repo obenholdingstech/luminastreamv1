@@ -325,19 +325,23 @@ export function useLiveKitVoice(url, token) {
     }
   }, [readAppliedConstraints]);
 
-  // Request tuning-knob changes. Fire-and-forget like requestAgentMode: the
-  // Tuning card only updates its confirmed badges when the agent broadcasts
-  // agent_config back (the agent is the source of truth)
+  // Request tuning-knob changes. The confirmed state only ever comes from the
+  // agent's own broadcast (the agent is the source of truth) — but the SEND
+  // outcome is returned, because a caller holding a "pending" state needs to
+  // know when nothing was actually sent: a pending that nothing can resolve
+  // is a stuck state (CodeRabbit #53).
   const requestAgentConfig = useCallback(async (params) => {
     const activeRoom = roomRef.current;
-    if (!activeRoom || !params) return;
+    if (!activeRoom || !params) return false;
     try {
       await activeRoom.localParticipant.publishData(
         new TextEncoder().encode(JSON.stringify({ type: 'set_config', params })),
         { reliable: true },
       );
+      return true;
     } catch (_e) {
       // transient publish failure — the user can adjust again
+      return false;
     }
   }, []);
 

@@ -11,6 +11,7 @@ import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
 import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
+import { createVoiceSelector } from '@/lib/voiceSelection';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -164,6 +165,8 @@ export default function Studio() {
     disconnect,
     enableAudio,
     requestAgentMode,
+    agentConfig,
+    requestAgentConfig,
   } = useLiveKitVoice(url, token);
 
   // ── access ────────────────────────────────────────────────────────────
@@ -196,6 +199,50 @@ export default function Studio() {
   const unlocking = held.phase === PHASE.starting;
 
   const [lensMode, setLensMode] = useState('converted');
+
+  // ── voice selection (CEO directive, 3 Aug 2026) ───────────────────────
+  // The machine lives in the agent (dynamic `voice` knob, validated by
+  // _switch_voice, broadcast via agent_config) and the request lifecycle
+  // lives in src/lib/voiceSelection.js where it is tested — confirmation,
+  // rejection-tied-to-its-request, failed sends, disconnect. What remains
+  // here is wiring and rendering, per AGENTS.md. The browser never holds
+  // the vendor key; ids and labels arrive in the agent's own broadcast.
+  const confirmedVoice = agentConfig?.config?.voice ?? null;
+  const voiceMeta = agentConfig?.metadata?.voice ?? null;
+  const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
+  const voiceLabels = voiceMeta?.choice_labels ?? {};
+
+  const voiceSelector = useMemo(
+    () => createVoiceSelector({ publish: requestAgentConfig }),
+    [requestAgentConfig],
+  );
+  const [voiceSel, setVoiceSel] = useState({ requested: null, rejection: null });
+
+  // Every NEW broadcast is offered to the selector — which is what ties a
+  // rejection to the request that produced it: snapshots from before the
+  // request were consumed before it existed.
+  useEffect(() => {
+    if (agentConfig) {
+      voiceSelector.onBroadcast(agentConfig);
+      setVoiceSel(voiceSelector.snapshot());
+    }
+  }, [agentConfig, voiceSelector]);
+
+  const requestVoice = useCallback(
+    async (voiceId) => {
+      await voiceSelector.request(voiceId, agentConfig?.config?.voice ?? null);
+      setVoiceSel(voiceSelector.snapshot());
+    },
+    [voiceSelector, agentConfig],
+  );
+
+  // Disconnect leaves no pending question — there is no agent to answer it.
+  useEffect(() => {
+    if (connectionState !== ConnectionState.Connected) {
+      voiceSelector.reset();
+      setVoiceSel(voiceSelector.snapshot());
+    }
+  }, [connectionState, voiceSelector]);
 
   // ── the video leg (P2d) ───────────────────────────────────────────────
   // Independent of the audio session on purpose: video is metered separately
@@ -595,6 +642,49 @@ export default function Studio() {
             </span>
           )}
         </p>
+
+        {/* Voice selection. Visibility and value are both CONFIRMED state:
+            shown only when the agent's confirmed mode is convert (a selector
+            during a Direct-confirmed transition would promise what the agent
+            has not agreed to), and the <select> shows the agent-confirmed
+            voice — a pending request is a labeled message, never the value.
+            Same honesty rule as the mode toggle above. */}
+        {isConnected && agentMode === agentModeFor('converted') && voiceChoices.length > 0 && (
+          <div className="mt-4 flex flex-col items-center gap-1">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="lens-voice"
+                className="text-[9px] tracking-[0.18em] uppercase text-[#4A5568]"
+              >
+                Voice
+              </label>
+              <select
+                id="lens-voice"
+                value={confirmedVoice ?? ''}
+                onChange={(e) => requestVoice(e.target.value)}
+                className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
+              >
+                {voiceChoices.map((id) => (
+                  <option key={id} value={id} className="bg-[#08080F]">
+                    {voiceLabels[id] ?? id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {voiceSel.requested && (
+              <span className="text-[9px] text-[#F59E0B]">
+                Requested {voiceLabels[voiceSel.requested] ?? voiceSel.requested} — waiting for
+                the agent to confirm.
+              </span>
+            )}
+            {!voiceSel.requested && voiceSel.rejection && (
+              <span role="alert" className="text-[9px] text-[#F59E0B]">
+                the agent kept {voiceLabels[confirmedVoice] ?? 'its voice'} —{' '}
+                {voiceSel.rejection.reason}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* The video leg. Rendered behind the ring so the lens stays the
             subject and the transformed face sits inside it — and NEVER as a
