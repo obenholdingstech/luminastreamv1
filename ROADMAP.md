@@ -323,9 +323,32 @@ contact with real money — nothing here is throwaway.
   second of video is a Durable Object awake for the whole stream, breaking the
   very cost rule this project measured. Design: **reserve → settle**. One
   request reserves a bounded window (≤ session cap, ≤ remaining total); one
-  request settles actual usage at session end; the vendor credential's own
-  expiry is the wall-clock backstop. Two DO requests per video session,
-  independent of its length.
+  request settles actual usage at session end. Two DO requests per video
+  session, independent of its length.
+- **The reservation lifecycle is idempotent and self-cleaning.** Reservation
+  ids are server-generated; reserve and settle are idempotent transitions
+  (a retried settle is a no-op, a settle can never exceed its reserve, a
+  guessed id buys nothing — the settle credential is random and hashed at
+  rest). A reservation debits the balance ON RESERVE; an unsettled one is
+  reclaimed by a **demand-driven alarm at the earliest expiry** (the registry's
+  reaper pattern, same O(1) discipline), resolving **conservatively as fully
+  spent** — dev caps protect the company's card, and in wallet mode a
+  too-cautious hold is correctable against vendor-reported usage at P5
+  reconciliation (support path via P8), while a too-generous release is money
+  gone. Abandonment can therefore never wedge the ledger into false
+  zero-balance: expired holds resolve, they do not linger.
+- **Vendor-token honesty** (verified against Decart's docs, 3 Aug): short-lived
+  client tokens support origin/model restriction and `maxSessionDuration`, but
+  **token expiry does not terminate an already-running session**, and one-use
+  binding is not documented. So the enforcement chain is: each token is minted
+  **bound to exactly one reservation** (duplicate or concurrent issuance for
+  the same reservation refused, atomically, in the ledger); `maxSessionDuration`
+  is set from the granted seconds **if P2's verify-before-code step confirms it
+  caps a running session**; the client-side hard stop is UX, never authority.
+  **If verification shows a running session can outlive every server-side
+  bound, video authorization moves behind the Worker (proxy), and the
+  browser-direct path is abandoned** — the wall does not get weakened to fit
+  the vendor; the topology changes instead.
 - Two-layer control, mirroring the audio governor exactly: a console-adjustable
   session cap clamped by an **env-only ceiling the client can never breach**;
   malformed configuration is fatal, never a silent default.
@@ -372,7 +395,7 @@ The tier gates *features*; the wallet gates *usage*. Tier scope is a
 discussion for when this phase opens. The enforcement machinery is P2's
 `SpendLedger`, graduated from dev caps to wallets — same object, same paths.
 
-The 180 s / £60 caps that appear in older notes are **development** caps: a wall
+The 180 s / ~$60 caps that appear in older notes are **development** caps: a wall
 against a runaway loop burning the company's card during testing. They are not
 the production model. A user with a funded wallet streams as long as the wallet
 covers, and the wallet is debited against metered COGS.
@@ -479,8 +502,21 @@ exactly this:
 | stays identical | changes |
 |---|---|
 | stateless agents (parameters in, nothing local that matters) | where they run |
-| the room-pool registry (rooms in, sessions out) | rooms become **self-registered** by agents on start/exit, instead of static config |
+| the room-pool registry (rooms in, sessions out) | rooms become **registered by the orchestrator** on agent start/exit, instead of static config |
 | the O(1) session lifecycle | an orchestrator watches demand and spawns/kills agents |
+
+Registration survives crashes and partitions by putting **liveness where it
+already lives**: the orchestrator health-checks containers as its core job, so
+the orchestrator — not the agent — registers and deregisters rooms, on its own
+lifecycle events. Registration is idempotent (re-registering an existing room
+is a no-op); a crashed agent is deregistered by the same supervisor that
+noticed the crash; and self-registered rooms carry a coarse safety TTL
+(minutes, refreshed by orchestrator scale events — **never** by per-second
+heartbeats through the Durable Object, which §P1 rule 2 forbids) so a
+partitioned orchestrator's stale rooms age out instead of advertising capacity
+that no longer exists. Final mechanics are decided at this gate with the
+orchestrator in hand — the constraint that survives any choice: **stale
+capacity must expire without anything polling.**
 
 **How capacity grows, canonised** (the CEO's questions of 2 Aug, answered in
 order of execution):
