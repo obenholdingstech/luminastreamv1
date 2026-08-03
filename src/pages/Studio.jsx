@@ -12,6 +12,7 @@ import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
 import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
+import { shouldToggleCleanView } from '@/lib/cleanView';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -320,6 +321,46 @@ export default function Studio() {
     setPromptApplied(await video.updatePrompt(prompt));
   }, [livePrompt, video]);
 
+  // ── Clean View (CEO directive, 3 Aug 2026) ────────────────────────────
+  // Pressing H hides every piece of chrome, leaving only the raw video and
+  // the synced audio — the stream exactly as a third-party platform's viewer
+  // receives it. The toggle decision (typing guard, chords, auto-repeat)
+  // lives in src/lib/cleanView.js with its tests; this is just the listener
+  // and a second <video> painting the SAME MediaStream, full-frame and
+  // unmasked. The chrome underneath stays MOUNTED — hiding it must never
+  // disturb the session or silence the audio.
+  const [cleanView, setCleanView] = useState(false);
+  const cleanViewElRef = useRef(null);
+  const cleanViewRef = useRef(null);
+  const restoreFocusRef = useRef(null);
+  useEffect(() => {
+    const onKey = (event) => {
+      if (shouldToggleCleanView(event)) setCleanView((v) => !v);
+    };
+    globalThis.addEventListener?.('keydown', onKey);
+    return () => globalThis.removeEventListener?.('keydown', onKey);
+  }, []);
+  useEffect(() => {
+    if (cleanViewElRef.current) cleanViewElRef.current.srcObject = video.stream ?? null;
+  }, [video.stream, cleanView]);
+  // Hidden must mean INOPERABLE: without this, focus stays on an underlying
+  // button and Tab/Enter can press controls the overlay conceals — Stop,
+  // invisibly. The chrome goes inert, focus moves into the overlay, and the
+  // way back returns focus where it was.
+  useEffect(() => {
+    if (cleanView) {
+      restoreFocusRef.current = document.activeElement;
+      cleanViewRef.current?.focus();
+    } else if (restoreFocusRef.current instanceof HTMLElement) {
+      restoreFocusRef.current.focus();
+      restoreFocusRef.current = null;
+    }
+  }, [cleanView]);
+  // React 18 renders boolean `inert` unreliably; the empty-string spread is
+  // the documented workaround. Applied to header/main/footer — the overlay is
+  // their sibling, so it stays interactive.
+  const chromeInert = cleanView ? { inert: '' } : {};
+
   // Set when credentials arrive, cleared when the connect fires. See `start`.
   const [pendingConnect, setPendingConnect] = useState(false);
 
@@ -520,7 +561,7 @@ export default function Studio() {
         }}
       />
 
-      <header className="relative flex items-center justify-between px-6 sm:px-10 py-6">
+      <header {...chromeInert} className="relative flex items-center justify-between px-6 sm:px-10 py-6">
         <div className="flex items-baseline gap-3">
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/90">Lumina</span>
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/35">Stream</span>
@@ -534,7 +575,7 @@ export default function Studio() {
         </Link>
       </header>
 
-      <main className="relative flex-1 flex flex-col items-center justify-center px-6 pb-16">
+      <main {...chromeInert} className="relative flex-1 flex flex-col items-center justify-center px-6 pb-16">
         <Lens
           tone={status.tone}
           // status.id, not status.tone: 'waiting for the agent' shares the
@@ -1013,7 +1054,7 @@ export default function Studio() {
           allocated rather than what this tab decided. Blank until a slot is
           held — showing a stale room after Stop would name one somebody else
           may already be using. */}
-      <footer className="relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide">
+      <footer {...chromeInert} className="relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide">
         {allocation ? (
           <>
             Session <span className="font-mono text-[#4A5568]">{allocation.identity}</span> · room{' '}
@@ -1023,6 +1064,33 @@ export default function Studio() {
           <>No session — the server allocates a room when the lens starts</>
         )}
       </footer>
+
+      {/* Clean View: the raw output, nothing else. An opaque overlay ON TOP
+          of the (still-mounted) page, so audio keeps playing and the session
+          is untouched. No chrome by design — H is the only way in or out,
+          and the sr-only line tells assistive tech what happened and how to
+          return. The video is full-frame and unmasked: what a third-party
+          platform's viewer would receive, not the lens's ring treatment. */}
+      {cleanView && (
+        <div
+          ref={cleanViewRef}
+          tabIndex={-1}
+          className="fixed inset-0 z-50 bg-black flex items-center justify-center outline-none"
+        >
+          <span className="sr-only" role="status">
+            Clean view: interface hidden. Press H to restore the controls.
+          </span>
+          {video.stream ? (
+            <video
+              ref={cleanViewElRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-contain"
+            />
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
