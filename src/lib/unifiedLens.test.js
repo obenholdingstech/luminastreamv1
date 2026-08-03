@@ -41,3 +41,48 @@ test('a NEW session fires again; reset clears the memory', () => {
   latch.reset();
   assert.equal(latch.shouldStart(ready({ sessionId: 'sess-2' })), true, 'reset forgets');
 });
+
+// ─── the pre-start voice choice ────────────────────────────────────────────
+
+import { createVoicePreference } from './unifiedLens.js';
+
+const voiceState = (over = {}) => ({
+  sessionId: 'sess-1',
+  connected: true,
+  chosen: 'voice-b',
+  confirmedVoice: 'voice-a',
+  ...over,
+});
+
+test('the chosen voice applies once per session, after the agent has spoken', () => {
+  const pref = createVoicePreference();
+  assert.equal(pref.shouldApply(voiceState({ confirmedVoice: null })), false, 'no broadcast yet — wait');
+  assert.equal(pref.shouldApply(voiceState()), true, 'agent spoke, choice differs — apply');
+  assert.equal(pref.shouldApply(voiceState()), false, 'never twice for one session');
+});
+
+test('a choice the agent already confirmed sends nothing — and stays sent', () => {
+  const pref = createVoicePreference();
+  assert.equal(pref.shouldApply(voiceState({ chosen: 'voice-a' })), false, 'already true');
+  assert.equal(
+    pref.shouldApply(voiceState({ chosen: 'voice-a' })),
+    false,
+    'and the latch consumed the session — no late fire if state wobbles',
+  );
+});
+
+test('a new session applies again; reset forgets', () => {
+  const pref = createVoicePreference();
+  assert.equal(pref.shouldApply(voiceState()), true);
+  assert.equal(pref.shouldApply(voiceState({ sessionId: 'sess-2' })), true);
+  pref.reset();
+  assert.equal(pref.shouldApply(voiceState({ sessionId: 'sess-2' })), true);
+});
+
+test('nothing applies without a session, a connection, or a choice', () => {
+  const pref = createVoicePreference();
+  assert.equal(pref.shouldApply(voiceState({ sessionId: null })), false);
+  assert.equal(pref.shouldApply(voiceState({ connected: false })), false);
+  assert.equal(pref.shouldApply(voiceState({ chosen: null })), false);
+  assert.equal(pref.shouldApply(voiceState()), true, 'refusals did not consume the latch');
+});

@@ -32,3 +32,36 @@ export function createAutoStartLatch() {
     },
   };
 }
+
+// The pre-start voice choice (CEO directive, 3 Aug evening): the user picks
+// a voice BEFORE the lens starts, and the choice keys in the moment the
+// agent is there to hear it. Same shape of problem as the video auto-start
+// — apply exactly once per session, never fight the agent's confirmed state,
+// never re-fire on a re-render — so it gets the same latch treatment.
+export function createVoicePreference() {
+  let appliedFor = null;
+
+  return {
+    /**
+     * Should the chosen voice be requested NOW? Latches on yes.
+     * @param {{ sessionId: string|null|undefined, connected: boolean, chosen: string|null|undefined, confirmedVoice: string|null|undefined }} state
+     */
+    shouldApply({ sessionId, connected, chosen, confirmedVoice }) {
+      if (!sessionId || !connected || !chosen) return false;
+      if (appliedFor === sessionId) return false; // once per session
+      // The agent has not spoken yet — wait for its broadcast, or the
+      // request would race the agent's own startup voice resolution.
+      if (!confirmedVoice) return false;
+      if (chosen === confirmedVoice) {
+        appliedFor = sessionId; // already true; nothing to send, ever
+        return false;
+      }
+      appliedFor = sessionId;
+      return true;
+    },
+
+    reset() {
+      appliedFor = null;
+    },
+  };
+}

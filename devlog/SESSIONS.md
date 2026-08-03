@@ -4,6 +4,52 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 3 August 2026 (night) — halt-and-fix triage, the unified lens, pre-start identity
+
+### Her halt mandate, resolved item by item
+
+- **Agent offline** → her hands revived it; the log then showed the PRIMARY
+  had been up 23h — the casualty was the template instance, and my
+  crash-loop theory was only half right. Lesson: "agent offline" can be one
+  instance of several; check every unit, not the first status line.
+- **"502 still here"** → live tail: Decart **422 Insufficient credits** —
+  the account balance, not the proxy. Now surfaces as
+  vendor_credits_exhausted / HTTP 402 with prose; our meter untouched.
+  Top-up is her spend wall.
+- **Mic stays on** → instrumented run: NO track leak (mic ends on Stop).
+  The indicator was the CAMERA behind the split buttons. Fixed
+  structurally by the unified lens.
+- **Voice dropdown "missing"** → renders from the agent broadcast; the
+  agent was down. Returns with it — and pre-start selection now removes
+  the dependency entirely (below).
+
+### The unified lens (#60, merged + deployed)
+
+ONE button. Start the Lens opens audio; on connection the video leg
+auto-starts — once per session (createAutoStartLatch: re-renders never
+double-bill, explicit stops are never overridden). Stop ends everything.
+CINEMATIC mode: video live → the stream becomes the background (700ms
+fade, mask off) and the chrome recedes to 25%, returning on attention;
+H still gives the raw Clean View. Review: stacking context (isolate) +
+prefers-reduced-motion, both accepted and confirmed. Video failure
+degrades to voice with the reason on screen — never blocks.
+
+### Pre-start identity (this PR — her UX directive verbatim: configure
+### first, then Start keys everything in)
+
+- src/lib/voiceManifest.json: the account's 31 voices (21 premade, 10
+  cloned), captured from the agent's own broadcast in one connection.
+  The AGENT's live broadcast always overrides; ids are unusable without
+  the key.
+- The voice selector shows before start (manifest ?? broadcast), the
+  choice persists (localStorage), and createVoicePreference applies it
+  the moment the agent confirms — once per session, never against a
+  choice the agent already holds, never before the agent has spoken
+  (4 new tests). Connected, the selector still shows CONFIRMED truth.
+- Avatar + prompt already rode the create; with #60's auto-start the
+  full flow is: open → pick voice/avatar/style → Start the Lens →
+  everything keys in.
+
 ## 3 August 2026 (evening) — the 5-hour mandate: render proven, Clean View, P3 A/V sync
 
 ### Task (verbatim, key parts)
