@@ -139,3 +139,9 @@ video::-webkit-media-controls {
 .cinematic-chrome:focus-within > *:not(.lens-backdrop) {
   opacity: 1;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .cinematic-chrome > *:not(.lens-backdrop) {
+    transition: none;
+  }
+}

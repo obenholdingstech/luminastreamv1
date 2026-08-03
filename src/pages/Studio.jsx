@@ -608,7 +608,7 @@ export default function Studio() {
 
       <header
         {...chromeInert}
-        className={`relative flex items-center justify-between px-6 sm:px-10 py-6 transition-opacity duration-500 ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
+        className={`relative flex items-center justify-between px-6 sm:px-10 py-6 transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
       >
         <div className="flex items-baseline gap-3">
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/90">Lumina</span>
@@ -625,7 +625,7 @@ export default function Studio() {
 
       <main
         {...chromeInert}
-        className={`relative flex-1 flex flex-col items-center justify-center px-6 pb-16 ${cinematic ? 'cinematic-chrome' : ''}`}
+        className={`relative isolate flex-1 flex flex-col items-center justify-center px-6 pb-16 ${cinematic ? 'cinematic-chrome' : ''}`}
       >
         <Lens
           tone={status.tone}
@@ -789,13 +789,13 @@ export default function Studio() {
               autoPlay
               playsInline
               muted
-              className={`w-full h-full object-cover transition-opacity duration-700 ${
+              className={`w-full h-full object-cover transition-opacity duration-700 motion-reduce:transition-none ${
                 cinematic ? 'opacity-100' : 'opacity-40'
               }`}
             />
             <div
               aria-hidden
-              className="absolute inset-0 transition-opacity duration-700"
+              className="absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none"
               style={{
                 background:
                   'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
@@ -1088,7 +1088,7 @@ export default function Studio() {
           may already be using. */}
       <footer
         {...chromeInert}
-        className={`relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
+        className={`relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
       >
         {allocation ? (
           <>
