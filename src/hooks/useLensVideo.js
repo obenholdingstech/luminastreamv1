@@ -20,6 +20,7 @@ import {
   isDurationLimitError,
   readVideoBudget,
   sendCandidates,
+  setVideoImage,
   setVideoPrompt,
 } from '@/lib/videoClient';
 import { createFramePipeline } from '@/lib/framePipeline';
@@ -154,6 +155,13 @@ export function useLensVideo(adminToken) {
     [adminToken, negotiator],
   );
 
+  // Mid-session identity swap: the new reference is animated without
+  // reconnecting, so it costs no negotiation and no new reservation.
+  const updateImage = useCallback(
+    (imageData, prompt) => setVideoImage(adminToken, negotiator.session, imageData, prompt),
+    [adminToken, negotiator],
+  );
+
   // Leaving the page releases the vendor session — the executioner alarm is a
   // backstop, not an operation.
   useEffect(() => {
@@ -168,5 +176,5 @@ export function useLensVideo(adminToken) {
     };
   }, [adminToken, negotiator]);
 
-  return { phase, error, budget, stream, pipeline, start, stop, updatePrompt };
+  return { phase, error, budget, stream, pipeline, start, stop, updatePrompt, updateImage };
 }

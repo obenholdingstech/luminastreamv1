@@ -207,6 +207,51 @@ export default function Studio() {
     if (videoElRef.current) videoElRef.current.srcObject = video.stream ?? null;
   }, [video.stream]);
   const fidelity = video.pipeline.describe();
+
+  // ── the reference avatar + live prompt (CEO directive, 3 Aug 2026) ────
+  // Presentation state only — the work lives in videoClient/videoNegotiator.
+  // The avatar is a static identity image Lucy animates with the camera feed;
+  // the prompt can restyle it MID-STREAM ("change cloth to blue") without
+  // reconnecting, so neither costs a new reservation.
+  const [avatar, setAvatar] = useState(null); // { dataUrl, name } | null
+  const [avatarError, setAvatarError] = useState('');
+  const [livePrompt, setLivePrompt] = useState('');
+  const [promptApplied, setPromptApplied] = useState(false);
+  const avatarInputRef = useRef(null);
+
+  const onAvatarPicked = useCallback(
+    (file) => {
+      setAvatarError('');
+      if (!file) return;
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        setAvatarError('use a JPEG, PNG, or WebP image');
+        return;
+      }
+      // The vendor wants the reference under ~5 MB as base64; 3.5 MB of file
+      // inflates to just under that. Refused here so a too-big pick is a
+      // message, never a failed session start.
+      if (file.size > 3.5 * 1024 * 1024) {
+        setAvatarError('keep the image under 3.5 MB');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? '');
+        setAvatar({ dataUrl, name: file.name });
+        // Already streaming: swap the identity live, no restart.
+        if (video.phase === VIDEO_PHASE.live) video.updateImage(dataUrl);
+      };
+      reader.readAsDataURL(file);
+    },
+    [video],
+  );
+
+  const applyPrompt = useCallback(async () => {
+    const prompt = livePrompt.trim();
+    if (!prompt || video.phase !== VIDEO_PHASE.live) return;
+    setPromptApplied(await video.updatePrompt(prompt));
+  }, [livePrompt, video]);
+
   // Set when credentials arrive, cleared when the connect fires. See `start`.
   const [pendingConnect, setPendingConnect] = useState(false);
 
@@ -564,7 +609,10 @@ export default function Studio() {
                 onClick={() =>
                   video.phase === VIDEO_PHASE.live || video.phase === VIDEO_PHASE.starting
                     ? video.stop()
-                    : video.start({})
+                    : video.start({
+                        ...(avatar ? { imageData: avatar.dataUrl } : {}),
+                        ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
+                      })
                 }
                 /* NEVER disabled while starting. The negotiator's start is
                    cancel-safe (checkpoints after every await), so Stop must
@@ -600,6 +648,76 @@ export default function Studio() {
                 </span>
               )}
             </div>
+
+            {/* Identity controls: the reference avatar and the live prompt.
+                Both work BEFORE start (they ride the create) and DURING the
+                stream (identity swap / restyle without reconnecting). */}
+            <div className="w-full flex items-center gap-2">
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  onAvatarPicked(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => avatarInputRef.current?.click()}
+                className="flex items-center gap-1.5 shrink-0 rounded-full px-3 py-1.5 text-[9px] tracking-[0.14em] uppercase border border-[#1A1A2E] text-[#64748B] transition-colors hover:text-[#A5B4FC]"
+                title={avatar ? `reference: ${avatar.name}` : 'upload a reference avatar image'}
+              >
+                {avatar ? (
+                  <img
+                    src={avatar.dataUrl}
+                    alt=""
+                    className="w-4 h-4 rounded-full object-cover"
+                  />
+                ) : (
+                  <Video size={10} aria-hidden />
+                )}
+                {avatar ? 'Avatar set' : 'Avatar'}
+              </button>
+              {avatar && (
+                <button
+                  type="button"
+                  onClick={() => setAvatar(null)}
+                  className="shrink-0 text-[9px] uppercase tracking-[0.14em] text-[#4A5568] hover:text-[#F59E0B]"
+                >
+                  clear
+                </button>
+              )}
+              <input
+                type="text"
+                value={livePrompt}
+                onChange={(e) => {
+                  setLivePrompt(e.target.value);
+                  setPromptApplied(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') applyPrompt();
+                }}
+                placeholder='restyle live — e.g. "change cloth to blue"'
+                className="min-w-0 flex-1 bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:outline-none focus:border-[#6366F1]"
+              />
+              {video.phase === VIDEO_PHASE.live && (
+                <button
+                  type="button"
+                  onClick={applyPrompt}
+                  disabled={!livePrompt.trim()}
+                  className="shrink-0 rounded-full px-3 py-1.5 text-[9px] tracking-[0.14em] uppercase border border-[#1A1A2E] text-[#64748B] transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                >
+                  {promptApplied ? 'Applied' : 'Apply'}
+                </button>
+              )}
+            </div>
+            {avatarError && (
+              <p role="alert" className="text-[10px] text-[#F59E0B]">
+                {avatarError}
+              </p>
+            )}
 
             {video.budget && (
               <span className="text-[9px] text-[#3E4A5F] tabular-nums">
