@@ -304,7 +304,7 @@ test('token: ONE handler reserves AND mints — bound, constrained, budgeted', a
   assert.ok(!JSON.stringify(out).includes('vendor-key-under-test'), 'the raw key never leaves');
 
   // Still on the oracle budget: reserve is the one DO request.
-  assert.ok(h.counts().requests <= 1, 'token issuance costs ONE ledger request');
+  assert.equal(h.counts().requests, 1, 'token issuance costs exactly ONE ledger request');
 
   // And the hold is real.
   const b = await (await budgetHttp(env, token)).json();

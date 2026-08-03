@@ -523,6 +523,11 @@ const DECART_API_BASE = 'https://api.decart.ai';
 async function mintDecartClientToken(env, { grantedSeconds, reservationId }) {
   const res = await fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}/v1/client/tokens`, {
     method: 'POST',
+    // A vendor that hangs must not hang us. The hold is taken BEFORE this
+    // call (reserve → mint), so a stalled vendor would strand the hold until
+    // the caller's own fetch gave up. Ten seconds, then the catch path in
+    // handleVideoToken settles the hold back at zero use.
+    signal: AbortSignal.timeout(10_000),
     headers: { 'x-api-key': env.DECART_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       // Long enough to establish the WebRTC session, short enough that a

@@ -52,8 +52,14 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
   expect(grant.grantedSeconds).toBe(PROBE_GRANT_SECONDS);
 
   // ── the instrumented session, in a real browser with a fake camera ──
+  // Everything after the reserve runs under a finally that settles: a probe
+  // that crashes mid-watch must not leave its hold to the reaper — the wall
+  // meters its own probe, including the failed runs.
   await page.goto('about:blank');
-  const observed = await page.evaluate(
+  let observed = { fatal: 'probe crashed before observation', lastTickSeconds: 0, log: [] };
+  let settleOutcome = null;
+  try {
+  observed = await page.evaluate(
     async ({ clientToken, watchMs }) => {
       const log = [];
       const t0 = Date.now();
@@ -91,51 +97,66 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
       }
       if (!rt) return { fatal: 'no model id accepted', log };
 
-      try {
-        rt.on?.('connectionChange', (state) => {
-          mark('connectionChange', { state });
-          if (state === 'disconnected') ended = ended ?? Date.now() - t0;
-        });
-        rt.on?.('generationTick', (tick) => {
-          lastTickSeconds = tick?.seconds ?? lastTickSeconds;
-        });
-        rt.on?.('error', (err) =>
-          mark('sdkError', { message: String(err?.message ?? err).slice(0, 200) }),
-        );
-      } catch {
-        mark('listenerAttachFailed');
+      // A probe that cannot hear MUST NOT conclude. If the SDK exposes no
+      // listener surface, "observed nothing" would masquerade as "session
+      // never ended" — instrumentation failure laundered into a NOT-ENFORCED
+      // verdict. Fatal instead.
+      if (typeof rt.on !== 'function') {
+        try { rt.disconnect?.(); } catch {}
+        return { fatal: 'SDK session exposes no .on() — cannot instrument', log };
       }
+      rt.on('connectionChange', (state) => {
+        mark('connectionChange', { state });
+        if (state === 'disconnected') ended = ended ?? Date.now() - t0;
+      });
+      rt.on('generationTick', (tick) => {
+        lastTickSeconds = tick?.seconds ?? lastTickSeconds;
+      });
+      rt.on('error', (err) =>
+        mark('sdkError', { message: String(err?.message ?? err).slice(0, 200) }),
+      );
 
       // Watch. Either the session dies (enforced) or the window elapses.
+      // Tick progress is sampled sparsely (every 10 s) so the event log keeps
+      // its connection/error events instead of drowning them in samples —
+      // slice(-40) once discarded exactly the events the verdict reads.
       const deadline = t0 + watchMs;
+      let lastSampleAt = 0;
       while (Date.now() < deadline && ended === null) {
         await new Promise((r) => setTimeout(r, 1000));
-        mark('tickSample', { lastTickSeconds });
+        if (Date.now() - lastSampleAt >= 10_000) {
+          lastSampleAt = Date.now();
+          mark('tickSample', { lastTickSeconds });
+        }
       }
       try {
         rt.disconnect?.();
       } catch {}
-      return { modelUsed, endedAtMs: ended, lastTickSeconds, log: log.slice(-40) };
+      return { modelUsed, endedAtMs: ended, lastTickSeconds, log };
     },
     { clientToken: grant.clientToken, watchMs: WATCH_SECONDS * 1000 },
   );
 
-  // ── settle honestly with what was observed, then record the verdict ──
-  const used = Math.min(
-    Math.ceil(observed.lastTickSeconds ?? 0),
-    PROBE_GRANT_SECONDS,
-  );
-  await fetch(`${API}/api/video/settle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminRes.token },
-    body: JSON.stringify({
-      reservationId: grant.reservationId,
-      settleToken: grant.settleToken,
-      usedSeconds: used,
-    }),
-  });
+  } finally {
+    // ── settle honestly with what was observed — crash or not — and CHECK
+    // the response: an unverified settle could silently leave the hold to
+    // the reaper and the verdict would not say so.
+    const used = Math.min(Math.ceil(observed.lastTickSeconds ?? 0), PROBE_GRANT_SECONDS);
+    settleOutcome = await fetch(`${API}/api/video/settle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminRes.token },
+      body: JSON.stringify({
+        reservationId: grant.reservationId,
+        settleToken: grant.settleToken,
+        usedSeconds: used,
+      }),
+    })
+      .then(async (r) => ({ status: r.status, ...(await r.json()) }))
+      .catch((err) => ({ status: 0, ok: false, error: String(err).slice(0, 120) }));
+  }
 
   expect(observed.fatal, observed.fatal ?? '').toBeFalsy();
+  expect(settleOutcome?.ok, `settle must succeed: ${JSON.stringify(settleOutcome)}`).toBeTruthy();
 
   const enforced =
     observed.endedAtMs !== null &&
@@ -153,7 +174,7 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
       : observed.endedAtMs === null
         ? 'NOT ENFORCED at runtime — session outlived the constraint for the whole watch window'
         : `ended at ${observed.endedAtMs}ms — outside the enforcement band; read the log`,
-    settledUsedSeconds: used,
+    ledgerSettle: settleOutcome,
     recordedAt: new Date().toISOString(),
     log: observed.log,
   };
