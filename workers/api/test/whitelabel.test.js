@@ -296,9 +296,14 @@ test('create: a session ALWAYS has work to do — promptless gets the default, y
   assert.match(bare.body.prompt, /same person/, 'a promptless session gets the neutral default');
 
   vendor.calls.length = 0;
-  await createSession(env, token, { sdpOffer: 'v=0 offer', prompt: 'anime style' });
+  await createSession(env, token, {
+    sdpOffer: 'v=0 offer',
+    prompt: 'anime style',
+    imageData: 'data:image/png;base64,aGVsbG8=',
+  });
   const prompted = vendor.calls.find((c) => c.url.endsWith('/v1/realtime/sessions'));
   assert.equal(prompted.body.prompt, 'anime style', "the user's prompt is never overridden");
+  assert.equal(prompted.body.image_data, 'aGVsbG8=', 'and it rides BESIDE a reference, not instead of one');
 
   vendor.calls.length = 0;
   await createSession(env, token, {
