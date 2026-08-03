@@ -86,6 +86,22 @@ Three tested modules + wiring:
 - Wiring: useLensVideo mounts the stage; Studio feeds
   utterances[0].tail_latency_ms; readout gains "· a/v synced".
 
+### The rate-limit incident (CEO-found, evening)
+
+Her live attempt failed at "Opening the lens": LiveKit's signal endpoints
+answered 429 across every region. Cause: the day's validation volume —
+suites, probes, and visual runs, each opening real rooms — consumed the
+SHARED LiveKit project's connection-rate budget, and her attempt landed
+inside the cooldown. Her failed attempts also wedged BOTH registry slots
+(live 2/2), which would have turned into "at capacity" after the 429s
+cleared. Reset released them; a single gentle retest connected in 6.4s.
+
+**New doctrine: production tests share the CEO's connection budget.**
+E2E suites and probes against production are single-shot instruments,
+never run back-to-back; any failed browser run is followed by a session
+reset; and heavy validation belongs on a staging LiveKit project (the
+staging-agent → E2E-in-CI item just became load-bearing).
+
 ### Budget
 
 ~1530s spent by day's end (~$31) + one open reservation from a failed
