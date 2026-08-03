@@ -252,3 +252,106 @@ test('reset through the API zeroes the meter (dev-card re-arm)', async () => {
   assert.equal(h.pendingAlarm(), null);
   assert.equal((await reserveHttp(env, token)).status, 200, 'usable immediately');
 });
+
+// ─── the reserve-bound client token (P2b) ──────────────────────────────────
+
+function stubDecart(handler) {
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('/v1/client/tokens')) return handler(url, opts);
+    return original(url, opts);
+  };
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+const tokenHttp = (env, token, body) =>
+  worker.fetch(req('/api/video/token', { method: 'POST', origin: STUDIO, token, body }), env);
+
+test('token: ONE handler reserves AND mints — bound, constrained, budgeted', async (t) => {
+  const { env, h } = setup({ perSession: 90 });
+  env.DECART_API_KEY = 'vendor-key-under-test';
+  const token = await adminToken(env);
+
+  let vendorSeen = null;
+  const restore = stubDecart(async (url, opts) => {
+    vendorSeen = { url: String(url), headers: opts.headers, body: JSON.parse(opts.body) };
+    return new Response(
+      JSON.stringify({ apiKey: 'decart-client-token', expiresAt: '2026-08-03T00:00:00Z' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+  t.after(restore);
+
+  h.resetCounts();
+  const res = await tokenHttp(env, token, { requestedSeconds: 45 });
+  assert.equal(res.status, 200);
+  const out = await res.json();
+
+  // The canon's binding rule, satisfied by construction: token and
+  // reservation are born in one request; there is no re-mint endpoint.
+  assert.equal(out.clientToken, 'decart-client-token');
+  assert.ok(out.reservationId && out.settleToken);
+  assert.equal(out.grantedSeconds, 45);
+
+  // The vendor call carries the constraint (wall #2) and the binding metadata,
+  // and authenticates with the raw key — which appears NOWHERE in the response.
+  assert.match(vendorSeen.url, /\/v1\/client\/tokens$/);
+  assert.equal(vendorSeen.headers['x-api-key'], 'vendor-key-under-test');
+  assert.equal(vendorSeen.body.constraints.realtime.maxSessionDuration, 45);
+  assert.equal(vendorSeen.body.metadata.reservationId, out.reservationId);
+  assert.ok(!JSON.stringify(out).includes('vendor-key-under-test'), 'the raw key never leaves');
+
+  // Still on the oracle budget: reserve is the one DO request.
+  assert.equal(h.counts().requests, 1, 'token issuance costs exactly ONE ledger request');
+
+  // And the hold is real.
+  const b = await (await budgetHttp(env, token)).json();
+  assert.equal(b.spentSeconds, 45);
+});
+
+test('token: no vendor key → refused BEFORE any hold is taken', async () => {
+  const { env, h } = setup();
+  const token = await adminToken(env);
+  h.resetCounts();
+  const res = await tokenHttp(env, token, {});
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'video_vendor_unconfigured');
+  assert.equal(h.counts().requests, 0, 'no key, no hold — fail closed costs nothing');
+});
+
+test('token: a vendor mint failure gives the hold back', async (t) => {
+  const { env } = setup({ perSession: 60, total: 60 });
+  env.DECART_API_KEY = 'k';
+  const token = await adminToken(env);
+  const restore = stubDecart(async () => new Response('{"error":"nope"}', { status: 500 }));
+  t.after(restore);
+
+  const res = await tokenHttp(env, token, {});
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, 'vendor_mint_failed');
+
+  // The whole budget must still be there — a vendor hiccup burns nothing.
+  const b = await (await budgetHttp(env, token)).json();
+  assert.equal(b.spentSeconds, 0, 'the hold was settled back at zero use');
+  assert.equal(b.openReservations, 0);
+});
+
+test('token: budget exhaustion refuses before the vendor is ever called', async (t) => {
+  const { env } = setup({ perSession: 100, total: 100 });
+  env.DECART_API_KEY = 'k';
+  const token = await adminToken(env);
+  let vendorCalls = 0;
+  const restore = stubDecart(async () => {
+    vendorCalls += 1;
+    return new Response(JSON.stringify({ apiKey: 'x' }), { status: 200 });
+  });
+  t.after(restore);
+
+  await tokenHttp(env, token, {}); // consumes the whole budget
+  const res = await tokenHttp(env, token, {});
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'video_budget_exhausted');
+  assert.equal(vendorCalls, 1, 'an empty wallet never reaches the vendor');
+});

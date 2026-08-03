@@ -505,6 +505,97 @@ async function handleVideoSettle(request, env, origin) {
   return json(out, { origin });
 }
 
+// ─── the reserve-bound client token (P2b) ───────────────────────────────────
+//
+// ONE handler does reserve AND mint, which is how the canon's binding rule is
+// satisfied atomically: a token can only ever be minted in the same request
+// that created its reservation, so "duplicate or concurrent issuance for the
+// same reservation" is not refused — it is unrepresentable. There is no
+// re-mint endpoint on purpose.
+//
+// The vendor call is the project's first, so its posture is worth stating:
+// the raw key lives ONLY in env.DECART_API_KEY (wrangler secret, the CEO's
+// hands); what returns to the browser is Decart's short-lived client token,
+// constrained to maxSessionDuration = the granted seconds — wall #2, whose
+// runtime bite the probe measures.
+const DECART_API_BASE = 'https://api.decart.ai';
+
+async function mintDecartClientToken(env, { grantedSeconds, reservationId }) {
+  const res = await fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}/v1/client/tokens`, {
+    method: 'POST',
+    // A vendor that hangs must not hang us. The hold is taken BEFORE this
+    // call (reserve → mint), so a stalled vendor would strand the hold until
+    // the caller's own fetch gave up. Ten seconds, then the catch path in
+    // handleVideoToken settles the hold back at zero use.
+    signal: AbortSignal.timeout(10_000),
+    headers: { 'x-api-key': env.DECART_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      // Long enough to establish the WebRTC session, short enough that a
+      // leaked-but-unused token dies quickly. Distinct from the session
+      // duration constraint below.
+      expiresIn: 120,
+      constraints: { realtime: { maxSessionDuration: grantedSeconds } },
+      metadata: { reservationId },
+    }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.apiKey) {
+    throw new Error(`decart token mint failed: HTTP ${res.status}`);
+  }
+  return { clientToken: body.apiKey, expiresAt: body.expiresAt ?? null };
+}
+
+async function handleVideoToken(request, env, origin) {
+  const refusal = await videoGate(request, env, origin);
+  if (refusal) return refusal;
+
+  // Fail closed BEFORE reserving: no vendor key, no hold taken.
+  if (!env.DECART_API_KEY) {
+    return json({ ok: false, error: 'video_vendor_unconfigured' }, { status: 503, origin });
+  }
+
+  const body = await readJson(request);
+  const res = await callLedger(env, '/reserve', { requestedSeconds: body?.requestedSeconds });
+  if (!res) return ledgerUnavailable(origin);
+  const reserved = await res.json().catch(() => null);
+  if (!reserved?.ok) {
+    return (
+      ledgerRefusal(reserved, origin) ??
+      json({ ok: false, error: 'reserve_failed' }, { status: 502, origin })
+    );
+  }
+
+  try {
+    const minted = await mintDecartClientToken(env, {
+      grantedSeconds: reserved.grantedSeconds,
+      reservationId: reserved.reservationId,
+    });
+    return json(
+      {
+        ok: true,
+        clientToken: minted.clientToken,
+        clientTokenExpiresAt: minted.expiresAt,
+        reservationId: reserved.reservationId,
+        settleToken: reserved.settleToken,
+        grantedSeconds: reserved.grantedSeconds,
+        remainingSeconds: reserved.remainingSeconds,
+      },
+      { origin },
+    );
+  } catch (err) {
+    // The hold is already taken. Give it back rather than letting a vendor
+    // hiccup burn budget nobody used — the session-create mint_failed rule,
+    // applied to money. This is the error path, off the oracle's budget.
+    console.error('decart mint failed after reserve', err);
+    await callLedger(env, '/settle', {
+      reservationId: reserved.reservationId,
+      settleToken: reserved.settleToken,
+      usedSeconds: 0,
+    });
+    return json({ ok: false, error: 'vendor_mint_failed' }, { status: 502, origin });
+  }
+}
+
 async function handleVideoBudget(request, env, origin) {
   const refusal = await videoGate(request, env, origin);
   if (refusal) return refusal;
@@ -566,6 +657,7 @@ export default {
       if (wrongMethod) {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
+      if (pathname === '/api/video/token') return handleVideoToken(request, env, origin);
       if (pathname === '/api/video/reserve') return handleVideoReserve(request, env, origin);
       if (pathname === '/api/video/settle') return handleVideoSettle(request, env, origin);
       if (pathname === '/api/video/budget') return handleVideoBudget(request, env, origin);
