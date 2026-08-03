@@ -301,17 +301,65 @@ time.
 - Retires: the shared `luminastream-test` room, the `agent_busy` state, and the
   admin-password gate on the lens.
 
-### P2 — Video *(~1 week)*
+### P2 — Video *(~1 week)* ⟵ **NEXT**
 
 Decart Lucy 2.5 in the browser studio, spend-walled.
 
+**The `SpendLedger` is the prepaid wallet enforcer from day one, temporarily
+wearing dev-cap clothes** (CEO, 3 Aug 2026). LuminaStream's business model is
+strictly prepaid: a funded wallet dictates stream time, margins baked into
+credit pricing, plus a subscription tier (see P5). Today the ledger enforces
+development caps against a runaway loop; later the same object, same code
+paths, enforces user wallets. Every design decision must therefore survive
+contact with real money — nothing here is throwaway.
+
 - **The wall merges before the key exists.** A `SpendLedger` Durable Object,
   server-side and authoritative, because Decart connects browser↔vendor directly.
+- **Spoof-proof by construction:** the client is never the authority on what
+  was spent. Grants are minted server-side against the ledger balance; a
+  zero-balance ledger refuses the grant; no request the browser can make
+  increases what it is allowed to burn.
+- **The ledger obeys the O(1) invariant** (§P1) — a meter that ticks once per
+  second of video is a Durable Object awake for the whole stream, breaking the
+  very cost rule this project measured. Design: **reserve → settle**. One
+  request reserves a bounded window (≤ session cap, ≤ remaining total); one
+  request settles actual usage at session end. Two DO requests per video
+  session, independent of its length.
+- **The reservation lifecycle is idempotent and self-cleaning.** Reservation
+  ids are server-generated; reserve and settle are idempotent transitions
+  (a retried settle is a no-op, a settle can never exceed its reserve, a
+  guessed id buys nothing — the settle credential is random and hashed at
+  rest). A reservation debits the balance ON RESERVE; an unsettled one is
+  reclaimed by a **demand-driven alarm at the earliest expiry** (the registry's
+  reaper pattern, same O(1) discipline), resolving **conservatively as fully
+  spent** — dev caps protect the company's card, and in wallet mode a
+  too-cautious hold is correctable against vendor-reported usage at P5
+  reconciliation (support path via P8), while a too-generous release is money
+  gone. Abandonment can therefore never wedge the ledger into false
+  zero-balance: expired holds resolve, they do not linger.
+- **Vendor-token honesty** (verified against Decart's docs, 3 Aug): short-lived
+  client tokens support origin/model restriction and `maxSessionDuration`, but
+  **token expiry does not terminate an already-running session**, and one-use
+  binding is not documented. So the enforcement chain is: each token is minted
+  **bound to exactly one reservation** (duplicate or concurrent issuance for
+  the same reservation refused, atomically, in the ledger); `maxSessionDuration`
+  is set from the granted seconds **if P2's verify-before-code step confirms it
+  caps a running session**; the client-side hard stop is UX, never authority.
+  **If verification shows a running session can outlive every server-side
+  bound, video authorization moves behind the Worker (proxy), and the
+  browser-direct path is abandoned** — the wall does not get weakened to fit
+  the vendor; the topology changes instead.
 - Two-layer control, mirroring the audio governor exactly: a console-adjustable
-  session cap clamped by an **env-only ceiling the client can never breach**.
+  session cap clamped by an **env-only ceiling the client can never breach**;
+  malformed configuration is fatal, never a silent default.
+- Dev ceilings: `MAX_VIDEO_SECONDS_PER_SESSION=180`,
+  `MAX_VIDEO_SECONDS_TOTAL=3000` (~$60 at verified pricing).
 - Verified pricing: **$0.02/sec at 720p** ($1.20/min).
 - The raw vendor key never reaches the browser. The dead Base44 backend did
   exactly that, and it is the named anti-pattern.
+- For video, a wall-clock hard stop **is** correct behaviour (unlike TTS, where
+  an utterance is never truncated): stop cleanly with a visible reason, never a
+  silent freeze.
 
 ### P3 — A/V sync *(~1 week)*
 
@@ -340,7 +388,14 @@ admin system needs a person to look up.
 **Monthly subscription (access) + prepaid wallet (usage).** Both enforced
 **server-side and validated** — no client-side limit is ever the authority.
 
-The 180 s / £60 caps that appear in older notes are **development** caps: a wall
+Two subscription tiers (CEO, 3 Aug 2026): working names **standard** and
+**pro** (illustrative pricing only — e.g. $10/$18 per month; real prices are
+set only after running costs are known, margins baked into credit pricing).
+The tier gates *features*; the wallet gates *usage*. Tier scope is a
+discussion for when this phase opens. The enforcement machinery is P2's
+`SpendLedger`, graduated from dev caps to wallets — same object, same paths.
+
+The 180 s / ~$60 caps that appear in older notes are **development** caps: a wall
 against a runaway loop burning the company's card during testing. They are not
 the production model. A user with a funded wallet streams as long as the wallet
 covers, and the wallet is debited against metered COGS.
@@ -424,6 +479,71 @@ spring it. Budget design time for it in P7, not just build time here.
 > enrolment completes. **It has lead time, it is a human-wall action, and it must
 > start during P0 or it becomes the critical path.** The 3–4 week estimate is
 > build time and excludes enrolment and notarisation latency entirely.
+
+### PL — Pre-launch gate: elastic capacity *(blocks any public MVP launch — CEO mandate, 3 Aug 2026)*
+
+**A funded user refused at the door is a broken promise, not a capacity
+policy.** The business is prepaid: if 10,000 users burst the system, those are
+10,000 *funded* sessions — revenue-covered demand that must be served. "The
+lens is busy" is acceptable for development and closed testing; it is
+unacceptable for anyone holding a paid wallet. Before the MVP is public, the
+stateless agents move to an **auto-scaling container orchestrator** — Fly.io,
+AWS Fargate, or Kubernetes, chosen *then* by ops reality, not now by fashion.
+
+The doctrine is **scale first, refuse last, never degrade.** Elasticity is the
+front line; the honest refusal stays as the final backstop behind it, because
+every platform has a ceiling somewhere and the alternative to a door is every
+live call degrading at once. What launch changes is that a funded user should
+never actually reach the door.
+
+**Why this is a migration, not a rewrite** — the P1 architecture was built for
+exactly this:
+
+| stays identical | changes |
+|---|---|
+| stateless agents (parameters in, nothing local that matters) | where they run |
+| the room-pool registry (rooms in, sessions out) | rooms become **registered by the orchestrator** on agent start/exit, instead of static config |
+| the O(1) session lifecycle | an orchestrator watches demand and spawns/kills agents |
+
+Registration survives crashes and partitions by putting **liveness where it
+already lives**: the orchestrator health-checks containers as its core job, so
+the orchestrator — not the agent — registers and deregisters rooms, on its own
+lifecycle events. Registration is idempotent (re-registering an existing room
+is a no-op); a crashed agent is deregistered by the same supervisor that
+noticed the crash; and orchestrator-registered rooms carry a coarse safety
+TTL that **the orchestrator itself refreshes** on its scale events — one
+owner for registration, refresh, and deregistration alike, so cleanup can
+never fall between two components. Never per-second heartbeats through the
+Durable Object (§P1 rule 2 forbids exactly that): a partitioned
+orchestrator's stale rooms simply age out instead of advertising capacity
+that no longer exists. Final mechanics are decided at this gate with the
+orchestrator in hand — the constraint that survives any choice: **stale
+capacity must expire without anything polling.**
+
+**How capacity grows, canonised** (the CEO's questions of 2 Aug, answered in
+order of execution):
+
+1. **Now:** one VPS, hand-started `lumina-agent@<room>` units. Capacity 2 live,
+   **held ≤ 6** until the concurrent-load CPU drill (`top` during two
+   simultaneous conversations) converts the cap into a measured number;
+   **~19** is the RAM-bound max on the current box (~350 MiB/agent, measured
+   2 Aug).
+2. **More boxes (no code change):** additional VPSes run the same units; their
+   rooms join the same pool. ~$40/box per ~19 concurrent — linear and boring.
+3. **This gate:** containers + orchestrator + agent self-registration +
+   a load test at several multiples of expected launch concurrency, with the
+   wallet ledger enforcing spend throughout.
+
+**The cost truth that makes this safe to want:** at scale the boxes are a
+rounding error — vendor COGS (ElevenLabs per second, Decart at $1.20/min)
+dominate, and under the prepaid model every vendor-dollar is spent against a
+funded wallet with margin already priced in. Elastic infrastructure without
+the wallet enforcer would be an unbounded liability; **with** it (P2), scaling
+up is scaling revenue. That is why P2 precedes this gate in dependency order.
+
+Prerequisites, in order: the CPU drill (turns 6 into a number) → P2's ledger
+proven → P4 accounts (a wallet needs an owner) → this migration → load test →
+launch.
 
 ### P7 — Design & experience *(a dedicated session, CEO-requested)*
 
