@@ -11,6 +11,7 @@ import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
 import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
+import { createVoiceSelector } from '@/lib/voiceSelection';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -200,36 +201,48 @@ export default function Studio() {
   const [lensMode, setLensMode] = useState('converted');
 
   // ── voice selection (CEO directive, 3 Aug 2026) ───────────────────────
-  // The whole machine already lives in the agent: a dynamic `voice` knob
-  // whose choices are the account's live ElevenLabs voices, validated and
-  // switched agent-side (_switch_voice), broadcast back via agent_config.
-  // This page adds ONLY the surface — and follows the mode toggle's rule:
-  // the value shown as current is what the agent CONFIRMED, never the
-  // request. The browser never holds the vendor key; ids and labels arrive
-  // in the agent's own broadcast.
-  const [requestedVoice, setRequestedVoice] = useState(null);
+  // The machine lives in the agent (dynamic `voice` knob, validated by
+  // _switch_voice, broadcast via agent_config) and the request lifecycle
+  // lives in src/lib/voiceSelection.js where it is tested — confirmation,
+  // rejection-tied-to-its-request, failed sends, disconnect. What remains
+  // here is wiring and rendering, per AGENTS.md. The browser never holds
+  // the vendor key; ids and labels arrive in the agent's own broadcast.
   const confirmedVoice = agentConfig?.config?.voice ?? null;
   const voiceMeta = agentConfig?.metadata?.voice ?? null;
   const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
   const voiceLabels = voiceMeta?.choice_labels ?? {};
-  const voiceRejected = agentConfig?.rejected?.voice ?? null;
 
+  const voiceSelector = useMemo(
+    () => createVoiceSelector({ publish: requestAgentConfig }),
+    [requestAgentConfig],
+  );
+  const [voiceSel, setVoiceSel] = useState({ requested: null, rejection: null });
+
+  // Every NEW broadcast is offered to the selector — which is what ties a
+  // rejection to the request that produced it: snapshots from before the
+  // request were consumed before it existed.
   useEffect(() => {
-    // The agent confirmed the switch (or the request was rejected and the
-    // broadcast restated the real voice) — either way the request is over.
-    if (requestedVoice && (confirmedVoice === requestedVoice || voiceRejected)) {
-      setRequestedVoice(null);
+    if (agentConfig) {
+      voiceSelector.onBroadcast(agentConfig);
+      setVoiceSel(voiceSelector.snapshot());
     }
-  }, [confirmedVoice, requestedVoice, voiceRejected]);
+  }, [agentConfig, voiceSelector]);
 
   const requestVoice = useCallback(
-    (voiceId) => {
-      if (!voiceId || voiceId === confirmedVoice) return;
-      setRequestedVoice(voiceId);
-      requestAgentConfig({ voice: voiceId });
+    async (voiceId) => {
+      await voiceSelector.request(voiceId, agentConfig?.config?.voice ?? null);
+      setVoiceSel(voiceSelector.snapshot());
     },
-    [confirmedVoice, requestAgentConfig],
+    [voiceSelector, agentConfig],
   );
+
+  // Disconnect leaves no pending question — there is no agent to answer it.
+  useEffect(() => {
+    if (connectionState !== ConnectionState.Connected) {
+      voiceSelector.reset();
+      setVoiceSel(voiceSelector.snapshot());
+    }
+  }, [connectionState, voiceSelector]);
 
   // ── the video leg (P2d) ───────────────────────────────────────────────
   // Independent of the audio session on purpose: video is metered separately
@@ -630,13 +643,13 @@ export default function Studio() {
           )}
         </p>
 
-        {/* Voice selection. Rendered only when the agent has spoken (its
-            broadcast carries the choices), and only for the Converted lens —
-            Direct passes your own voice through, so a selector there would
-            promise something the mode cannot do. The <select>'s value is the
-            agent-CONFIRMED voice; a pending request is named as pending,
-            exactly like the mode toggle above. */}
-        {isConnected && lensMode === 'converted' && voiceChoices.length > 0 && (
+        {/* Voice selection. Visibility and value are both CONFIRMED state:
+            shown only when the agent's confirmed mode is convert (a selector
+            during a Direct-confirmed transition would promise what the agent
+            has not agreed to), and the <select> shows the agent-confirmed
+            voice — a pending request is a labeled message, never the value.
+            Same honesty rule as the mode toggle above. */}
+        {isConnected && agentMode === agentModeFor('converted') && voiceChoices.length > 0 && (
           <div className="mt-4 flex flex-col items-center gap-1">
             <div className="flex items-center gap-2">
               <label
@@ -647,7 +660,7 @@ export default function Studio() {
               </label>
               <select
                 id="lens-voice"
-                value={requestedVoice ?? confirmedVoice ?? ''}
+                value={confirmedVoice ?? ''}
                 onChange={(e) => requestVoice(e.target.value)}
                 className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
               >
@@ -658,14 +671,16 @@ export default function Studio() {
                 ))}
               </select>
             </div>
-            {requestedVoice && (
+            {voiceSel.requested && (
               <span className="text-[9px] text-[#F59E0B]">
-                Requested — waiting for the agent to confirm.
+                Requested {voiceLabels[voiceSel.requested] ?? voiceSel.requested} — waiting for
+                the agent to confirm.
               </span>
             )}
-            {!requestedVoice && voiceRejected && (
+            {!voiceSel.requested && voiceSel.rejection && (
               <span role="alert" className="text-[9px] text-[#F59E0B]">
-                the agent kept {voiceLabels[confirmedVoice] ?? 'its voice'} — {String(voiceRejected)}
+                the agent kept {voiceLabels[confirmedVoice] ?? 'its voice'} —{' '}
+                {voiceSel.rejection.reason}
               </span>
             )}
           </div>
