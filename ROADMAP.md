@@ -375,16 +375,28 @@ clamped to the grant, and a reaper that resolves ledger records only. The
 three consequences below are what **P2c builds**, each closing a
 previously-flagged hole; none of them exists until it does:
 
-1. **The ledger's reaper becomes the executioner** *(P2c)*: reservations gain
-   the Decart session id, and the existing demand-driven alarm gains one side
-   effect — an expired reservation DELETEs its vendor session, with the
-   idempotent retry and reconciliation that a vendor call from an alarm
-   handler requires. The hard stop becomes ours, server-side,
-   vendor-independent — and still O(1), one alarm per overrun.
-2. **Settle becomes vendor-truth** *(P2c)*: session end returns Decart's own
-   billing summary; the settle payload, storage schema, and tests extend to
-   carry raw-vendor fields distinct from the deduction, and the ledger settles
-   against THEIR number, never the client's claim.
+1. **The ledger's reaper becomes the executioner** *(P2c)* — **server-
+   authoritative, vendor-executed**, and honest about the difference: the
+   Worker orders the kill, but only Decart can sever a direct media stream,
+   so a failed DELETE means media may keep flowing until a backstop bites.
+   Mechanics: reservations gain the Decart session id; the expiry alarm
+   issues an idempotent DELETE with a timeout and **bounded retries** (a
+   small constant R, each via alarm re-arm — so an overrun costs **at most
+   1+R alarms**, a constant, never a function of anything). If all retries
+   fail: the overrun is flagged for reconciliation, and exposure is BOUNDED
+   by the remaining walls — the token's `maxSessionDuration` (wall #2, the
+   probe calibrates it) and Decart's own inactivity/timeout auto-end. P2c
+   ships the bounded-exposure arithmetic alongside the code.
+2. **Settle becomes vendor-truth** *(P2c)* — with the trust boundary explicit:
+   **the billing summary is only ever read by the Worker from Decart's own
+   response** (the Worker issues the DELETE, the summary arrives in that
+   server-to-server exchange). No browser-submitted `billingSummary`, usage
+   count, or raw-vendor field is EVER an accounting input — a client that
+   could report its own bill would report a small one. The browser may at most
+   say "end session X"; the Worker verifies X belongs to that session's
+   reservation, performs the vendor call itself, and accounts from what the
+   vendor returned. Client-reported usage survives only in dev-cap mode, as
+   today: a hint, clamped to the grant.
 3. **The spoofing surface collapses** *(P2c)*: the browser holds only
    Decart's own session-scoped event token, designed to be browser-safe.
 
@@ -467,6 +479,19 @@ never sell compute at cost by accident.** The design:
   fields distinct from the deducted amount — so that P5 is a rate-table
   change, not a refactor. Dev caps run at rate 1:1 (a second is a second)
   until wallets exist.
+- **Rate-table mechanics, defined before anyone builds against them.** The
+  single unit of account is **credit-cents** (integer; no floats near money).
+  COGS floors and retail rates are both declared in credit-cents per vendor
+  unit, so the boot-time floor check compares like with like. **Conversion
+  happens at RESERVE** — the wallet is debited `grant × rate` up front, in
+  credits, consistent with P2a's debit-on-reserve — and the reservation
+  record **pins the rate-table version it converted under**. Settle refunds
+  `(granted − used) × the PINNED rate`, never the current one: the same usage
+  can never convert twice or under two prices, and a mid-session rate change
+  affects only reservations created after it. Rounding is house-favouring and
+  fixed: **ceil at debit, floor at refund.** Reconciliation (P8) re-derives
+  the deduction from the stored raw vendor summary and the pinned version;
+  any mismatch is an alert, not an adjustment.
 
 The 180 s / ~$60 caps that appear in older notes are **development** caps: a wall
 against a runaway loop burning the company's card during testing. They are not
