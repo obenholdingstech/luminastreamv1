@@ -55,10 +55,10 @@ test('PROBE: does maxSessionDuration cut a running Lucy session?', async ({ page
   // Everything after the reserve runs under a finally that settles: a probe
   // that crashes mid-watch must not leave its hold to the reaper — the wall
   // meters its own probe, including the failed runs.
-  await page.goto('about:blank');
   let observed = { fatal: 'probe crashed before observation', lastTickSeconds: 0, log: [] };
   let settleOutcome = null;
   try {
+  await page.goto('about:blank');
   observed = await page.evaluate(
     async ({ clientToken, watchMs }) => {
       const log = [];
