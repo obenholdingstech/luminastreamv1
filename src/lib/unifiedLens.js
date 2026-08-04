@@ -64,3 +64,19 @@ export function createVoicePreference() {
     // No reset(), for the same reason as the auto-start latch above.
   };
 }
+
+// The reaper's question (4 Aug 2026): is this video leg an orphan? The video
+// leg only ever exists inside a held audio session, so once the session's
+// credentials are gone, any leg still holding a camera or a vendor
+// reservation is spending money for nobody. Discovered as a live incident: a
+// stale Stop handler left the real negotiator running — camera indicator on,
+// vendor billing in the background — on a page that said "Lens off".
+//
+// 'stopping' and 'off' are not orphan states: one is already on its way out,
+// the other holds nothing. Every other phase — including 'error' and
+// 'limited', where the negotiator still holds the camera it failed with —
+// answers to the reaper.
+export function isOrphanVideoLeg({ hasCredentials, videoPhase }) {
+  if (hasCredentials) return false;
+  return videoPhase !== 'off' && videoPhase !== 'stopping';
+}

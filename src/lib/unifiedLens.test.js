@@ -89,6 +89,33 @@ test('a new session applies again — and there is no reset to misuse', () => {
   assert.equal(typeof pref.reset, 'undefined', 'same rule as the auto-start latch');
 });
 
+// ─── the orphan reaper ─────────────────────────────────────────────────────
+
+import { isOrphanVideoLeg } from './unifiedLens.js';
+
+test('a video leg with no audio session is an orphan in every resource-holding phase', () => {
+  // 'error' and 'limited' hold the camera they failed with — the negotiator
+  // does not release media on a vendor error, so the reaper must claim them.
+  for (const videoPhase of ['starting', 'live', 'error', 'limited']) {
+    assert.equal(isOrphanVideoLeg({ hasCredentials: false, videoPhase }), true, videoPhase);
+  }
+});
+
+test('a leg already out, or on its way out, is not reaped twice', () => {
+  assert.equal(isOrphanVideoLeg({ hasCredentials: false, videoPhase: 'off' }), false, 'holds nothing');
+  assert.equal(
+    isOrphanVideoLeg({ hasCredentials: false, videoPhase: 'stopping' }),
+    false,
+    'already leaving — a second stop would race the first',
+  );
+});
+
+test('inside a held session, NO phase is an orphan — failures there are the user\'s to see', () => {
+  for (const videoPhase of ['off', 'starting', 'live', 'stopping', 'error', 'limited']) {
+    assert.equal(isOrphanVideoLeg({ hasCredentials: true, videoPhase }), false, videoPhase);
+  }
+});
+
 test('nothing applies without a session, a connection, or a choice', () => {
   const pref = createVoicePreference();
   assert.equal(pref.shouldApply(voiceState({ sessionId: null })), false);

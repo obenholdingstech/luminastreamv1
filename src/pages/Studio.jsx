@@ -13,7 +13,7 @@ import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
 import { shouldToggleCleanView } from '@/lib/cleanView';
-import { createAutoStartLatch, createVoicePreference } from '@/lib/unifiedLens';
+import { createAutoStartLatch, createVoicePreference, isOrphanVideoLeg } from '@/lib/unifiedLens';
 import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
@@ -464,19 +464,12 @@ export default function Studio() {
   const hasCredentials = Boolean(url && token);
 
   // The invariant behind the fix above, enforced structurally: NO audio
-  // session ⇒ NO video leg. The video leg only ever exists inside a held
-  // session, so once the credentials are gone, any leg still holding a
-  // camera or a vendor reservation is an orphan spending money for nobody —
-  // whatever path orphaned it. This effect closes over the CURRENT render's
-  // video, so it cannot go stale the way a memoized handler can.
+  // session ⇒ NO video leg. The decision lives in unifiedLens.js with its
+  // tests (AGENTS.md: lifecycle logic in a component is lifecycle logic
+  // nobody can break on purpose); what remains here closes over the CURRENT
+  // render's video, so it cannot go stale the way a memoized handler can.
   useEffect(() => {
-    if (hasCredentials) return;
-    if (
-      video.phase === VIDEO_PHASE.starting ||
-      video.phase === VIDEO_PHASE.live ||
-      video.phase === VIDEO_PHASE.error ||
-      video.phase === VIDEO_PHASE.limited
-    ) {
+    if (isOrphanVideoLeg({ hasCredentials, videoPhase: video.phase })) {
       video.stop();
     }
   }, [hasCredentials, video]);
