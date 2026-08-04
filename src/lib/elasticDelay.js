@@ -1,17 +1,22 @@
 // The A/V sync policy (ROADMAP §P3): AUDIO IS THE MASTER CLOCK.
 //
-// The agent's voice arrives `tail` milliseconds after the words were spoken —
-// a latency the agent itself measures and broadcasts per utterance. The
-// transformed video arrives on its own clock. Sync means delaying VIDEO to
-// stand beside the audio it belongs to; audio is never delayed, buffered, or
-// waited for — a person hears themselves late enough already.
+// RETARGETED 4 Aug 2026: the samples fed here are now the MEASURED mouth→ear
+// delay (syncMeter.js — local mic onset to remote voice onset, one browser
+// clock), minus the video path's own latency (alignStage). The previous diet
+// was the agent's tail_latency_ms, which misses the utterance's own duration,
+// playback backlog, and the network — the measured 5/10 "inconsistent" sync.
+// The mechanism below was right all along; it was listening to the wrong
+// number.
 //
-// The buffer must be ELASTIC (doctrine, measured at Stage 1): p95 tail in
-// live conversation reaches ~1.9s and is STRUCTURAL — synthesized speech
-// plays for about as long as it took to say, so continuous talking builds a
-// backlog that drains at pauses. A fixed delay either desyncs under load or
-// taxes every quiet moment. This module turns noisy tail samples into a
-// STABLE video-delay target:
+// Sync means delaying VIDEO to stand beside the audio it belongs to; audio
+// is never delayed, buffered, or waited for — a person hears themselves late
+// enough already.
+//
+// The buffer must be ELASTIC (doctrine, measured at Stage 1): backlog is
+// STRUCTURAL — synthesized speech plays for about as long as it took to say,
+// so continuous talking builds a queue that drains at pauses. A fixed delay
+// either desyncs under load or taxes every quiet moment. This module turns
+// noisy delay samples into a STABLE video-delay target:
 //
 //   - windowed median (not mean: one cold-start outlier must not yank the
 //     picture), over the last WINDOW samples;
@@ -26,10 +31,17 @@
 // it and asks only `targetMs()`.
 
 export const ELASTIC_DEFAULTS = {
-  window: 8, // utterances of memory — a few sentences of conversation
+  // Measured mouth→ear samples are ground truth, not a proxy — less memory
+  // is needed to trust them, and less memory converges faster at session
+  // start and tracks backlog swings sooner.
+  window: 5,
   deadbandMs: 120, // below this drift, do nothing (lip-sync tolerance ≈ ±120ms)
-  slewMs: 250, // largest single glide
-  maxDelayMs: 2000, // the structural p95, and the most video we will ever hold
+  slewMs: 400, // largest single glide — reaches a 1.5s truth in ~4 utterances
+  // Mouth→ear regularly exceeds the old 2s ceiling by construction: it
+  // contains the utterance's own duration plus tail plus backlog. 4s covers
+  // the observed range; delayQueue's frame bound (150 frames ≈ 5s at 30fps)
+  // stands above it with margin, closing oldest on overflow.
+  maxDelayMs: 4000,
 };
 
 export function createElasticDelay(overrides = {}) {

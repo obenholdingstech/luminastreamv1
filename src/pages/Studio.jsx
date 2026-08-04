@@ -329,17 +329,15 @@ export default function Studio() {
   }, [video.stream]);
   const fidelity = video.pipeline.describe();
 
-  // ── A/V sync (P3): audio is the master clock ──────────────────────────
-  // The agent measures its own tail latency per utterance and broadcasts it;
-  // the align stage turns those samples into an elastic video delay. This is
-  // WIRING only — the policy (elasticDelay), the queue (delayQueue), and the
-  // stage (alignStage) each live in src/lib/ with their tests.
-  const latestTail = utterances[0]?.tail_latency_ms;
-  useEffect(() => {
-    if (Number.isFinite(latestTail)) {
-      video.pipeline.stages.align.observeTail?.(latestTail);
-    }
-  }, [latestTail, video.pipeline]);
+  // ── A/V sync (P3): audio is the master clock, measured at the ear ─────
+  // The sync meter measures the true mouth→ear delay per utterance (local
+  // mic onset → remote voice onset, one browser clock); the align stage
+  // turns those samples into an elastic video delay, subtracting the video
+  // path's own cost. This retargeted the controller (4 Aug): the previous
+  // diet was the agent's tail_latency_ms, which misses utterance duration,
+  // backlog, and network — the 5/10 "inconsistent" sync. WIRING only — the
+  // policy, queue, stage, and meter all live in src/lib/ with their tests.
+  // (The feed itself is below, after the meter's state exists.)
 
   // ── the reference avatar + live prompt (CEO directive, 3 Aug 2026) ────
   // Presentation state only — the work lives in videoClient/videoNegotiator.
@@ -631,10 +629,22 @@ export default function Studio() {
     };
   }, [room]);
 
-  // The mouth→ear measurement: the true A/V number, measured at the ear.
-  // PR A: a METER only — the video-delay controller still runs on the
-  // agent's tail; it starts listening to this once the numbers are proven.
+  // The mouth→ear measurement: the true A/V number, measured at the ear —
+  // and since the retarget, the controller's only diet. The hook publishes
+  // state exactly once per NEW measurement, so this effect fires once per
+  // measured utterance, never per render.
   const sync = useSyncMeter(micTrack, remoteAudioTrack);
+  // The applied hold, as RENDER-VISIBLE state: the render that displays it
+  // happens before the effect that moves it, so reading targetMs() during
+  // render would trail by one measurement (CodeRabbit, PR 67). Written here,
+  // in the same breath as the observation that moves it.
+  const [appliedHoldMs, setAppliedHoldMs] = useState(0);
+  useEffect(() => {
+    if (Number.isFinite(sync?.lastMs)) {
+      video.pipeline.stages.align.observeMouthToEar?.(sync.lastMs);
+      setAppliedHoldMs(video.pipeline.stages.align.targetMs?.() ?? 0);
+    }
+  }, [sync, video.pipeline]);
 
   const reduceMotion = useReducedMotion();
   const paintLevel = useCallback((level) => {
@@ -1086,7 +1096,11 @@ export default function Studio() {
                   <Video size={10} className="inline mr-1" aria-hidden />
                   {fidelity.delivering.height}p
                   {!fidelity.upscaleActive && ' · upscale pending'}
-                  {fidelity.alignActive && ' · a/v synced'}
+                  {/* The applied hold, not a vanity light: how far the video
+                      is standing behind real time to meet its voice. State,
+                      not a render-time read — written by the same effect
+                      that moves the target, so it is never a beat behind. */}
+                  {fidelity.alignActive && ` · video held ${(appliedHoldMs / 1000).toFixed(1)}s`}
                   {' · press H for clean view'}
                 </span>
               )}

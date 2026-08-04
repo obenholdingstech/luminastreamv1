@@ -64,8 +64,8 @@ export function useLensVideo(adminToken) {
   // useMemo, not a ref written during render — React may replay or discard
   // render work, and a mutation there can leak from UI that never commits.
   // P3 fills the align slot: an elastic buffer that stands video beside the
-  // audio it belongs to. Audio is the master clock; the page feeds the
-  // agent's measured tail latency into pipeline.stages.align.observeTail.
+  // audio it belongs to. Audio is the master clock; the page feeds the sync
+  // meter's measured mouth→ear delay into pipeline.stages.align.observeMouthToEar.
   const pipeline = useMemo(() => createFramePipeline({ align: createAlignStage() }), []);
 
   const negotiator = useMemo(

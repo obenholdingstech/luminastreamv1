@@ -63,22 +63,38 @@ test('an unsupported platform is an HONEST passthrough — inactive, stream unto
   assert.match(stage.describe(), /pass-through/);
 });
 
-test('observed tails move the target the wrap reads — the policy drives the mechanism', () => {
+test('measured delays move the target the wrap reads — the policy drives the mechanism', () => {
   const f = fakeDelayFactory();
-  const stage = createAlignStage({ createDelay: f.createDelay, elastic: createElasticDelay() });
+  const stage = createAlignStage({
+    createDelay: f.createDelay,
+    elastic: createElasticDelay(),
+    videoPathMs: 300,
+  });
   stage.apply({ kind: 'receive', stream: { id: 's1' }, width: 1280, height: 720 });
   assert.equal(f.instances[0].targetMs(), 0);
-  for (let i = 0; i < 6; i += 1) stage.observeTail(800);
-  // 0 → 250 → 500 → 750, then the 50ms drift sits inside the deadband: the
-  // policy's glide-and-settle, seen exactly through the mechanism's eyes.
-  assert.equal(f.instances[0].targetMs(), 750, 'the live wrap sees the slewed target without rewrapping');
+  for (let i = 0; i < 6; i += 1) stage.observeMouthToEar(1100);
+  // The elastic sees 1100 − 300 = 800: 0 → 400 → 800, then it has arrived —
+  // the policy's glide-and-settle, seen exactly through the mechanism's eyes.
+  assert.equal(f.instances[0].targetMs(), 800, 'the live wrap sees the slewed target without rewrapping');
+});
+
+test('the video path is SUBTRACTED — frames already arrive that late for free', () => {
+  const observed = [];
+  const stage = createAlignStage({
+    elastic: { observe: (ms) => observed.push(ms), targetMs: () => 0, reset: () => {} },
+    videoPathMs: 300,
+  });
+  stage.observeMouthToEar(1500);
+  stage.observeMouthToEar(100); // faster than the video path itself
+  stage.observeMouthToEar(NaN); // junk
+  assert.deepEqual(observed, [1200, 0], 'subtracted, floored at zero, junk refused');
 });
 
 test('release() resets the clock too — a new session starts from zero', () => {
   const f = fakeDelayFactory();
   const stage = createAlignStage({ createDelay: f.createDelay });
   stage.apply({ kind: 'receive', stream: { id: 's1' }, width: 1280, height: 720 });
-  for (let i = 0; i < 6; i += 1) stage.observeTail(1200);
+  for (let i = 0; i < 6; i += 1) stage.observeMouthToEar(1600);
   assert.ok(stage.targetMs() > 0);
   stage.release();
   assert.equal(stage.targetMs(), 0);

@@ -3,14 +3,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElasticDelay, ELASTIC_DEFAULTS } from './elasticDelay.js';
 
-test('a steady tail pulls the target up in bounded glides, never a jump', () => {
+test('a steady measurement pulls the target up in bounded glides, never a jump', () => {
   const d = createElasticDelay();
   d.observe(900);
-  assert.equal(d.targetMs(), 250, 'first move is one slew step, not the whole distance');
+  assert.equal(d.targetMs(), 400, 'first move is one slew step, not the whole distance');
   d.observe(900);
   d.observe(900);
   d.observe(900);
-  assert.equal(d.targetMs(), 900, 'and it arrives in steps of ≤ slewMs');
+  // 400 → 800, then the 100ms drift sits inside the deadband: settled
+  // within lip-sync tolerance is settled.
+  assert.ok(Math.abs(d.targetMs() - 900) <= ELASTIC_DEFAULTS.deadbandMs, 'arrives within the deadband');
 });
 
 test('sub-deadband jitter moves NOTHING — the picture does not chase noise', () => {
@@ -35,7 +37,10 @@ test('backlog drains: a quieting stream glides the delay DOWN too', () => {
   const loaded = d.targetMs();
   for (let i = 0; i < 8; i += 1) d.observe(300);
   assert.ok(d.targetMs() < loaded, 'elastic means both directions');
-  assert.equal(d.targetMs(), 300, 'and it settles on the new truth');
+  assert.ok(
+    Math.abs(d.targetMs() - 300) <= ELASTIC_DEFAULTS.deadbandMs,
+    'and it settles on the new truth, within lip-sync tolerance',
+  );
 });
 
 test('the ceiling is absolute — video never stands further back than maxDelayMs', () => {
