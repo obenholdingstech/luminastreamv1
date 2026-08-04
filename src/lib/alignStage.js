@@ -14,13 +14,37 @@
 import { createElasticDelay } from './elasticDelay.js';
 import { createFrameDelay } from './frameDelay.js';
 
-// What the video path itself costs: camera → Decart → decode → present. The
-// mouth→ear measurement covers the AUDIO path only, so the delay applied to
-// video is (mouth→ear − this) — the transformed frames already arrive this
-// late on their own. A constant for now, refined from drill data; any fixed
-// residual of the meter (output-stage buffering, analyser tap points) folds
-// into the same number by construction.
-export const DEFAULT_VIDEO_PATH_MS = 300;
+// What the video path itself costs: camera → Decart → decode → upscale →
+// present. The mouth→ear measurement covers the AUDIO path only, so the
+// delay applied to video is (mouth→ear − this) — the transformed frames
+// already arrive this late on their own. Any fixed residual of the meter
+// (output-stage buffering, analyser tap points) folds into the same number
+// by construction.
+//
+// 700, not the original 300: CALIBRATED BY DRILL (CEO, 4 Aug 2026 evening) —
+// with 300 the converted voice landed ~400ms ahead of the lips, meaning the
+// video was being held ~400ms too long, meaning the real video leg costs
+// ~400ms more than estimated. Runtime-trimmable (setVideoPathMs) so the next
+// calibration is a knob press, not a deploy.
+export const DEFAULT_VIDEO_PATH_MS = 700;
+
+// The trim's guard rails: a video path can't be negative, and one claimed to
+// exceed 2s would mean the estimate is broken, not the knob.
+export const VIDEO_PATH_LIMITS = { min: 0, max: 2000 };
+
+/**
+ * THE normalization for a video-path value — every boundary (constructor,
+ * setter, persisted storage, UI stepper) goes through this one function, so
+ * no two of them can disagree about what a legal value is. Junk answers
+ * null; the caller supplies its own fallback. Zero is LEGAL: "the video
+ * path costs nothing" is a strange claim but a claim, not junk.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function clampVideoPathMs(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(VIDEO_PATH_LIMITS.min, Math.min(VIDEO_PATH_LIMITS.max, value));
+}
 
 export function createAlignStage({
   elastic = createElasticDelay(),
@@ -28,6 +52,7 @@ export function createAlignStage({
   videoPathMs = DEFAULT_VIDEO_PATH_MS,
 } = {}) {
   let delay = null;
+  let pathMs = clampVideoPathMs(videoPathMs) ?? DEFAULT_VIDEO_PATH_MS;
 
   return {
     name: 'align',
@@ -56,7 +81,22 @@ export function createAlignStage({
      */
     observeMouthToEar(measuredMs) {
       if (!Number.isFinite(measuredMs)) return;
-      elastic.observe(Math.max(0, measuredMs - videoPathMs));
+      elastic.observe(Math.max(0, measuredMs - pathMs));
+    },
+
+    /**
+     * Live-trim the video-path estimate — the calibration knob. Clamped to
+     * VIDEO_PATH_LIMITS; junk is refused, never applied. Applies from the
+     * NEXT observation: the elastic's slew carries the picture there
+     * smoothly, exactly as it does for a real latency change.
+     */
+    setVideoPathMs(ms) {
+      const next = clampVideoPathMs(ms);
+      if (next !== null) pathMs = next;
+    },
+
+    videoPathMs() {
+      return pathMs;
     },
 
     targetMs() {

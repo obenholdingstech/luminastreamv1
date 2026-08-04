@@ -21,6 +21,7 @@ import {
   crossfadeState,
   isOrphanVideoLeg,
 } from '@/lib/unifiedLens';
+import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
@@ -634,6 +635,38 @@ export default function Studio() {
   // state exactly once per NEW measurement, so this effect fires once per
   // measured utterance, never per render.
   const sync = useSyncMeter(micTrack, remoteAudioTrack);
+  // The sync trim (CEO calibration, 4 Aug evening): the video-path estimate,
+  // live-adjustable and persisted. Direction, in her words: the voice
+  // arriving BEFORE the lips means the video is being held too long — press
+  // toward "lips earlier". The stage clamps; this just remembers and feeds.
+  const [videoPathMs, setVideoPathMsState] = useState(() => {
+    // Missing is distinguished from zero: an absent key means "never
+    // trimmed" (use the default); a stored "0" is a trim the user made.
+    // Every value passes through the lib's single normalizer, so storage,
+    // the stage, and the UI can never disagree about legality (CodeRabbit).
+    try {
+      const raw = globalThis.localStorage?.getItem('lens-video-path-ms');
+      if (raw == null || raw === '') return DEFAULT_VIDEO_PATH_MS;
+      return clampVideoPathMs(Number(raw)) ?? DEFAULT_VIDEO_PATH_MS;
+    } catch {
+      return DEFAULT_VIDEO_PATH_MS;
+    }
+  });
+  const trimVideoPath = useCallback((deltaMs) => {
+    setVideoPathMsState((prev) => clampVideoPathMs(prev + deltaMs) ?? prev);
+  }, []);
+  // Persistence is an EFFECT of the value, never a side effect inside the
+  // state updater — React is free to replay updaters (CodeRabbit).
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem('lens-video-path-ms', String(videoPathMs));
+    } catch {
+      /* private mode — the trim still holds for this visit */
+    }
+  }, [videoPathMs]);
+  useEffect(() => {
+    video.pipeline.stages.align.setVideoPathMs?.(videoPathMs);
+  }, [videoPathMs, video.pipeline]);
   // The applied hold, as RENDER-VISIBLE state: the render that displays it
   // happens before the effect that moves it, so reading targetMs() during
   // render would trail by one measurement (CodeRabbit, PR 67). Written here,
@@ -1105,6 +1138,36 @@ export default function Studio() {
                 </span>
               )}
             </div>
+
+            {/* The sync trim — the calibration knob, in the language of the
+                symptom rather than the mechanism. Buttons step the video-path
+                estimate 100ms at a time; the elastic slews the picture there
+                smoothly. Rendered only while the aligned stream is live,
+                because trimming a stopped lens calibrates nothing. */}
+            {video.phase === VIDEO_PHASE.live && fidelity.alignActive && (
+              <div className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
+                <span>sync trim</span>
+                <button
+                  type="button"
+                  onClick={() => trimVideoPath(-100)}
+                  disabled={videoPathMs <= VIDEO_PATH_LIMITS.min}
+                  title="the lips move before the voice arrives — hold the video longer"
+                  className="rounded-full border border-[#1A1A2E] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                >
+                  lips later
+                </button>
+                <span className="tabular-nums text-[#64748B]">{videoPathMs}ms</span>
+                <button
+                  type="button"
+                  onClick={() => trimVideoPath(100)}
+                  disabled={videoPathMs >= VIDEO_PATH_LIMITS.max}
+                  title="the voice arrives before the lips — release the video sooner"
+                  className="rounded-full border border-[#1A1A2E] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                >
+                  lips earlier
+                </button>
+              </div>
+            )}
 
             {/* Identity controls: the reference avatar and the live prompt.
                 Both work BEFORE start (they ride the create) and DURING the
