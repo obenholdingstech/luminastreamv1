@@ -7,6 +7,7 @@ import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video,
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useMicLevel } from '@/hooks/useMicLevel';
 import { useSyncMeter } from '@/hooks/useSyncMeter';
+import { useAudioAlign } from '@/hooks/useAudioAlign';
 import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
@@ -178,6 +179,7 @@ export default function Studio() {
     requestAgentMode,
     agentConfig,
     requestAgentConfig,
+    setRemoteVolume,
   } = useLiveKitVoice(url, token);
 
   // ── access ────────────────────────────────────────────────────────────
@@ -667,6 +669,18 @@ export default function Studio() {
   useEffect(() => {
     video.pipeline.stages.align.setVideoPathMs?.(videoPathMs);
   }, [videoPathMs, video.pipeline]);
+  // Direct-mode audio alignment — THE LAGGARD IS THE MASTER CLOCK (doctrine
+  // generalized, 4 Aug evening): in converted mode audio is slow and video
+  // holds (above); in Direct mode audio returns in ~350ms while the video
+  // leg costs ~700ms, so AUDIO takes the hold, through a WebAudio delay
+  // line that engages only while verifiably running and gives the voice
+  // back on any failure. Engaged only under a confirmed Direct mode.
+  const audioAlign = useAudioAlign({
+    track: remoteAudioTrack,
+    enabled: isConnected && agentMode === agentModeFor('direct'),
+    setRemoteVolume,
+  });
+
   // The applied hold, as RENDER-VISIBLE state: the render that displays it
   // happens before the effect that moves it, so reading targetMs() during
   // render would trail by one measurement (CodeRabbit, PR 67). Written here,
@@ -674,10 +688,13 @@ export default function Studio() {
   const [appliedHoldMs, setAppliedHoldMs] = useState(0);
   useEffect(() => {
     if (Number.isFinite(sync?.lastMs)) {
+      // ONE measurement feeds BOTH holds; each side floors at zero, so
+      // exactly one of them is ever non-zero for a given regime.
       video.pipeline.stages.align.observeMouthToEar?.(sync.lastMs);
+      audioAlign.observe(sync.lastMs, videoPathMs);
       setAppliedHoldMs(video.pipeline.stages.align.targetMs?.() ?? 0);
     }
-  }, [sync, video.pipeline]);
+  }, [sync, video.pipeline, audioAlign, videoPathMs]);
 
   const reduceMotion = useReducedMotion();
   const paintLevel = useCallback((level) => {
@@ -1134,6 +1151,10 @@ export default function Studio() {
                       not a render-time read — written by the same effect
                       that moves the target, so it is never a beat behind. */}
                   {fidelity.alignActive && ` · video held ${(appliedHoldMs / 1000).toFixed(1)}s`}
+                  {/* Direct mode's mirror image: when the delay line has the
+                      voice, say so — a held stream the UI stays quiet about
+                      is a mystery, not a feature. */}
+                  {audioAlign.holdMs > 0 && ` · audio held ${(audioAlign.holdMs / 1000).toFixed(1)}s`}
                   {' · press H for clean view'}
                 </span>
               )}
