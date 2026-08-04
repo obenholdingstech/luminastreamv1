@@ -13,6 +13,7 @@ import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
 import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
+import { findLiveRemoteAudioTrack } from '@/lib/remoteAudioTrack';
 import { shouldToggleCleanView } from '@/lib/cleanView';
 import {
   createAutoStartLatch,
@@ -597,25 +598,24 @@ export default function Studio() {
   }, [room]);
 
   // The agent's audio track, for the sync meter's EAR. Same discipline as
-  // micTrack above: publications are not React state, so the track is held
-  // in state and refreshed from the SDK's own subscribe events.
+  // micTrack above, in full: the SELECTION policy lives in src/lib
+  // (findLiveRemoteAudioTrack, tested), publications are held in state and
+  // refreshed from the SDK's events — and the track's own `ended` is
+  // listened to directly, because a device-level termination fires no room
+  // event at all and would otherwise leave the meter analysing a corpse.
   const [remoteAudioTrack, setRemoteAudioTrack] = useState(null);
   useEffect(() => {
     if (!room) {
       setRemoteAudioTrack(null);
       return undefined;
     }
+    let current = null;
     const read = () => {
-      let found = null;
-      for (const participant of room.remoteParticipants?.values?.() ?? []) {
-        for (const pub of participant.audioTrackPublications?.values?.() ?? []) {
-          const t = pub.track?.mediaStreamTrack;
-          if (t && t.readyState === 'live') {
-            found = t;
-            break;
-          }
-        }
-        if (found) break;
+      const found = findLiveRemoteAudioTrack(room.remoteParticipants);
+      if (current !== found) {
+        current?.removeEventListener?.('ended', read);
+        found?.addEventListener?.('ended', read);
+        current = found;
       }
       setRemoteAudioTrack(found);
     };
@@ -627,6 +627,7 @@ export default function Studio() {
       room.off(RoomEvent.TrackSubscribed, read);
       room.off(RoomEvent.TrackUnsubscribed, read);
       room.off(RoomEvent.ParticipantDisconnected, read);
+      current?.removeEventListener?.('ended', read);
     };
   }, [room]);
 

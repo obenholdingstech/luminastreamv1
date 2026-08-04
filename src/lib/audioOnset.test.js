@@ -66,6 +66,16 @@ test('two utterances separated by real silence are two onset/offset pairs', () =
   assert.equal(events[2].t, 1500);
 });
 
+test('reset is a session boundary — a mid-segment reset starts the world over', () => {
+  const gate = createOnsetGate();
+  gate.feed(0.4, 0); // candidate opens
+  gate.feed(0.4, 120); // confirmed — onset fired
+  gate.reset();
+  // Post-reset, the same levels are a brand-new candidate with a new clock.
+  assert.equal(gate.feed(0.4, 200), null, 'a fresh candidate, not a continuation');
+  assert.deepEqual(gate.feed(0.4, 320), { type: 'onset', t: 200 }, 'onset anchored post-reset');
+});
+
 test('junk input changes nothing', () => {
   const gate = createOnsetGate();
   assert.equal(gate.feed(NaN, 100), null);

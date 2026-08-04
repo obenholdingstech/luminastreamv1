@@ -9,6 +9,16 @@
 // arrives at playback level, already gained and compressed, while the local
 // mic competes with room tone. Both use the SAME clock (performance.now), so
 // the difference is a real duration — no clock sync, no agent cooperation.
+//
+// KNOWN EXCLUSION (bounded, accepted): the ear-side tap is the decoded
+// remote track, not the speaker cone — the <audio> element's output-stage
+// buffering (typically tens of ms) is outside the measurement. The mouth-
+// side tap symmetrically starts at the analyser, not the lips, and the two
+// residuals partially cancel. Both are an order of magnitude under the
+// 120ms lip-sync deadband the controller tolerates, and any constant
+// remainder is absorbed by the video-path calibration constant when the
+// controller retargets (P3, next PR). Full render-path timing would buy
+// precision the deadband cannot spend.
 
 import { useEffect, useState } from 'react';
 
