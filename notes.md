@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 — the Stop that didn't stop; identity before the meter; cinematic fade
+
+- **#62 (P0):** Stop's `useCallback` had stale deps → it stopped a pre-unlock ghost negotiator; the REAL one kept camera + billed Decart session until tab reload. Fixed + `isOrphanVideoLeg` reaper invariant + `exhaustive-deps` now an ERROR (was off; src/hooks wasn't even linted). Latch `reset()` API deleted — new session is the only re-arm.
+- **#63:** voice/avatar/prompt now on the access-key screen — configure BEFORE the meter starts; "choose a voice…" placeholder honesty; avatar FileReader race held without consuming the latch.
+- **#64:** connecting = slow fade to own camera (dim/desaturated), live = crossfade to transformed + settle; chrome 60% + scrims + text-shadow (was 25%, unreadable); ring yields in cinematic. Probe rewritten for unified flow, asserts on `data-role="transformed-stream"` (camera-preview layer could false-PASS it).
+- **Next:** CEO runs the full identity drill (fade + avatar + voice + H) and judges P3 sync by ear; log same-day.
+
 ## 3 August 2026 (night) — halt-and-fix done; unified lens + pre-start identity shipped
 
 - **Triage:** agent = template instance down (primary was up 23h — check EVERY unit); "502" = **Decart 422 Insufficient credits** (now 402 vendor_credits_exhausted, honest prose; top-up = her wall); mic indicator = camera behind split buttons (no leak — instrumented).

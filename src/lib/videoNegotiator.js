@@ -46,6 +46,7 @@ export class NegotiationAborted extends Error {
  *   PeerConnection: any,
  *   EventSourceFactory?: ((url: string) => EventSource) | null,
  *   onStream?: (stream: any) => void,
+ *   onLocalStream?: (stream: any) => void,
  *   onPhase?: (phase: string) => void,
  *   onFailure?: (reason: string) => void,
  * }} deps
@@ -67,6 +68,13 @@ export function createVideoNegotiator({
     ? (url) => new globalThis.EventSource(url)
     : null,
   onStream,
+  // The CAMERA stream, reported the moment this start owns it and nulled at
+  // teardown. Exists for the connecting fade (CEO, 4 Aug 2026): while the
+  // vendor leg negotiates, the page shows the person their own feed
+  // materializing — honest about what is being captured, and the visual
+  // bridge into the transformed stream. Only the CURRENT generation ever
+  // reports; a superseded start's camera dies silently in closeLocal.
+  onLocalStream,
   onPhase,
   onFailure,
 }) {
@@ -221,6 +229,7 @@ export function createVideoNegotiator({
     localStream = null;
     pendingCandidates = [];
     onStream?.(null);
+    onLocalStream?.(null);
   }
 
   return {
@@ -275,6 +284,7 @@ export function createVideoNegotiator({
         );
         checkpoint(mine);
         localStream = myStream;
+        onLocalStream?.(myStream);
 
         myPc = new PeerConnection();
         pc = myPc;

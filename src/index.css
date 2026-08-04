@@ -130,14 +130,33 @@ video::-webkit-media-controls {
 /* Cinematic mode (the unified lens): while the transformed stream is the
    background, the chrome recedes — visible enough to find, quiet enough to
    ignore. Pointer or keyboard attention brings it back. The backdrop itself
-   is exempt: dimming the thing being watched would defeat the mode. */
+   is exempt: dimming the thing being watched would defeat the mode.
+
+   0.6, not 0.25 (CEO, 4 Aug 2026): at 25% over live video the controls were
+   unreadable, which turns "recede" into "vanish". Legibility over the moving
+   image comes from the backdrop's edge scrims plus a soft text shadow — the
+   chrome stays quiet without becoming a rumor. */
 .cinematic-chrome > *:not(.lens-backdrop) {
-  opacity: 0.25;
+  opacity: 0.6;
   transition: opacity 0.5s ease;
 }
 .cinematic-chrome:hover > *:not(.lens-backdrop),
 .cinematic-chrome:focus-within > *:not(.lens-backdrop) {
   opacity: 1;
+}
+.cinematic-chrome {
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.85);
+}
+
+/* The lens ring yields the stage entirely: once the stream IS the person,
+   a 260px ring floating over their face is clutter, not status. opacity
+   keeps its layout so nothing below jumps. It stays gone even under the
+   hover restore — attention brings back the CONTROLS, not the ornament. */
+.cinematic-chrome > .cinematic-veil,
+.cinematic-chrome:hover > .cinematic-veil,
+.cinematic-chrome:focus-within > .cinematic-veil {
+  opacity: 0;
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

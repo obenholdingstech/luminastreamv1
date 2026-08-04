@@ -4,6 +4,50 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 4 August 2026 — Stop that didn't stop (stale-closure spend leak); identity before the meter; the cinematic fade
+
+**Task (CEO, verbatim):** "i just topped up decart, production is working but not working as expected, when i am streaming and i click stop stream, the stream stops but the browser still gives me signal that my camera is still on which doesnt stop till i manually reload the tab, and it seems to me like decart bills me in backround when that is happening. the process of starting stream is bad, when i load the page entering admin password and clicking start stream starts the stream automaticslly without me even preparing and choosing voice/image ref which is bad. i should be able to choose those configs on that same screen am entering admin password so everything loads and syncs ones, then the annimation/transition between when streaming and when not streaming is terrible, the backround transitioning to camera feed when i start stream is terrible because the ui becomes unreadable so work on the ui and transition style so when i click to start stream the backround will slowly fage to my camera feed while its connecting and when it connects and is live everything looks cool"
+
+### PR #62 — fix(studio): Stop now stops the real video leg (P0, live spend leak)
+
+**Root cause.** `Studio.jsx`'s `stop` handler was `useCallback(..., [disconnect, holder])`. Both deps are identity-stable from the FIRST render — which happens before unlock, when `adminToken` is null. The `video` object captured in that closure wraps a negotiator created with no admin token: a negotiator that never started anything. Every press of Stop called that dead negotiator's `stop()`; the real one (created after unlock) kept the camera, the RTCPeerConnection, the SSE stream, and the billed Decart session. Only `pagehide` — tab reload — released it. Camera indicator on after Stop, vendor billing in the background: exactly the report.
+
+**Why lint never caught it:** `react-hooks/exhaustive-deps` was not enabled (only `rules-of-hooks`), and `src/hooks/` was not in eslint's `files` list at all.
+
+**The fix, three layers (the class, not the instance):**
+1. `stop` depends on the current `video` leg.
+2. Structural invariant: `isOrphanVideoLeg({hasCredentials, videoPhase})` in `unifiedLens.js` — no held audio session ⇒ no video leg, enforced by an effect that closes over the current render by construction. Fail-safe inversion: it names the two phases that must NOT be reaped ('off', 'stopping'); any future phase defaults to reaped.
+3. `react-hooks/exhaustive-deps` is now an **error** and `src/hooks/` is linted. Gate mutation-tested: a probe file with the exact bug shape fails lint.
+
+Also deleted the latches' `reset()` API — session identities are server-unique, so a new session re-arms a latch by being new; the manual `autoLatch.reset()` in the old stop handler was one render away from opening a second paid vendor session mid-teardown.
+
+CodeRabbit: 1 actionable (extract the teardown predicate — the lifecycle-in-component doctrine's 4th occurrence), accepted with the fail-safe inversion; confirmed ✅. Merged `b6b19e0`; Pages deploy green.
+
+### PR #63 — feat(studio): identity chosen on the access-key screen
+
+Voice/avatar/prompt were gated on `adminToken`, so the first-ever Start took the user into a billed session they had never configured. All three are local state (manifest list, FileReader data URL, text) — now rendered pre-unlock; one press of "Start the lens" carries the whole identity. Honesty fixes en route: a disabled "choose a voice…" placeholder (the select used to DISPLAY the first list entry while the session would use the agent's default), and the style input speaks two tenses (styles the lens pre-start, restyles live after — accessible name included).
+
+CodeRabbit: 2 actionable + 1 nitpick, all accepted and confirmed ✅ — stored voice ids validated against the list in force (`validChosenVoice`); the video auto-start holds (without consuming the latch) while a FileReader read is in flight, so the promised avatar always rides the first session; phase-aware `aria-label`. Merged `ae00f6a`; deploy green. Evidence: `devlog/evidence/identity-before-unlock.png`.
+
+### PR #64 — feat(studio): the cinematic fade
+
+The transition is now the product moment the CEO asked for: on Start the page fades slowly (1.6s) toward the person's own camera — dimmed, desaturated, honest about "materializing" — while the vendor leg negotiates; when the transformed stream goes live the two layers crossfade and the frame gently settles (scale 1.03 → 1). Readability over motion: chrome recedes to 60% (was 25% — unreadable over live video), edge scrims top and bottom carry the header and controls, soft text shadow, and the 260px lens ring yields the stage entirely in cinematic mode (its layout box stays, so nothing jumps; the CSS keeps it hidden even under hover restore — attention brings back controls, not ornament).
+
+Plumbing: `videoNegotiator` gains an `onLocalStream` dep (reported when a start owns the camera, nulled at teardown, generation-guarded — 2 new tests, 25 pass); `useLensVideo` exposes `localStream`; the two backdrop `<video>` layers carry `data-role="camera-preview"` / `"transformed-stream"`.
+
+The render probe was rewritten for the unified flow — it still clicked "Add video", a button #60 deleted, and its `querySelector('video')` would now grab the camera preview, whose fake-camera clock advances all by itself: a false PASS with Decart delivering nothing. It now drives access-key → "Start the lens" → asserts decode + advancing clock on `[data-role="transformed-stream"]` specifically → one Stop → reservation settles.
+
+### Verification
+- lint (with the new exhaustive-deps gate) / typecheck / `node --test src/lib/*.test.js` (218) / build — clean at every step
+- #62 and #63 deploys: CI + Pages both success; #64 same gate before this entry is pushed
+- Single-shot production render probe after #64's deploy (connection-budget doctrine: one run, reset on failure)
+
+### Still the CEO's side of the walls
+- The full identity drill with her eyes and ears (avatar + voice + cinematic fade + H), logged same-day
+- P3 A/V sync acceptance in free talk
+
+---
+
 ## 3 August 2026 (night) — halt-and-fix triage, the unified lens, pre-start identity
 
 ### Her halt mandate, resolved item by item

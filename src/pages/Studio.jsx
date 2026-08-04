@@ -294,9 +294,13 @@ export default function Studio() {
   // and stoppable without disturbing a conversation in progress.
   const video = useLensVideo(adminToken);
   const videoElRef = useRef(null);
+  const localElRef = useRef(null);
   useEffect(() => {
     if (videoElRef.current) videoElRef.current.srcObject = video.stream ?? null;
   }, [video.stream]);
+  useEffect(() => {
+    if (localElRef.current) localElRef.current.srcObject = video.localStream ?? null;
+  }, [video.localStream]);
   const fidelity = video.pipeline.describe();
 
   // ── A/V sync (P3): audio is the master clock ──────────────────────────
@@ -710,7 +714,7 @@ export default function Studio() {
 
       <header
         {...chromeInert}
-        className={`relative flex items-center justify-between px-6 sm:px-10 py-6 transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
+        className={`relative flex items-center justify-between px-6 sm:px-10 py-6 transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-60 hover:opacity-100 focus-within:opacity-100' : ''}`}
       >
         <div className="flex items-baseline gap-3">
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/90">Lumina</span>
@@ -729,15 +733,21 @@ export default function Studio() {
         {...chromeInert}
         className={`relative isolate flex-1 flex flex-col items-center justify-center px-6 pb-16 ${cinematic ? 'cinematic-chrome' : ''}`}
       >
-        <Lens
-          tone={status.tone}
-          // status.id, not status.tone: 'waiting for the agent' shares the
-          // 'working' tone, and a ring that spins forever reads as "almost
-          // there" when the truth may be that no agent is running at all.
-          spinning={status.id === 'connecting'}
-          reduceMotion={reduceMotion}
-          levelHostRef={levelHostRef}
-        />
+        {/* cinematic-veil: the ring cedes the stage to the stream (CSS keeps
+            its layout box, so nothing below jumps). The mic meter keeps
+            painting a hidden ring — cheaper than tearing the graph down and
+            rebuilding it every time the mode flips. */}
+        <div className={cinematic ? 'cinematic-veil' : ''}>
+          <Lens
+            tone={status.tone}
+            // status.id, not status.tone: 'waiting for the agent' shares the
+            // 'working' tone, and a ring that spins forever reads as "almost
+            // there" when the truth may be that no agent is running at all.
+            spinning={status.id === 'connecting'}
+            reduceMotion={reduceMotion}
+            levelHostRef={levelHostRef}
+          />
+        </div>
 
         {/* Status. aria-live so the state change is announced, not just seen —
             this is the one piece of text that tells you whether your voice is
@@ -911,28 +921,63 @@ export default function Studio() {
           </div>
         )}
 
-        {/* The video leg — CINEMATIC when live (CEO mandate, 3 Aug): the
-            transformed stream becomes the full background and the chrome
-            recedes; while starting it sits softly behind the ring. Frames
-            still arrive only through the pipeline (framePipeline.js). */}
-        {video.stream && (
-          <div className="lens-backdrop absolute inset-0 -z-10 flex items-center justify-center overflow-hidden">
-            <video
-              ref={videoElRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover transition-opacity duration-700 motion-reduce:transition-none ${
-                cinematic ? 'opacity-100' : 'opacity-40'
-              }`}
-            />
+        {/* The backdrop — the transition IS the product moment (CEO, 4 Aug):
+            on Start the page fades slowly toward the person's own camera
+            while the lens connects, then crossfades into the transformed
+            stream when it goes live. Two stacked <video> layers, each owning
+            only its opacity; the raw feed is dimmed and desaturated so it
+            reads as "materializing", never as the finished thing. */}
+        {(video.localStream || video.stream) && (
+          <div className="lens-backdrop absolute inset-0 -z-10 overflow-hidden">
+            {video.localStream && (
+              <video
+                ref={localElRef}
+                // The probe (and any future instrument) must be able to tell
+                // the camera preview from the vendor's output — asserting on
+                // "a <video> plays" would pass on the fake camera alone.
+                data-role="camera-preview"
+                autoPlay
+                playsInline
+                muted
+                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-[1600ms] ease-out motion-reduce:transition-none ${
+                  video.stream ? 'opacity-0' : 'opacity-30'
+                }`}
+                style={{ filter: 'saturate(0.55) brightness(0.6)' }}
+              />
+            )}
+            {video.stream && (
+              <video
+                ref={videoElRef}
+                data-role="transformed-stream"
+                autoPlay
+                playsInline
+                muted
+                className={`absolute inset-0 w-full h-full object-cover transition-[opacity,transform] duration-[1200ms] ease-out motion-reduce:transition-none ${
+                  cinematic ? 'opacity-100 scale-100' : 'opacity-40 scale-[1.03]'
+                }`}
+              />
+            )}
+            {/* Readability, in two regimes: before live, a radial mask keeps
+                the center column legible over the materializing feed; once
+                cinematic, edge scrims take over so the header and controls
+                sit on darkness while the face stays untouched. */}
             <div
               aria-hidden
-              className="absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none"
+              className="absolute inset-0 transition-opacity duration-[1200ms] motion-reduce:transition-none"
               style={{
                 background:
                   'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
                 opacity: cinematic ? 0 : 1,
+              }}
+            />
+            <div
+              aria-hidden
+              className={`absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none ${
+                cinematic ? 'opacity-100' : 'opacity-0'
+              }`}
+              style={{
+                background:
+                  'linear-gradient(to bottom, rgba(5,5,10,0.65) 0%, transparent 24%, transparent 68%, rgba(5,5,10,0.78) 100%)',
               }}
             />
           </div>
@@ -1236,7 +1281,7 @@ export default function Studio() {
           may already be using. */}
       <footer
         {...chromeInert}
-        className={`relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-25 hover:opacity-100 focus-within:opacity-100' : ''}`}
+        className={`relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-60 hover:opacity-100 focus-within:opacity-100' : ''}`}
       >
         {allocation ? (
           <>

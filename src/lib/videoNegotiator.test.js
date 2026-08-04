@@ -37,7 +37,7 @@ function fakePeer({ onCreated } = {}) {
 }
 
 function harness({ createSession, endSession, getUserMedia, sendCandidates, EventSourceFactory } = {}) {
-  const calls = { candidates: [], ends: [], streams: [], phases: [], failures: [] };
+  const calls = { candidates: [], ends: [], streams: [], locals: [], phases: [], failures: [] };
   let peer = null;
   const track = { stop() { track.stopped = true; }, stopped: false };
   const local = { getTracks: () => [track] };
@@ -61,6 +61,7 @@ function harness({ createSession, endSession, getUserMedia, sendCandidates, Even
       sendCandidates ?? ((session, c) => calls.candidates.push({ sessionId: session?.sessionId, c })),
     ...(EventSourceFactory ? { EventSourceFactory } : {}),
     onStream: (s) => calls.streams.push(s),
+    onLocalStream: (s) => calls.locals.push(s),
     onPhase: (p) => calls.phases.push(p),
     onFailure: (r) => calls.failures.push(r),
   });
@@ -521,4 +522,47 @@ test('stop() closes the event stream with everything else', async () => {
   assert.equal(source.closed, false);
   await h.negotiator.stop();
   assert.equal(source.closed, true, 'no listener outlives the session it listened to');
+});
+
+// ─── the camera stream, reported for the connecting fade ───────────────────
+
+test('the camera stream is reported when a start owns it, and nulled at teardown', async () => {
+  const h = harness();
+  await h.negotiator.start({});
+  assert.equal(h.calls.locals.length, 1, 'reported once, at acquisition');
+  assert.ok(h.calls.locals[0]?.getTracks, 'the actual stream, not a token for it');
+  await h.negotiator.stop();
+  assert.deepEqual(
+    h.calls.locals[h.calls.locals.length - 1],
+    null,
+    'teardown tells the page the camera is gone — a frozen self-view would claim capture that stopped',
+  );
+});
+
+test('a superseded start never reports its camera over the one that replaced it', async () => {
+  // First start blocks inside getUserMedia; stop() supersedes it; a second
+  // start acquires and reports. When the first finally resolves, it must die
+  // in closeLocal without touching the report channel.
+  let release;
+  const gate = new Promise((r) => (release = r));
+  let first = true;
+  const late = { getTracks: () => [] };
+  const h = harness({
+    getUserMedia: async () => {
+      if (first) {
+        first = false;
+        await gate;
+        return late;
+      }
+      return { getTracks: () => [], mine: true };
+    },
+  });
+  const abandoned = h.negotiator.start({});
+  await h.negotiator.stop();
+  await h.negotiator.start({});
+  const reported = h.calls.locals.length;
+  release();
+  await abandoned;
+  assert.equal(h.calls.locals.length, reported, 'the ghost start said nothing');
+  assert.equal(h.calls.locals[h.calls.locals.length - 1]?.mine, true, 'the live start owns the channel');
 });

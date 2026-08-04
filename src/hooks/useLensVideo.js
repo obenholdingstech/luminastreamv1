@@ -51,6 +51,10 @@ export function useLensVideo(adminToken) {
   const [error, setError] = useState('');
   const [budget, setBudget] = useState(null);
   const [stream, setStream] = useState(null);
+  // The raw camera, for the connecting fade: visible while the vendor leg
+  // negotiates, gone the moment teardown stops capturing. Reported by the
+  // negotiator, never read from getUserMedia here — one owner per stream.
+  const [localStream, setLocalStream] = useState(null);
 
   const mountedRef = useRef(true);
   // Terminal states must survive the negotiator's own phase reports: once the
@@ -76,6 +80,9 @@ export function useLensVideo(adminToken) {
         // upscale → present — even while the middle stages are inert.
         onStream: (raw) => {
           if (mountedRef.current) setStream(pipeline.run(raw).stream);
+        },
+        onLocalStream: (raw) => {
+          if (mountedRef.current) setLocalStream(raw);
         },
         onPhase: (next) => {
           if (mountedRef.current && !terminalRef.current) {
@@ -182,5 +189,5 @@ export function useLensVideo(adminToken) {
     };
   }, [adminToken, negotiator, pipeline]);
 
-  return { phase, error, budget, stream, pipeline, start, stop, updatePrompt, updateImage };
+  return { phase, error, budget, stream, localStream, pipeline, start, stop, updatePrompt, updateImage };
 }
