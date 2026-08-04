@@ -8,6 +8,7 @@ import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useMicLevel } from '@/hooks/useMicLevel';
 import { useSyncMeter } from '@/hooks/useSyncMeter';
 import { useAudioAlign } from '@/hooks/useAudioAlign';
+import { useFpsMeter } from '@/hooks/useFpsMeter';
 import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
@@ -331,6 +332,10 @@ export default function Studio() {
     return () => el.removeEventListener('loadeddata', ready);
   }, [video.stream]);
   const fidelity = video.pipeline.describe();
+  // What rate the pipeline ACTUALLY presents (the 50fps mandate's first
+  // step: measure before synthesizing). Null renders as nothing — the
+  // readout never invents a frame rate.
+  const deliveredFps = useFpsMeter(videoElRef, video.stream);
 
   // ── A/V sync (P3): audio is the master clock, measured at the ear ─────
   // The sync meter measures the true mouth→ear delay per utterance (local
@@ -1151,6 +1156,7 @@ export default function Studio() {
                 <span className="text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
                   <Video size={10} className="inline mr-1" aria-hidden />
                   {fidelity.delivering.height}p
+                  {deliveredFps != null && ` · ${deliveredFps}fps`}
                   {!fidelity.upscaleActive && ' · upscale pending'}
                   {/* The applied hold, not a vanity light: how far the video
                       is standing behind real time to meet its voice. State,

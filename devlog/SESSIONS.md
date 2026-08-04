@@ -4,6 +4,24 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 4 August 2026 (night) — the 6.6/10 drill decoded: calibration, the laggard doctrine, the fps instrument
+
+**Task (CEO):** clarity 8.4/10; sync 6.6/10 — converted audio ~400ms ahead; passthrough "misaligned... feels like the sync logic was designed exclusively for converted mode"; target 50fps; explicit budget green light, "never lose current progress or break production."
+
+### PR #70 — calibration + the trim knob
+Her 400ms lead IS the calibration the video-path constant was built to receive: default 300 → **700ms**, and the estimate became a live control — `setVideoPathMs` on the align stage (one normalizer, `clampVideoPathMs`, at every boundary after CodeRabbit caught storage/state divergence), persisted, stepped 100ms per press, labeled by symptom: **"lips earlier" / "lips later"**. The next calibration is a button, not a deploy. CodeRabbit: 2 accepted+confirmed. Merged `dbb820b`.
+
+### PR #71 — Direct mode: THE LAGGARD IS THE MASTER CLOCK
+Her passthrough instinct was exactly right — the sync logic WAS converted-only. There audio always lags and video holds; in Direct mode audio returns ~350ms while video costs ~700ms: audio leads, and a video hold can never close a gap on the other side. Doctrine generalized: whichever stream leads takes the hold. Direct now routes the remote voice through a WebAudio delay line targeting (videoPath − mouth→ear), smoothed by its own tighter elastic (100/150/1500). Safety contract tested at the lib level: element path muted ONLY while the context is verifiably running; construction failure never touches the voice; suspension gives it back instantly; per-track volume scoping (a blanket mute would silence an undelayed second publisher); the UI's "audio held" claim follows ENGAGEMENT through a tested reporter, never the controller's wish. CodeRabbit: 3 accepted+confirmed (reporter extraction, track-scoped volume, stable-observer + object-identity sample dedupe — a re-observed sample would bypass the slew). Merged `5cbcde3`.
+
+### PR #72 — the fps instrument
+Step one of the 50fps mandate: measure before synthesizing. `fpsMeter.js` (sliding-window rate, null below minFrames — "measuring", never an invented number; backward-clock reset) + `useFpsMeter` (requestVideoFrameCallback feeds at frame rate, publishes at 1Hz so the instrument is not the load it measures). The fidelity line now reads e.g. "1080p · 24fps · video held 1.4s". The synthesis decision (GPU midpoint blend vs motion-compensated interpolation) is made from this number on her screen, not from a guess.
+
+### Resources answer (her budget green light)
+Nothing rented: both sync fixes and the instrument are client-side. The budget option stays open for true motion interpolation if blended synthesis fails her eye.
+
+---
+
 ## 4 August 2026 (later) — the 9/10 sync mandate: measure at the ear; upscale is ours
 
 **Task (CEO):** A/V sync 5/10 ("inconsistent — sometimes the video arrives before the voice, sometimes they land together") → goal 9/10; video clarity 7/10, "not crystal clear... doesn't feel fully upscaled". Assess architecture, implement without breaking production, test everything, flag needed input.
