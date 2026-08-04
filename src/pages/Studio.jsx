@@ -634,9 +634,15 @@ export default function Studio() {
   // state exactly once per NEW measurement, so this effect fires once per
   // measured utterance, never per render.
   const sync = useSyncMeter(micTrack, remoteAudioTrack);
+  // The applied hold, as RENDER-VISIBLE state: the render that displays it
+  // happens before the effect that moves it, so reading targetMs() during
+  // render would trail by one measurement (CodeRabbit, PR 67). Written here,
+  // in the same breath as the observation that moves it.
+  const [appliedHoldMs, setAppliedHoldMs] = useState(0);
   useEffect(() => {
     if (Number.isFinite(sync?.lastMs)) {
       video.pipeline.stages.align.observeMouthToEar?.(sync.lastMs);
+      setAppliedHoldMs(video.pipeline.stages.align.targetMs?.() ?? 0);
     }
   }, [sync, video.pipeline]);
 
@@ -1091,11 +1097,10 @@ export default function Studio() {
                   {fidelity.delivering.height}p
                   {!fidelity.upscaleActive && ' · upscale pending'}
                   {/* The applied hold, not a vanity light: how far the video
-                      is standing behind real time to meet its voice. Reads
-                      fresh each render; renders arrive with each measured
-                      utterance. */}
-                  {fidelity.alignActive &&
-                    ` · video held ${(video.pipeline.stages.align.targetMs() / 1000).toFixed(1)}s`}
+                      is standing behind real time to meet its voice. State,
+                      not a render-time read — written by the same effect
+                      that moves the target, so it is never a beat behind. */}
+                  {fidelity.alignActive && ` · video held ${(appliedHoldMs / 1000).toFixed(1)}s`}
                   {' · press H for clean view'}
                 </span>
               )}
