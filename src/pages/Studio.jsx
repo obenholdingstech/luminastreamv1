@@ -245,6 +245,15 @@ export default function Studio() {
   const effectiveVoiceLabels = liveVoiceList
     ? voiceLabels
     : Object.fromEntries(voiceManifest.voices.map((v) => [v.id, v.label]));
+  // A stored choice is only a choice while the current list still offers it.
+  // A voice deleted from the account (or absent from the agent's live list)
+  // would otherwise leave the controlled <select> with no matching option —
+  // the browser displays the FIRST entry while the latch requests the ghost.
+  // The stored value itself is kept: the list in view changes (manifest
+  // pre-connect, broadcast after), and a choice invalid against one may be
+  // perfectly valid against the next.
+  const validChosenVoice =
+    chosenVoice && effectiveVoiceChoices.includes(chosenVoice) ? chosenVoice : null;
   const [voicePref] = useState(() => createVoicePreference());
 
   const voiceSelector = useMemo(
@@ -309,6 +318,12 @@ export default function Studio() {
   // reconnecting, so neither costs a new reservation.
   const [avatar, setAvatar] = useState(null); // { dataUrl, name } | null
   const [avatarError, setAvatarError] = useState('');
+  // FileReader is asynchronous: between the pick and onload there is a
+  // window where the UI promises an avatar it does not yet hold. The video
+  // auto-start waits for this flag — without it, a Start pressed inside
+  // that window opened the session with NO reference image, and the latch
+  // (correctly) refused a second start to add it.
+  const [avatarReading, setAvatarReading] = useState(false);
   const [livePrompt, setLivePrompt] = useState('');
   const [promptApplied, setPromptApplied] = useState(false);
   const avatarInputRef = useRef(null);
@@ -336,6 +351,7 @@ export default function Studio() {
         // the stream keeps animating the PREVIOUS identity, and saying
         // nothing would be the UI claiming something the vendor never did.
         setAvatar({ dataUrl, name: file.name });
+        setAvatarReading(false);
         if (video.phase === VIDEO_PHASE.live) {
           const ok = await video.updateImage(dataUrl);
           if (!ok) {
@@ -345,6 +361,13 @@ export default function Studio() {
           }
         }
       };
+      // A failed read MUST clear the flag, or the video leg waits forever
+      // for an identity that is never coming.
+      reader.onerror = () => {
+        setAvatarReading(false);
+        setAvatarError('the image could not be read — try picking it again');
+      };
+      setAvatarReading(true);
       reader.readAsDataURL(file);
     },
     [video],
@@ -426,6 +449,10 @@ export default function Studio() {
   // recedes (press H for the fully raw view).
   const [autoLatch] = useState(() => createAutoStartLatch());
   useEffect(() => {
+    // A pick mid-read: hold the video leg WITHOUT consuming the latch —
+    // audio proceeds, and this effect re-fires the moment the read settles,
+    // so the avatar the user was promised actually rides the start.
+    if (avatarReading) return;
     if (
       autoLatch.shouldStart({
         sessionId: allocation?.identity ?? null,
@@ -439,7 +466,7 @@ export default function Studio() {
         ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
       });
     }
-  }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt]);
+  }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt, avatarReading]);
 
   const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
 
@@ -454,13 +481,16 @@ export default function Studio() {
       voicePref.shouldApply({
         sessionId: allocation?.identity ?? null,
         connected: isConnected,
-        chosen: chosenVoice,
+        // The VALIDATED choice: by this point the agent's broadcast has
+        // arrived (confirmedVoice gates shouldApply), so the list in force
+        // is the live one — a stored id it no longer offers is not sent.
+        chosen: validChosenVoice,
         confirmedVoice,
       })
     ) {
-      requestVoice(chosenVoice);
+      requestVoice(validChosenVoice);
     }
-  }, [allocation, isConnected, chosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
+  }, [allocation, isConnected, validChosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
   // The invariant behind the fix above, enforced structurally: NO audio
@@ -819,9 +849,13 @@ export default function Studio() {
             agent-CONFIRMED voice (the mode toggle's honesty rule); before
             the lens starts it is the stored choice, labeled as such. Hidden
             only when the agent has confirmed Direct — a voice selector there
-            would promise what the mode cannot do. */}
-        {adminToken &&
-          effectiveVoiceChoices.length > 0 &&
+            would promise what the mode cannot do.
+
+            Deliberately NOT gated on the unlock (CEO, 4 Aug 2026): the whole
+            identity — voice, avatar, style — is chosen on the same screen as
+            the access key, so the ONE press of Start carries all of it. The
+            choices are local until then; nothing here needs a server. */}
+        {effectiveVoiceChoices.length > 0 &&
           !(isConnected && agentMode && agentMode !== agentModeFor('converted')) && (
           <div className="mt-4 flex flex-col items-center gap-1">
             <div className="flex items-center gap-2">
@@ -833,13 +867,23 @@ export default function Studio() {
               </label>
               <select
                 id="lens-voice"
-                value={isConnected && confirmedVoice ? confirmedVoice : (chosenVoice ?? confirmedVoice ?? '')}
+                value={isConnected && confirmedVoice ? confirmedVoice : (validChosenVoice ?? confirmedVoice ?? '')}
                 onChange={(e) => {
                   chooseVoice(e.target.value);
                   if (isConnected) requestVoice(e.target.value);
                 }}
                 className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
               >
+                {/* With no stored choice the select's value is '' — without
+                    this option the browser would DISPLAY the first voice in
+                    the list while the session would actually use the agent's
+                    default. A placeholder keeps the display honest until a
+                    real choice exists. */}
+                {!validChosenVoice && !(isConnected && confirmedVoice) && (
+                  <option value="" disabled className="bg-[#08080F]">
+                    choose a voice…
+                  </option>
+                )}
                 {effectiveVoiceChoices.map((id) => (
                   <option key={id} value={id} className="bg-[#08080F]">
                     {effectiveVoiceLabels[id] ?? id}
@@ -847,7 +891,7 @@ export default function Studio() {
                 ))}
               </select>
             </div>
-            {!isConnected && chosenVoice && (
+            {!isConnected && validChosenVoice && (
               <span className="text-[9px] text-[#3E4A5F]">
                 applies when the lens starts
               </span>
@@ -897,9 +941,11 @@ export default function Studio() {
         {/* The lens's video state — no separate button (CEO mandate: ONE
             universal Start). The lens starts audio and video together; what
             remains here is the truth about the video leg, and the identity
-            controls that shape it. */}
-        {adminToken && (
-          <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
+            controls that shape it. Like the voice above, the avatar and the
+            style prompt are pre-unlock controls: both are local state that
+            rides the first start, so hiding them behind the key would force
+            the user to configure their identity AFTER the meter starts. */}
+        <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
             <div className="flex items-center gap-3">
               {(video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping) && (
                 <span className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#64748B]">
@@ -964,7 +1010,14 @@ export default function Studio() {
               )}
               <input
                 type="text"
-                aria-label="live restyle prompt"
+                // The accessible name carries the same two tenses as the
+                // placeholder — a screen reader must not be told less than
+                // the placeholder shows (CodeRabbit, PR 63).
+                aria-label={
+                  video.phase === VIDEO_PHASE.live
+                    ? 'restyle the live stream'
+                    : 'style the lens at start'
+                }
                 value={livePrompt}
                 onChange={(e) => {
                   setLivePrompt(e.target.value);
@@ -973,7 +1026,14 @@ export default function Studio() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') applyPrompt();
                 }}
-                placeholder='restyle live — e.g. "change cloth to blue"'
+                // Same input, two honest tenses: before the lens starts the
+                // prompt STYLES the identity that will ride the first start;
+                // once live it RESTYLES the running stream.
+                placeholder={
+                  video.phase === VIDEO_PHASE.live
+                    ? 'restyle live — e.g. "change cloth to blue"'
+                    : 'style the lens — e.g. "warm studio light, navy jacket"'
+                }
                 className="min-w-0 flex-1 bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:outline-none focus:border-[#6366F1]"
               />
               {video.phase === VIDEO_PHASE.live && (
@@ -1009,7 +1069,6 @@ export default function Studio() {
               </p>
             )}
           </div>
-        )}
 
         {/* Action */}
         <div className="mt-10 w-full max-w-sm">
@@ -1105,7 +1164,7 @@ export default function Studio() {
                   className="flex items-center gap-2 rounded-full px-6 text-[11px] tracking-[0.16em] uppercase bg-white text-[#08080F] disabled:opacity-40 transition-opacity"
                 >
                   {unlocking ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-                  Start
+                  Start the lens
                 </button>
               </div>
               {/* role="alert" rather than plain text: this form is the only
