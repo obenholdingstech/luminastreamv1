@@ -88,6 +88,28 @@ export function useLiveKitVoice(url, token) {
     });
   }, []);
 
+  /**
+   * Set the ELEMENT path's volume for ONE remote audio track, identified by
+   * its MediaStreamTrack. Scoped, not blanket: the Direct-mode aligner
+   * delays exactly one track, and muting any other publisher would silence
+   * a voice nothing is carrying. 0 while the aligner's delay line has the
+   * track; back to 1 the instant it does not — the aligner's engage /
+   * disengage callbacks are the only callers. A reconnect swaps the
+   * MediaStreamTrack, which re-runs the aligner's effect against the new
+   * one — no volume state needs to survive here.
+   */
+  const setTrackVolume = useCallback((mediaStreamTrack, volume) => {
+    if (!mediaStreamTrack) return;
+    remoteAudioRef.current.forEach(({ track }) => {
+      if (track.mediaStreamTrack !== mediaStreamTrack) return;
+      try {
+        /** @type {any} */ (track).setVolume?.(volume);
+      } catch {
+        // a track mid-teardown — the detach path owns it now
+      }
+    });
+  }, []);
+
   // Refs/DOM only — safe from unmount cleanup where setState must be avoided.
   // track.detach() detaches ALL elements for the track and returns them.
   const detachAllRemoteAudio = useCallback(() => {
@@ -476,5 +498,6 @@ export function useLiveKitVoice(url, token) {
     requestAgentConfig,
     refreshVoices,
     setCaptureConstraint,
+    setTrackVolume,
   };
 }
