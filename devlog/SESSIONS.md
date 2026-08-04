@@ -17,6 +17,10 @@ Her passthrough instinct was exactly right — the sync logic WAS converted-only
 ### PR #72 — the fps instrument
 Step one of the 50fps mandate: measure before synthesizing. `fpsMeter.js` (sliding-window rate, null below minFrames — "measuring", never an invented number; backward-clock reset) + `useFpsMeter` (requestVideoFrameCallback feeds at frame rate, publishes at 1Hz so the instrument is not the load it measures). The fidelity line now reads e.g. "1080p · 24fps · video held 1.4s". The synthesis decision (GPU midpoint blend vs motion-compensated interpolation) is made from this number on her screen, not from a guess.
 
+### Post-deploy verification (probe, production)
+
+Corrected probe against the deployed arc: **PASS — delivering 1920px wide, billed 0s**; all 3 layers healthy. The evidence frame carries the first REAL fps measurement: the fidelity line reads **"1080P · 18FPS · VIDEO HELD 0.0s"** with the sync trim (lips later · 700MS · lips earlier) live beside it. 18fps measured under the probe's headless SwiftShader rendering — the CEO's hardware-accelerated Chrome may read differently, which is exactly why the number is now on HER screen. Folklore said "20–25"; the meter says what is true where it runs. The 50fps synthesis stage now has a measured starting point.
+
 ### Resources answer (her budget green light)
 Nothing rented: both sync fixes and the instrument are client-side. The budget option stays open for true motion interpolation if blended synthesis fails her eye.
 
