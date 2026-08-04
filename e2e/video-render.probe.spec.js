@@ -103,8 +103,21 @@ async function runDrill(page, token, before) {
   const t2 = await page.evaluate((sel) => document.querySelector(sel)?.currentTime ?? 0, transformed);
   expect(t2, 'the stream clock must ADVANCE — a frozen frame is not a stream').toBeGreaterThan(t1);
 
-  // The honesty readout that P2d promised.
-  await expect(page.getByText(/720p/)).toBeVisible();
+  // The honesty readout, asserted AS the honesty rule: whatever resolution
+  // the fidelity line claims must match the pixels the element is actually
+  // decoding. Since #68 the upscale stage delivers 1080p where WebGL2
+  // exists and an honest 720p passthrough where it does not — both are
+  // legitimate; a CLAIM that disagrees with the pixels is the only failure.
+  const deliveredWidth = await page.evaluate(
+    (sel) => document.querySelector(sel)?.videoWidth ?? 0,
+    transformed,
+  );
+  if (deliveredWidth >= 1920) {
+    await expect(page.getByText(/1080p/)).toBeVisible();
+  } else {
+    expect(deliveredWidth, 'below 1080p only vendor-native 720p is honest').toBe(1280);
+    await expect(page.getByText(/720p/)).toBeVisible();
+  }
 
   // Evidence for the log: the transformed output on the screen. NOT under
   // playwright-report/ — the HTML reporter regenerates that directory after
@@ -129,6 +142,6 @@ async function runDrill(page, token, before) {
   const spent = after.spentSeconds - before.spentSeconds;
   expect(spent, 'a short probe must not bill like a session').toBeLessThanOrEqual(60);
   console.log(
-    `RENDER PROBE PASS — billed ${spent}s, remaining ${after.remainingSeconds}s, evidence: devlog/evidence/video-render-evidence.png`,
+    `RENDER PROBE PASS — delivering ${deliveredWidth}px wide, billed ${spent}s, remaining ${after.remainingSeconds}s, evidence: devlog/evidence/video-render-evidence.png`,
   );
 }
