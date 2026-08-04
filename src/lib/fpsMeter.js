@@ -22,6 +22,10 @@ export function createFpsMeter(overrides = {}) {
   /** @type {number[]} */
   const times = [];
 
+  const prune = (nowMs) => {
+    while (times.length > 0 && nowMs - times[0] > cfg.windowMs) times.shift();
+  };
+
   return {
     /** One presented frame, at tMs on the caller's clock. */
     frame(tMs) {
@@ -30,11 +34,18 @@ export function createFpsMeter(overrides = {}) {
       // jumped backward starts a new measurement instead.
       if (times.length > 0 && tMs < times[times.length - 1]) times.length = 0;
       times.push(tMs);
-      while (times.length > 0 && tMs - times[0] > cfg.windowMs) times.shift();
+      prune(tMs);
     },
 
-    /** Frames per second over the window, or null while measuring. */
-    read() {
+    /**
+     * Frames per second over the window, or null while measuring. Pruned
+     * against the CALLER'S now, not the last frame's: a stream that stopped
+     * presenting must decay to null within one window — a frozen stream
+     * still reporting yesterday's rate is the fps meter's version of the
+     * zombie the canon forbids.
+     */
+    read(nowMs) {
+      if (Number.isFinite(nowMs)) prune(nowMs);
       if (times.length < cfg.minFrames) return null;
       const span = times[times.length - 1] - times[0];
       if (span <= 0) return null;

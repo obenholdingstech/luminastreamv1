@@ -35,7 +35,9 @@ export function useFpsMeter(videoElRef, stream) {
     handle = el.requestVideoFrameCallback(onFrame);
 
     const publisher = setInterval(() => {
-      if (alive) setFps(meter.read());
+      // The reader's clock, so a stalled stream decays to null within one
+      // window instead of repeating its last healthy number forever.
+      if (alive) setFps(meter.read(globalThis.performance?.now?.() ?? Date.now()));
     }, 1000);
 
     return () => {

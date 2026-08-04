@@ -37,6 +37,20 @@ test('a backward clock starts over instead of lying about the span', () => {
   assert.equal(m.read(), null, 'a fresh measurement, not a poisoned span');
 });
 
+test('a STALLED stream decays to null within one window — no fossil frame rates', () => {
+  const m = createFpsMeter({ windowMs: 2000 });
+  feed(m, 25, 0, 2000);
+  assert.equal(m.read(2000), 25, 'healthy while frames flow');
+  // The frames stop; the reader keeps asking with its own clock.
+  assert.equal(m.read(4001), null, 'a frozen stream reports NOTHING, not its last good number');
+});
+
+test('read without a clock still answers from what it has (compat path)', () => {
+  const m = createFpsMeter();
+  feed(m, 25, 0, 2000);
+  assert.equal(m.read(), 25);
+});
+
 test('junk timestamps are refused; reset forgets', () => {
   const m = createFpsMeter();
   feed(m, 25, 0, 2000);
