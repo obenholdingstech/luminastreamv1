@@ -4,6 +4,33 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 4 August 2026 (later) — the 9/10 sync mandate: measure at the ear; upscale is ours
+
+**Task (CEO):** A/V sync 5/10 ("inconsistent — sometimes the video arrives before the voice, sometimes they land together") → goal 9/10; video clarity 7/10, "not crystal clear... doesn't feel fully upscaled". Assess architecture, implement without breaking production, test everything, flag needed input.
+
+### The assessment (the part that mattered)
+
+The elastic controller (median/deadband/slew — all sound) was fed the agent's `tail_latency_ms`: measured at the agent, from speech END to first sample ENQUEUED. Three dominant terms are invisible to it: (1) **the utterance's own duration** — the converted voice re-speaks the FIRST word `speech_s` later, so a 3s sentence puts video ~3s ahead while the controller targets ~0.7s; (2) **playback backlog** — enqueued ≠ played, structural p95 ≈ 1.9s; (3) **network + jitter buffer**. Short utterances hide all three ("land together"), long ones expose them ("video before voice"). Her 5/10 was this equation, not noise.
+
+Clarity: **Lucy 2.5 is 720p, period** (docs re-verified today; no higher tier exists to buy). Crystal-clear is client-side work in our own pipeline's empty upscale slot.
+
+### PR #66 — the mouth→ear meter (instrument before tuning)
+
+Measure the WHOLE audio path where it is true — the browser hears both ends on ONE clock: local mic onset (mouth) → remote track onset (ear). `audioOnset.js` (hysteresis + hangover + min-duration gate, onset carries the true crossing time), `syncMeter.js` (FIFO pairing, expiry for dropped utterances, echo floor, windowed median), `useSyncMeter` (two micLevelMeter lifecycles), a Mouth→Ear stat in the live strip. Nothing moved the video. CodeRabbit: 4 findings — 3 accepted+confirmed (track selection → `remoteAudioTrack.js` lib, 5th lifecycle-in-component occurrence; `ended`-listener hygiene; mutation-checked reset test), 1 **withdrawn** after the bounds argument (output-stage buffering is tens of ms against a 120ms deadband, partially self-cancelling, absorbed by the calibration constant). Merged `1e9842b`, deploy green.
+
+### PR #67 — the controller eats the measurement
+
+`alignStage.observeTail` → `observeMouthToEar(ms)`: elastic sees measured − `DEFAULT_VIDEO_PATH_MS` (300 — the frames already arrive that late for free; the one knob drill data may move). Retuned for ground truth: window 5, slew 400, **ceiling 4000ms** (mouth→ear exceeds 2s by construction); delayQueue bound 150 frames (~5s @30fps, overflow closes OLDEST — pathology is video jumping forward, never OOM). Fidelity readout states the applied hold ("video held 1.4s"), as render-visible state after CodeRabbit caught the one-measurement-behind read (confirmed ✅). Merged `59bf5b7`, deploy green.
+
+### PR #68 — the upscale slot, filled
+
+`upscaleShaders.js` (WebGL2 GLSL: 9-tap Catmull-Rom bicubic upsample; AMD CAS contrast-adaptive sharpen; flip parity documented and asserted), `glUpscaler.js` (OffscreenCanvas + two-pass FBO renderer, throws where the platform can't deliver), `frameUpscale.js` (insertable-streams loop, inline transform, input closed exactly once, renderer failure = honest passthrough mid-stream too), `upscaleStage.js` (active only when wrap returned a DIFFERENT stream — no claimed resolution without produced pixels). Pipeline: receive → align → upscale → present, both P3 slots now real; readout says **1080p** only when the GPU actually produced it. 11 new tests (252 total).
+
+### Where the 9/10 verdict lives now
+CEO drill, closed headphones (meter assumes no speaker bleed): watch Mouth→Ear and "video held" converge, judge lips vs voice, report the numbers seen. `DEFAULT_VIDEO_PATH_MS` is the tuning knob her data may move. The inherent physics stands stated: perfect sync to a re-spoken voice means the lens runs seconds behind reality during long sentences — the meter makes that visible instead of mysterious.
+
+---
+
 ## 4 August 2026 — Stop that didn't stop (stale-closure spend leak); identity before the meter; the cinematic fade
 
 **Task (CEO, verbatim):** "i just topped up decart, production is working but not working as expected, when i am streaming and i click stop stream, the stream stops but the browser still gives me signal that my camera is still on which doesnt stop till i manually reload the tab, and it seems to me like decart bills me in backround when that is happening. the process of starting stream is bad, when i load the page entering admin password and clicking start stream starts the stream automaticslly without me even preparing and choosing voice/image ref which is bad. i should be able to choose those configs on that same screen am entering admin password so everything loads and syncs ones, then the annimation/transition between when streaming and when not streaming is terrible, the backround transitioning to camera feed when i start stream is terrible because the ui becomes unreadable so work on the ui and transition style so when i click to start stream the backround will slowly fage to my camera feed while its connecting and when it connects and is live everything looks cool"

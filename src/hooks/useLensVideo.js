@@ -25,6 +25,7 @@ import {
 } from '@/lib/videoClient';
 import { createAlignStage } from '@/lib/alignStage';
 import { createFramePipeline } from '@/lib/framePipeline';
+import { createUpscaleStage } from '@/lib/upscaleStage';
 import { createVideoNegotiator, NEGOTIATION } from '@/lib/videoNegotiator';
 
 export const VIDEO_PHASE = {
@@ -66,7 +67,14 @@ export function useLensVideo(adminToken) {
   // P3 fills the align slot: an elastic buffer that stands video beside the
   // audio it belongs to. Audio is the master clock; the page feeds the sync
   // meter's measured mouth→ear delay into pipeline.stages.align.observeMouthToEar.
-  const pipeline = useMemo(() => createFramePipeline({ align: createAlignStage() }), []);
+  // Both P3 slots are filled now: align (elastic delay, fed the measured
+  // mouth→ear number) then upscale (Catmull-Rom + CAS to 1080p — Lucy stays
+  // 720p, the fidelity is ours). Each is an honest passthrough where its
+  // platform pieces are missing.
+  const pipeline = useMemo(
+    () => createFramePipeline({ align: createAlignStage(), upscale: createUpscaleStage() }),
+    [],
+  );
 
   const negotiator = useMemo(
     () =>
@@ -184,10 +192,24 @@ export function useLensVideo(adminToken) {
       globalThis.removeEventListener?.('pagehide', release);
       release();
       negotiator.stop();
-      // The align stage holds decoded frames — a leaving page closes them.
-      pipeline.stages.align.release?.();
     };
   }, [adminToken, negotiator, pipeline]);
+
+  // Stage teardown is UNMOUNT-ONLY, deliberately separate from the effect
+  // above: that one re-runs whenever adminToken changes (negotiator is
+  // memoized on it), and releasing the stages there would freeze the
+  // presented video mid-session — the generator-backed stream stays on
+  // screen while its feeding loop is dead (CodeRabbit, PR 68). `pipeline`
+  // is a stable useMemo([]), so this cleanup fires exactly once, when the
+  // page actually leaves. The align stage holds decoded frames and the
+  // upscale stage holds a GL context — both must not outlive the page.
+  useEffect(
+    () => () => {
+      pipeline.stages.align.release?.();
+      pipeline.stages.upscale.release?.();
+    },
+    [pipeline],
+  );
 
   return { phase, error, budget, stream, localStream, pipeline, start, stop, updatePrompt, updateImage };
 }
