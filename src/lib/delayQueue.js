@@ -12,7 +12,11 @@
 //     the caller's to close — ownership transfers on take.
 
 export const DELAY_QUEUE_DEFAULTS = {
-  maxFrames: 90, // ~3s at 30fps — above the 2s policy ceiling with margin
+  // ~5s at 30fps — above the 4s policy ceiling (elasticDelay) with margin.
+  // Worst case ≈ 150 × ~1.4MB of 720p frame ≈ 210MB, usually GPU-backed;
+  // bounded is the promise, and overflow closes OLDEST so pathology presents
+  // as video jumping forward, never as a browser out of memory.
+  maxFrames: 150,
 };
 
 /**

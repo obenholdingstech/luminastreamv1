@@ -14,9 +14,18 @@
 import { createElasticDelay } from './elasticDelay.js';
 import { createFrameDelay } from './frameDelay.js';
 
+// What the video path itself costs: camera → Decart → decode → present. The
+// mouth→ear measurement covers the AUDIO path only, so the delay applied to
+// video is (mouth→ear − this) — the transformed frames already arrive this
+// late on their own. A constant for now, refined from drill data; any fixed
+// residual of the meter (output-stage buffering, analyser tap points) folds
+// into the same number by construction.
+export const DEFAULT_VIDEO_PATH_MS = 300;
+
 export function createAlignStage({
   elastic = createElasticDelay(),
   createDelay = (targetMs) => createFrameDelay({ targetMs }),
+  videoPathMs = DEFAULT_VIDEO_PATH_MS,
 } = {}) {
   let delay = null;
 
@@ -40,9 +49,14 @@ export function createAlignStage({
       return { ...frames, stream: next.wrap(frames.stream) };
     },
 
-    /** One utterance's agent-measured tail latency (ms) — the master clock. */
-    observeTail(tailMs) {
-      elastic.observe(tailMs);
+    /**
+     * One utterance's MEASURED mouth→ear delay (ms), from the sync meter —
+     * the master clock, measured at the ear. The video path's own latency is
+     * subtracted here: the frames already arrive that late for free.
+     */
+    observeMouthToEar(measuredMs) {
+      if (!Number.isFinite(measuredMs)) return;
+      elastic.observe(Math.max(0, measuredMs - videoPathMs));
     },
 
     targetMs() {
