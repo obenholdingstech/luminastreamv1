@@ -41,6 +41,7 @@ The render probe was rewritten for the unified flow — it still clicked "Add vi
 - lint (with the new exhaustive-deps gate) / typecheck / `node --test src/lib/*.test.js` (218) / build — clean at every step
 - #62 and #63 deploys: CI + Pages both success; #64 same gate before this entry is pushed
 - Single-shot production render probe after #64's deploy (connection-budget doctrine: one run, reset on failure)
+- **Probe result (post-deploy, 4 Aug): PASS** — access-key screen → "Start the lens" → transformed stream decoded with an advancing clock on `[data-role="transformed-stream"]` → one Stop → reservation settled, **billed 0s** (899s internal budget remaining). Evidence: `devlog/evidence/video-render-evidence.png` — the cinematic view live against production: transformed stream full-bleed, edge scrims, chrome legible at 60%. `scripts/check-live.sh`: all 3 layers PASS.
 
 ### Still the CEO's side of the walls
 - The full identity drill with her eyes and ears (avatar + voice + cinematic fade + H), logged same-day
