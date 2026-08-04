@@ -21,6 +21,7 @@ import {
   crossfadeState,
   isOrphanVideoLeg,
 } from '@/lib/unifiedLens';
+import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
@@ -634,6 +635,38 @@ export default function Studio() {
   // state exactly once per NEW measurement, so this effect fires once per
   // measured utterance, never per render.
   const sync = useSyncMeter(micTrack, remoteAudioTrack);
+  // The sync trim (CEO calibration, 4 Aug evening): the video-path estimate,
+  // live-adjustable and persisted. Direction, in her words: the voice
+  // arriving BEFORE the lips means the video is being held too long — press
+  // toward "lips earlier". The stage clamps; this just remembers and feeds.
+  const [videoPathMs, setVideoPathMsState] = useState(() => {
+    try {
+      const stored = Number(globalThis.localStorage?.getItem('lens-video-path-ms'));
+      return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_VIDEO_PATH_MS;
+    } catch {
+      return DEFAULT_VIDEO_PATH_MS;
+    }
+  });
+  const trimVideoPath = useCallback(
+    (deltaMs) => {
+      setVideoPathMsState((prev) => {
+        const next = Math.max(
+          VIDEO_PATH_LIMITS.min,
+          Math.min(VIDEO_PATH_LIMITS.max, prev + deltaMs),
+        );
+        try {
+          globalThis.localStorage?.setItem('lens-video-path-ms', String(next));
+        } catch {
+          /* private mode — the trim still holds for this visit */
+        }
+        return next;
+      });
+    },
+    [],
+  );
+  useEffect(() => {
+    video.pipeline.stages.align.setVideoPathMs?.(videoPathMs);
+  }, [videoPathMs, video.pipeline]);
   // The applied hold, as RENDER-VISIBLE state: the render that displays it
   // happens before the effect that moves it, so reading targetMs() during
   // render would trail by one measurement (CodeRabbit, PR 67). Written here,
@@ -1105,6 +1138,36 @@ export default function Studio() {
                 </span>
               )}
             </div>
+
+            {/* The sync trim — the calibration knob, in the language of the
+                symptom rather than the mechanism. Buttons step the video-path
+                estimate 100ms at a time; the elastic slews the picture there
+                smoothly. Rendered only while the aligned stream is live,
+                because trimming a stopped lens calibrates nothing. */}
+            {video.phase === VIDEO_PHASE.live && fidelity.alignActive && (
+              <div className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
+                <span>sync trim</span>
+                <button
+                  type="button"
+                  onClick={() => trimVideoPath(-100)}
+                  disabled={videoPathMs <= VIDEO_PATH_LIMITS.min}
+                  title="the lips move before the voice arrives — hold the video longer"
+                  className="rounded-full border border-[#1A1A2E] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                >
+                  lips later
+                </button>
+                <span className="tabular-nums text-[#64748B]">{videoPathMs}ms</span>
+                <button
+                  type="button"
+                  onClick={() => trimVideoPath(100)}
+                  disabled={videoPathMs >= VIDEO_PATH_LIMITS.max}
+                  title="the voice arrives before the lips — release the video sooner"
+                  className="rounded-full border border-[#1A1A2E] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                >
+                  lips earlier
+                </button>
+              </div>
+            )}
 
             {/* Identity controls: the reference avatar and the live prompt.
                 Both work BEFORE start (they ride the create) and DURING the

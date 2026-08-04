@@ -90,6 +90,25 @@ test('the video path is SUBTRACTED — frames already arrive that late for free'
   assert.deepEqual(observed, [1200, 0], 'subtracted, floored at zero, junk refused');
 });
 
+test('the trim knob: applies from the next observation, clamps, refuses junk', () => {
+  const observed = [];
+  const stage = createAlignStage({
+    elastic: { observe: (ms) => observed.push(ms), targetMs: () => 0, reset: () => {} },
+    videoPathMs: 700,
+  });
+  stage.observeMouthToEar(1500); // 1500 − 700
+  stage.setVideoPathMs(500);
+  stage.observeMouthToEar(1500); // 1500 − 500
+  stage.setVideoPathMs(99_999); // clamped to the ceiling
+  stage.observeMouthToEar(3000); // 3000 − 2000
+  stage.setVideoPathMs(NaN); // refused — the ceiling stays
+  stage.observeMouthToEar(3000);
+  stage.setVideoPathMs(-50); // clamped to zero
+  stage.observeMouthToEar(400);
+  assert.deepEqual(observed, [800, 1000, 1000, 1000, 400]);
+  assert.equal(stage.videoPathMs(), 0);
+});
+
 test('release() resets the clock too — a new session starts from zero', () => {
   const f = fakeDelayFactory();
   const stage = createAlignStage({ createDelay: f.createDelay });
