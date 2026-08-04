@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 (later) — sync 5/10 diagnosed and rebuilt; upscale live
+
+- **Root cause of 5/10:** controller ate agent `tail_latency_ms` — blind to utterance duration (dominant!), backlog, network. Short utterances masked it, long ones exposed it.
+- **#66:** mouth→ear METER — both onsets on one browser clock (local mic → remote track), FIFO pairing, echo floor. New "Mouth→Ear" stat. 1 CodeRabbit finding withdrawn on bounds argument.
+- **#67:** controller retargeted to the measurement minus `DEFAULT_VIDEO_PATH_MS` (300, the drill-tunable knob); ceiling 4000ms, queue bound 150 frames; readout: "video held N.Ns".
+- **#68:** upscale slot filled — Catmull-Rom + CAS WebGL2, 720p→1080p, honest passthrough everywhere it can't run; readout claims 1080p only when produced. Lucy is 720p max (re-verified) — clarity is ours.
+- **Next:** CEO drill (closed headphones), report Mouth→Ear + held numbers + feel → tune videoPathMs → 9/10 verdict. Physics stated: synced = lens runs seconds behind during long sentences.
+
 ## 4 August 2026 — the Stop that didn't stop; identity before the meter; cinematic fade
 
 - **#62 (P0):** Stop's `useCallback` had stale deps → it stopped a pre-unlock ghost negotiator; the REAL one kept camera + billed Decart session until tab reload. Fixed + `isOrphanVideoLeg` reaper invariant + `exhaustive-deps` now an ERROR (was off; src/hooks wasn't even linted). Latch `reset()` API deleted — new session is the only re-arm.
