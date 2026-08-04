@@ -51,19 +51,18 @@ test('the transformed stream RENDERS: frames arrive and the clock advances', asy
   // EVERYTHING between start and stop runs inside try/finally: this probe
   // spends real vendor money, and its own FIRST run proved what a failed
   // assertion does without cleanup — the abandoned session orphan-reaped
-  // 180s. The finally presses the buttons a fleeing user would; if even that
-  // fails, the bound reservation is the executioner's ammunition and the
-  // alarm kills the vendor session with the session's own sealed credential.
+  // 180s. The finally presses the button a fleeing user would (the unified
+  // lens has ONE Stop, which ends audio and video in the same breath); if
+  // even that fails, the bound reservation is the executioner's ammunition
+  // and the alarm kills the vendor session with its own sealed credential.
   try {
     await runDrill(page, token, before);
   } finally {
-    for (const label of ['Stop video', 'Stop']) {
-      try {
-        const button = page.getByRole('button', { name: label, exact: label === 'Stop' });
-        if (await button.isVisible({ timeout: 1_000 })) await button.click();
-      } catch {
-        // page already closed or button gone — the executioner inherits
-      }
+    try {
+      const button = page.getByRole('button', { name: 'Stop', exact: true });
+      if (await button.isVisible({ timeout: 1_000 })) await button.click();
+    } catch {
+      // page already closed or button gone — the executioner inherits
     }
     await fetch(`${API}/api/session/reset`, {
       method: 'POST',
@@ -74,31 +73,34 @@ test('the transformed stream RENDERS: frames arrive and the clock advances', asy
 });
 
 async function runDrill(page, token, before) {
-  // The real drill, exactly as the CEO performs it.
+  // The real drill, exactly as the CEO performs it since the unified lens:
+  // identity is on the access-key screen, ONE button starts everything, and
+  // the video leg auto-starts the moment the session connects.
   await page.goto('/');
   await page.getByLabel('Early access key').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Start', exact: true }).click();
+  await page.getByRole('button', { name: 'Start the lens' }).click();
   await expect(page.locator('footer')).toContainText(/Session\s+speaker-/, { timeout: 20_000 });
 
-  await page.getByRole('button', { name: 'Add video' }).click();
-  await expect(page.getByRole('button', { name: 'Stop video' })).toBeVisible({ timeout: 30_000 });
-
-  // The claim itself: not "connected", RENDERING. videoWidth proves decoded
-  // frames exist; two currentTime samples prove the clock is moving.
+  // The claim itself: not "connected", RENDERING — and specifically the
+  // TRANSFORMED stream. The backdrop also carries a camera-preview layer for
+  // the connecting fade, and the fake camera's clock advances all by itself:
+  // asserting on "a <video> plays" would pass with Decart delivering
+  // nothing. data-role tells the two layers apart.
+  const transformed = '[data-role="transformed-stream"]';
   await expect
     .poll(
       () =>
-        page.evaluate(() => {
-          const v = document.querySelector('video');
+        page.evaluate((sel) => {
+          const v = document.querySelector(sel);
           return v ? v.videoWidth : 0;
-        }),
-      { message: 'the <video> element must be decoding frames', timeout: 30_000 },
+        }, transformed),
+      { message: 'the transformed <video> must be decoding frames', timeout: 45_000 },
     )
     .toBeGreaterThan(0);
 
-  const t1 = await page.evaluate(() => document.querySelector('video')?.currentTime ?? 0);
+  const t1 = await page.evaluate((sel) => document.querySelector(sel)?.currentTime ?? 0, transformed);
   await page.waitForTimeout(3_000);
-  const t2 = await page.evaluate(() => document.querySelector('video')?.currentTime ?? 0);
+  const t2 = await page.evaluate((sel) => document.querySelector(sel)?.currentTime ?? 0, transformed);
   expect(t2, 'the stream clock must ADVANCE — a frozen frame is not a stream').toBeGreaterThan(t1);
 
   // The honesty readout that P2d promised.
@@ -109,10 +111,11 @@ async function runDrill(page, token, before) {
   // the run and destroyed the first passing run's screenshot.
   await page.screenshot({ path: 'devlog/evidence/video-render-evidence.png', fullPage: true });
 
-  // Give the money back the way a user would.
-  await page.getByRole('button', { name: 'Stop video' }).click();
-  await expect(page.getByRole('button', { name: 'Add video' })).toBeVisible({ timeout: 20_000 });
-  await page.getByRole('button', { name: 'Stop' }).click();
+  // Give the money back the way a user would: the ONE Stop.
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Start the lens' })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // The ledger's account of what this cost — small, settled, nothing open.
   await expect

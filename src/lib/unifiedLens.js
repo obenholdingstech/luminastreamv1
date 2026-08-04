@@ -65,6 +65,24 @@ export function createVoicePreference() {
   };
 }
 
+// The crossfade's one decision (4 Aug 2026): which backdrop layer shows.
+// The hazard is ORDERING — `ontrack` (stream exists) and NEGOTIATION.live
+// (cinematic) arrive in either order, and neither means a frame has actually
+// been DECODED. Keying visibility on stream assignment mounts the
+// transformed layer at full opacity with nothing to fade from, or fades the
+// camera preview into a black rectangle. So the preview holds the stage
+// until the transformed element reports a decoded frame (`transformedReady`,
+// fed by loadeddata), whatever order everything else arrived in.
+export function crossfadeState({ streamPresent, transformedReady, cinematic }) {
+  const handoff = Boolean(streamPresent && transformedReady);
+  return {
+    // The camera preview yields only to actual pixels — never to a promise.
+    preview: handoff ? 'hidden' : 'visible',
+    // hidden → ambient (behind the ring, pre-cinematic) → full (the stage).
+    transformed: !handoff ? 'hidden' : cinematic ? 'full' : 'ambient',
+  };
+}
+
 // The reaper's question (4 Aug 2026): is this video leg an orphan? The video
 // leg only ever exists inside a held audio session, so once the session's
 // credentials are gone, any leg still holding a camera or a vendor
