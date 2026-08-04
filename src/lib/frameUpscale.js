@@ -87,7 +87,15 @@ export function createFrameUpscale({
               break; // mid-stream GPU loss: stop transforming, stop claiming
             }
             value.close?.();
-            await writer.write(out);
+            try {
+              await writer.write(out);
+            } catch (err) {
+              // A rejected write means the generator is gone — but the
+              // rendered frame is OURS until close(): unclosed VideoFrames
+              // pin GPU memory until the GC complains.
+              out.close?.();
+              throw err;
+            }
           }
         } catch {
           /* track ended or generator closed */

@@ -192,12 +192,24 @@ export function useLensVideo(adminToken) {
       globalThis.removeEventListener?.('pagehide', release);
       release();
       negotiator.stop();
-      // The align stage holds decoded frames and the upscale stage holds a
-      // GL context — a leaving page closes both.
-      pipeline.stages.align.release?.();
-      pipeline.stages.upscale.release?.();
     };
   }, [adminToken, negotiator, pipeline]);
+
+  // Stage teardown is UNMOUNT-ONLY, deliberately separate from the effect
+  // above: that one re-runs whenever adminToken changes (negotiator is
+  // memoized on it), and releasing the stages there would freeze the
+  // presented video mid-session — the generator-backed stream stays on
+  // screen while its feeding loop is dead (CodeRabbit, PR 68). `pipeline`
+  // is a stable useMemo([]), so this cleanup fires exactly once, when the
+  // page actually leaves. The align stage holds decoded frames and the
+  // upscale stage holds a GL context — both must not outlive the page.
+  useEffect(
+    () => () => {
+      pipeline.stages.align.release?.();
+      pipeline.stages.upscale.release?.();
+    },
+    [pipeline],
+  );
 
   return { phase, error, budget, stream, localStream, pipeline, start, stop, updatePrompt, updateImage };
 }

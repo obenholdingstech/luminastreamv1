@@ -111,7 +111,15 @@ export function createGlUpscaler({
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, sourceTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
-      gl.uniform2f(uSrcSize, source.width, source.height);
+      // The FRAME's own size, per render — the vendor can renegotiate or
+      // bandwidth-downscale mid-session, and a fixed divisor would turn the
+      // Catmull-Rom pass into a crop/zoom instead of an upscale. The
+      // configured size is only the fallback for exotic frame types.
+      gl.uniform2f(
+        uSrcSize,
+        frame.displayWidth ?? source.width,
+        frame.displayHeight ?? source.height,
+      );
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       // Pass 2: intermediate → CAS → canvas.

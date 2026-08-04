@@ -104,6 +104,41 @@ test('a renderer that breaks MID-STREAM stops the wrap and closes the frame in h
   assert.equal(disposed, 1, 'the dead renderer is disposed');
 });
 
+test('a write that REJECTS closes the rendered frame — output GPU memory is ours until close()', async () => {
+  const f1 = frame(1);
+  const p = fakePlatform([f1]);
+  const outs = [];
+  // A generator whose writer refuses: the track ended between render and write.
+  p.Generator = function () {
+    this.kind = 'video';
+    this.writable = {
+      getWriter: () => ({
+        write: async () => {
+          throw new Error('generator closed');
+        },
+        releaseLock: () => {},
+      }),
+    };
+  };
+  const up = createFrameUpscale({
+    ...p,
+    output: { width: 1920, height: 1080 },
+    createRenderer: () => ({
+      render: (fr) => {
+        const out = { big: fr.n, closed: 0, close() { this.closed += 1; } };
+        outs.push(out);
+        return out;
+      },
+      dispose: () => {},
+    }),
+  });
+  up.wrap(stream());
+  await settle();
+  assert.equal(outs.length, 1);
+  assert.equal(outs[0].closed, 1, 'the orphaned output frame was closed, not GC bait');
+  assert.equal(f1.closed, 1, 'and the input was closed exactly once, as always');
+});
+
 test('missing platform classes are an honest passthrough, and release is idempotent', () => {
   const up = createFrameUpscale({
     Processor: undefined,
