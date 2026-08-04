@@ -63,11 +63,6 @@ export function useLiveKitVoice(url, token) {
   const captureConstraintsRef = useRef(DEFAULT_CAPTURE_CONSTRAINTS);
   // trackSid → { track, identity } for every remote audio track we attached
   const remoteAudioRef = useRef(new Map());
-  // The element-path volume the page currently wants (the Direct-mode audio
-  // aligner mutes the un-delayed path while its delay line is engaged). Held
-  // in a ref so a track attached LATER — a reconnect mid-alignment — starts
-  // at the wanted volume instead of doubling the voice.
-  const remoteVolumeRef = useRef(1);
   // Previous cumulative counters — bitrate and loss % are per-interval deltas
   const prevSampleRef = useRef(null);
 
@@ -94,17 +89,21 @@ export function useLiveKitVoice(url, token) {
   }, []);
 
   /**
-   * Set the ELEMENT path's volume for every remote audio track, now and for
-   * any track attached later. livekit's setVolume reaches all attached
-   * elements for a track. 0 while the aligner's delay line carries the
-   * voice; back to 1 the instant it does not — the aligner's engage /
-   * disengage callbacks are the only callers.
+   * Set the ELEMENT path's volume for ONE remote audio track, identified by
+   * its MediaStreamTrack. Scoped, not blanket: the Direct-mode aligner
+   * delays exactly one track, and muting any other publisher would silence
+   * a voice nothing is carrying. 0 while the aligner's delay line has the
+   * track; back to 1 the instant it does not — the aligner's engage /
+   * disengage callbacks are the only callers. A reconnect swaps the
+   * MediaStreamTrack, which re-runs the aligner's effect against the new
+   * one — no volume state needs to survive here.
    */
-  const setRemoteVolume = useCallback((volume) => {
-    remoteVolumeRef.current = volume;
+  const setTrackVolume = useCallback((mediaStreamTrack, volume) => {
+    if (!mediaStreamTrack) return;
     remoteAudioRef.current.forEach(({ track }) => {
+      if (track.mediaStreamTrack !== mediaStreamTrack) return;
       try {
-        track.setVolume?.(volume);
+        /** @type {any} */ (track).setVolume?.(volume);
       } catch {
         // a track mid-teardown — the detach path owns it now
       }
@@ -125,8 +124,6 @@ export function useLiveKitVoice(url, token) {
   // is deliberately skipped because the ref was already released)
   const resetSessionState = useCallback(() => {
     detachAllRemoteAudio();
-    // A new session's voice starts audible, whatever the last one was doing.
-    remoteVolumeRef.current = 1;
     setRemoteAudio([]);
     setAudioBlocked(false);
     setAgentMode(null);
@@ -165,15 +162,6 @@ export function useLiveKitVoice(url, token) {
       // attempt surfaces via AudioPlaybackStatusChanged below
       const element = track.attach();
       document.body.appendChild(element);
-      // A track arriving while the aligner has the voice starts at the
-      // wanted volume — never a doubled voice for the length of a render.
-      // (setVolume lives on RemoteAudioTrack; the kind guard above proves
-      // it, the type system can't see through the union.)
-      try {
-        /** @type {any} */ (track).setVolume?.(remoteVolumeRef.current);
-      } catch {
-        /* volume is cosmetic here; attachment must proceed */
-      }
       remoteAudioRef.current.set(publication.trackSid, { track, identity: participant.identity });
       setRemoteAudio(
         Array.from(remoteAudioRef.current, ([sid, entry]) => ({ sid, identity: entry.identity })),
@@ -510,6 +498,6 @@ export function useLiveKitVoice(url, token) {
     requestAgentConfig,
     refreshVoices,
     setCaptureConstraint,
-    setRemoteVolume,
+    setTrackVolume,
   };
 }

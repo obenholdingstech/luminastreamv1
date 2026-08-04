@@ -153,3 +153,25 @@ test('dispose disengages exactly once, disconnects, closes — and is idempotent
   graph.setTarget(500);
   assert.deepEqual(ctx.delayNodes[0].delayTime.targets, [], 'a disposed graph moves nothing');
 });
+
+// ─── the visible-hold state machine ────────────────────────────────────────
+
+import { createHoldReporter } from './audioAlign.js';
+
+test('the UI may claim a hold ONLY while engaged — target cached across the gap', () => {
+  const r = createHoldReporter();
+  assert.equal(r.observe(400), 0, 'a target on a disengaged line is not a claim');
+  assert.equal(r.engage(), 400, 'engagement surfaces the cached truth');
+  assert.equal(r.observe(350), 350, 'engaged targets show immediately');
+  assert.equal(r.disengage(), 0, 'the element has the voice — claim nothing');
+  assert.equal(r.observe(500), 0, 'still disengaged, still nothing');
+  assert.equal(r.engage(), 500, 'recovery resumes the newest truth, not the stale one');
+});
+
+test('the reporter refuses junk and floors at zero', () => {
+  const r = createHoldReporter();
+  r.engage();
+  assert.equal(r.observe(NaN), 0, 'junk does not move the cache');
+  assert.equal(r.observe(-50), 0, 'negative holds do not exist');
+  assert.equal(r.observe(200), 200);
+});

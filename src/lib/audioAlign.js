@@ -45,6 +45,35 @@ export function audioHoldSample(measuredMs, videoPathMs) {
 }
 
 /**
+ * The visible-hold state machine: what the UI may CLAIM about the audio
+ * hold. The claim follows ENGAGEMENT, not the controller's target — while
+ * the delay line is disengaged the element plays undelayed, and reporting
+ * "audio held 0.4s" over an unheld voice would be the exact dishonesty this
+ * page exists to avoid. The target is cached across disengagement so a
+ * recovering line resumes claiming the truth it still applies.
+ */
+export function createHoldReporter() {
+  let engaged = false;
+  let targetMs = 0;
+  const visible = () => (engaged ? targetMs : 0);
+  return {
+    /** A new controller target. Returns what the UI may show NOW. */
+    observe(ms) {
+      if (Number.isFinite(ms)) targetMs = Math.max(0, ms);
+      return visible();
+    },
+    engage() {
+      engaged = true;
+      return visible();
+    },
+    disengage() {
+      engaged = false;
+      return 0;
+    },
+  };
+}
+
+/**
  * The delay line: remote track → source → DelayNode → destination.
  *
  * @param {{

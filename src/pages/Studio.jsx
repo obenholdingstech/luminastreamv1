@@ -179,7 +179,7 @@ export default function Studio() {
     requestAgentMode,
     agentConfig,
     requestAgentConfig,
-    setRemoteVolume,
+    setTrackVolume,
   } = useLiveKitVoice(url, token);
 
   // ── access ────────────────────────────────────────────────────────────
@@ -675,10 +675,10 @@ export default function Studio() {
   // leg costs ~700ms, so AUDIO takes the hold, through a WebAudio delay
   // line that engages only while verifiably running and gives the voice
   // back on any failure. Engaged only under a confirmed Direct mode.
-  const audioAlign = useAudioAlign({
+  const { holdMs: audioHoldMs, observe: observeAudioAlign } = useAudioAlign({
     track: remoteAudioTrack,
     enabled: isConnected && agentMode === agentModeFor('direct'),
-    setRemoteVolume,
+    setTrackVolume,
   });
 
   // The applied hold, as RENDER-VISIBLE state: the render that displays it
@@ -686,15 +686,21 @@ export default function Studio() {
   // render would trail by one measurement (CodeRabbit, PR 67). Written here,
   // in the same breath as the observation that moves it.
   const [appliedHoldMs, setAppliedHoldMs] = useState(0);
+  // Each measurement is fed EXACTLY once, however often this effect re-runs
+  // (a trim press changes videoPathMs; a render changes nothing) — a
+  // re-observed sample would bypass both policies' slew. The meter's hook
+  // publishes a NEW state object per measurement, so object identity is the
+  // dedupe key.
+  const lastFedMeasurementRef = useRef(null);
   useEffect(() => {
-    if (Number.isFinite(sync?.lastMs)) {
-      // ONE measurement feeds BOTH holds; each side floors at zero, so
-      // exactly one of them is ever non-zero for a given regime.
-      video.pipeline.stages.align.observeMouthToEar?.(sync.lastMs);
-      audioAlign.observe(sync.lastMs, videoPathMs);
-      setAppliedHoldMs(video.pipeline.stages.align.targetMs?.() ?? 0);
-    }
-  }, [sync, video.pipeline, audioAlign, videoPathMs]);
+    if (!Number.isFinite(sync?.lastMs) || lastFedMeasurementRef.current === sync) return;
+    lastFedMeasurementRef.current = sync;
+    // ONE measurement feeds BOTH holds; each side floors at zero, so
+    // exactly one of them is ever non-zero for a given regime.
+    video.pipeline.stages.align.observeMouthToEar?.(sync.lastMs);
+    observeAudioAlign(sync.lastMs, videoPathMs);
+    setAppliedHoldMs(video.pipeline.stages.align.targetMs?.() ?? 0);
+  }, [sync, video.pipeline, observeAudioAlign, videoPathMs]);
 
   const reduceMotion = useReducedMotion();
   const paintLevel = useCallback((level) => {
@@ -1154,7 +1160,7 @@ export default function Studio() {
                   {/* Direct mode's mirror image: when the delay line has the
                       voice, say so — a held stream the UI stays quiet about
                       is a mystery, not a feature. */}
-                  {audioAlign.holdMs > 0 && ` · audio held ${(audioAlign.holdMs / 1000).toFixed(1)}s`}
+                  {audioHoldMs > 0 && ` · audio held ${(audioHoldMs / 1000).toFixed(1)}s`}
                   {' · press H for clean view'}
                 </span>
               )}
