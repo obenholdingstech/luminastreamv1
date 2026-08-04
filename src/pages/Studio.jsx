@@ -1010,7 +1010,14 @@ export default function Studio() {
               )}
               <input
                 type="text"
-                aria-label="style prompt"
+                // The accessible name carries the same two tenses as the
+                // placeholder — a screen reader must not be told less than
+                // the placeholder shows (CodeRabbit, PR 63).
+                aria-label={
+                  video.phase === VIDEO_PHASE.live
+                    ? 'restyle the live stream'
+                    : 'style the lens at start'
+                }
                 value={livePrompt}
                 onChange={(e) => {
                   setLivePrompt(e.target.value);
