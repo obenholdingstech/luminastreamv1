@@ -9,6 +9,7 @@ export default [
     files: [
       "src/components/**/*.{js,mjs,cjs,jsx}",
       "src/pages/**/*.{js,mjs,cjs,jsx}",
+      "src/hooks/**/*.{js,mjs,cjs,jsx}",
       "src/Layout.jsx",
     ],
     ignores: ["src/lib/**/*", "src/components/ui/**/*"],
@@ -55,6 +56,11 @@ export default [
         { ignore: ["cmdk-input-wrapper", "toast-close"] },
       ],
       "react-hooks/rules-of-hooks": "error",
+      // An error, not a warning, because a missing dependency already cost
+      // real money once: Studio's stop handler memoized a pre-unlock render's
+      // video.stop, so Stop left the camera and the billed vendor session
+      // running until the tab reloaded (4 Aug 2026).
+      "react-hooks/exhaustive-deps": "error",
     },
   },
 ];

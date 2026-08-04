@@ -34,12 +34,23 @@ test('nothing fires before the session is real', () => {
   assert.equal(latch.shouldStart(ready()), true, 'the real moment still fires');
 });
 
-test('a NEW session fires again; reset clears the memory', () => {
+test('a NEW session fires again — being new is the only re-arm', () => {
   const latch = createAutoStartLatch();
   assert.equal(latch.shouldStart(ready()), true);
   assert.equal(latch.shouldStart(ready({ sessionId: 'sess-2' })), true, 'new session, new video');
-  latch.reset();
-  assert.equal(latch.shouldStart(ready({ sessionId: 'sess-2' })), true, 'reset forgets');
+});
+
+// The 4 Aug incident, as a sequence: the user stops the lens, and for a few
+// renders the OLD session identity is still visible while the video phase has
+// already returned to 'off'. A latch that could be reset re-fired here and
+// opened a second paid vendor session on a page that said "Lens off".
+test('a stopped session can NEVER re-fire, however the teardown state flickers', () => {
+  const latch = createAutoStartLatch();
+  assert.equal(latch.shouldStart(ready()), true, 'the session starts once');
+  assert.equal(typeof latch.reset, 'undefined', 'the reset footgun does not exist');
+  for (const videoPhase of ['stopping', 'off', 'off']) {
+    assert.equal(latch.shouldStart(ready({ videoPhase })), false, `mid-teardown: ${videoPhase}`);
+  }
 });
 
 // ─── the pre-start voice choice ────────────────────────────────────────────
@@ -71,12 +82,38 @@ test('a choice the agent already confirmed sends nothing — and stays sent', ()
   );
 });
 
-test('a new session applies again; reset forgets', () => {
+test('a new session applies again — and there is no reset to misuse', () => {
   const pref = createVoicePreference();
   assert.equal(pref.shouldApply(voiceState()), true);
   assert.equal(pref.shouldApply(voiceState({ sessionId: 'sess-2' })), true);
-  pref.reset();
-  assert.equal(pref.shouldApply(voiceState({ sessionId: 'sess-2' })), true);
+  assert.equal(typeof pref.reset, 'undefined', 'same rule as the auto-start latch');
+});
+
+// ─── the orphan reaper ─────────────────────────────────────────────────────
+
+import { isOrphanVideoLeg } from './unifiedLens.js';
+
+test('a video leg with no audio session is an orphan in every resource-holding phase', () => {
+  // 'error' and 'limited' hold the camera they failed with — the negotiator
+  // does not release media on a vendor error, so the reaper must claim them.
+  for (const videoPhase of ['starting', 'live', 'error', 'limited']) {
+    assert.equal(isOrphanVideoLeg({ hasCredentials: false, videoPhase }), true, videoPhase);
+  }
+});
+
+test('a leg already out, or on its way out, is not reaped twice', () => {
+  assert.equal(isOrphanVideoLeg({ hasCredentials: false, videoPhase: 'off' }), false, 'holds nothing');
+  assert.equal(
+    isOrphanVideoLeg({ hasCredentials: false, videoPhase: 'stopping' }),
+    false,
+    'already leaving — a second stop would race the first',
+  );
+});
+
+test('inside a held session, NO phase is an orphan — failures there are the user\'s to see', () => {
+  for (const videoPhase of ['off', 'starting', 'live', 'stopping', 'error', 'limited']) {
+    assert.equal(isOrphanVideoLeg({ hasCredentials: true, videoPhase }), false, videoPhase);
+  }
 });
 
 test('nothing applies without a session, a connection, or a choice', () => {

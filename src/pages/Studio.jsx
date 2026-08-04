@@ -13,7 +13,7 @@ import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
 import { shouldToggleCleanView } from '@/lib/cleanView';
-import { createAutoStartLatch, createVoicePreference } from '@/lib/unifiedLens';
+import { createAutoStartLatch, createVoicePreference, isOrphanVideoLeg } from '@/lib/unifiedLens';
 import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
@@ -463,6 +463,17 @@ export default function Studio() {
   }, [allocation, isConnected, chosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
+  // The invariant behind the fix above, enforced structurally: NO audio
+  // session ⇒ NO video leg. The decision lives in unifiedLens.js with its
+  // tests (AGENTS.md: lifecycle logic in a component is lifecycle logic
+  // nobody can break on purpose); what remains here closes over the CURRENT
+  // render's video, so it cannot go stale the way a memoized handler can.
+  useEffect(() => {
+    if (isOrphanVideoLeg({ hasCredentials, videoPhase: video.phase })) {
+      video.stop();
+    }
+  }, [hasCredentials, video]);
+
   const status = useMemo(
     () => deriveLensStatus({ connectionState, agentMode, agentBusy, audioBlocked, error }),
     [connectionState, agentMode, agentBusy, audioBlocked, error],
@@ -568,14 +579,23 @@ export default function Studio() {
     // reallocated slot is harmless — identities are unique per session, so no
     // eviction (see sessionRegistry.js).
     const released = holder.stop();
-    // The unified lens: ONE stop ends everything. Video first in the same
-    // breath (its settle is money), the latch re-arms for the next session,
-    // and none of it sequences behind anything that can hang.
-    autoLatch.reset();
+    // The unified lens: ONE stop ends everything. Video in the same breath
+    // (its settle is money), and none of it sequences behind anything that
+    // can hang. The latch is NOT reset here: session identities are unique,
+    // so a new session re-arms it by being new — and a manual reset once
+    // re-armed it for a session still mid-teardown.
     video.stop();
     disconnect().catch(() => {});
     await released;
-  }, [disconnect, holder]);
+    // `video` MUST be in the deps. This callback was once memoized on
+    // [disconnect, holder] alone — both identity-stable from the first
+    // render — so the Stop button forever called the PRE-UNLOCK render's
+    // video.stop(), bound to a negotiator that had never started anything.
+    // The real negotiator kept the camera and the billed vendor session
+    // until the tab was reloaded (CEO, 4 Aug 2026: camera light on after
+    // Stop, Decart billing in the background). exhaustive-deps is now an
+    // error in eslint.config.js so this cannot be reintroduced silently.
+  }, [disconnect, holder, video]);
 
   // Publish the holder's credentials into the hook, then connect.
   //
