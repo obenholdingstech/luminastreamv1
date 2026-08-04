@@ -819,9 +819,13 @@ export default function Studio() {
             agent-CONFIRMED voice (the mode toggle's honesty rule); before
             the lens starts it is the stored choice, labeled as such. Hidden
             only when the agent has confirmed Direct — a voice selector there
-            would promise what the mode cannot do. */}
-        {adminToken &&
-          effectiveVoiceChoices.length > 0 &&
+            would promise what the mode cannot do.
+
+            Deliberately NOT gated on the unlock (CEO, 4 Aug 2026): the whole
+            identity — voice, avatar, style — is chosen on the same screen as
+            the access key, so the ONE press of Start carries all of it. The
+            choices are local until then; nothing here needs a server. */}
+        {effectiveVoiceChoices.length > 0 &&
           !(isConnected && agentMode && agentMode !== agentModeFor('converted')) && (
           <div className="mt-4 flex flex-col items-center gap-1">
             <div className="flex items-center gap-2">
@@ -840,6 +844,16 @@ export default function Studio() {
                 }}
                 className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
               >
+                {/* With no stored choice the select's value is '' — without
+                    this option the browser would DISPLAY the first voice in
+                    the list while the session would actually use the agent's
+                    default. A placeholder keeps the display honest until a
+                    real choice exists. */}
+                {!chosenVoice && !(isConnected && confirmedVoice) && (
+                  <option value="" disabled className="bg-[#08080F]">
+                    choose a voice…
+                  </option>
+                )}
                 {effectiveVoiceChoices.map((id) => (
                   <option key={id} value={id} className="bg-[#08080F]">
                     {effectiveVoiceLabels[id] ?? id}
@@ -897,9 +911,11 @@ export default function Studio() {
         {/* The lens's video state — no separate button (CEO mandate: ONE
             universal Start). The lens starts audio and video together; what
             remains here is the truth about the video leg, and the identity
-            controls that shape it. */}
-        {adminToken && (
-          <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
+            controls that shape it. Like the voice above, the avatar and the
+            style prompt are pre-unlock controls: both are local state that
+            rides the first start, so hiding them behind the key would force
+            the user to configure their identity AFTER the meter starts. */}
+        <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
             <div className="flex items-center gap-3">
               {(video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping) && (
                 <span className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#64748B]">
@@ -964,7 +980,7 @@ export default function Studio() {
               )}
               <input
                 type="text"
-                aria-label="live restyle prompt"
+                aria-label="style prompt"
                 value={livePrompt}
                 onChange={(e) => {
                   setLivePrompt(e.target.value);
@@ -973,7 +989,14 @@ export default function Studio() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') applyPrompt();
                 }}
-                placeholder='restyle live — e.g. "change cloth to blue"'
+                // Same input, two honest tenses: before the lens starts the
+                // prompt STYLES the identity that will ride the first start;
+                // once live it RESTYLES the running stream.
+                placeholder={
+                  video.phase === VIDEO_PHASE.live
+                    ? 'restyle live — e.g. "change cloth to blue"'
+                    : 'style the lens — e.g. "warm studio light, navy jacket"'
+                }
                 className="min-w-0 flex-1 bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:outline-none focus:border-[#6366F1]"
               />
               {video.phase === VIDEO_PHASE.live && (
@@ -1009,7 +1032,6 @@ export default function Studio() {
               </p>
             )}
           </div>
-        )}
 
         {/* Action */}
         <div className="mt-10 w-full max-w-sm">
@@ -1105,7 +1127,7 @@ export default function Studio() {
                   className="flex items-center gap-2 rounded-full px-6 text-[11px] tracking-[0.16em] uppercase bg-white text-[#08080F] disabled:opacity-40 transition-opacity"
                 >
                   {unlocking ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-                  Start
+                  Start the lens
                 </button>
               </div>
               {/* role="alert" rather than plain text: this form is the only
