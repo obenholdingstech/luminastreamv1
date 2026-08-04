@@ -13,7 +13,12 @@ import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
 import { shouldToggleCleanView } from '@/lib/cleanView';
-import { createAutoStartLatch, createVoicePreference, isOrphanVideoLeg } from '@/lib/unifiedLens';
+import {
+  createAutoStartLatch,
+  createVoicePreference,
+  crossfadeState,
+  isOrphanVideoLeg,
+} from '@/lib/unifiedLens';
 import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
@@ -301,6 +306,25 @@ export default function Studio() {
   useEffect(() => {
     if (localElRef.current) localElRef.current.srcObject = video.localStream ?? null;
   }, [video.localStream]);
+  // A DECODED FRAME, not an assigned stream, is what the crossfade waits
+  // for: `ontrack` and NEGOTIATION.live arrive in either order, and neither
+  // means pixels exist yet. loadeddata is the element's own word for "I have
+  // a frame"; readyState covers a stream that decoded before this effect
+  // attached. Reset whenever the stream changes — a replaced stream's first
+  // frame is a new first frame.
+  const [transformedReady, setTransformedReady] = useState(false);
+  useEffect(() => {
+    setTransformedReady(false);
+    const el = videoElRef.current;
+    if (!el || !video.stream) return undefined;
+    if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      setTransformedReady(true);
+      return undefined;
+    }
+    const ready = () => setTransformedReady(true);
+    el.addEventListener('loadeddata', ready);
+    return () => el.removeEventListener('loadeddata', ready);
+  }, [video.stream]);
   const fidelity = video.pipeline.describe();
 
   // ── A/V sync (P3): audio is the master clock ──────────────────────────
@@ -473,6 +497,13 @@ export default function Studio() {
   }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt, avatarReading]);
 
   const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
+  // Which backdrop layer owns the stage — the ordering policy lives in
+  // unifiedLens.js (crossfadeState) with tests for both callback orders.
+  const fade = crossfadeState({
+    streamPresent: Boolean(video.stream),
+    transformedReady,
+    cinematic,
+  });
 
   // The pre-start voice choice keys in the moment the agent confirms the
   // session — once, and never against a choice the agent already holds.
@@ -940,7 +971,7 @@ export default function Studio() {
                 playsInline
                 muted
                 className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-[1600ms] ease-out motion-reduce:transition-none ${
-                  video.stream ? 'opacity-0' : 'opacity-30'
+                  fade.preview === 'hidden' ? 'opacity-0' : 'opacity-30'
                 }`}
                 style={{ filter: 'saturate(0.55) brightness(0.6)' }}
               />
@@ -953,7 +984,11 @@ export default function Studio() {
                 playsInline
                 muted
                 className={`absolute inset-0 w-full h-full object-cover transition-[opacity,transform] duration-[1200ms] ease-out motion-reduce:transition-none ${
-                  cinematic ? 'opacity-100 scale-100' : 'opacity-40 scale-[1.03]'
+                  fade.transformed === 'full'
+                    ? 'opacity-100 scale-100'
+                    : fade.transformed === 'ambient'
+                      ? 'opacity-40 scale-[1.03]'
+                      : 'opacity-0 scale-[1.03]'
                 }`}
               />
             )}
@@ -967,13 +1002,16 @@ export default function Studio() {
               style={{
                 background:
                   'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
-                opacity: cinematic ? 0 : 1,
+                // The mask lifts when the TRANSFORMED layer takes the stage —
+                // keyed on the same policy as the layers, so a live-but-not-
+                // yet-decoded moment never unmasks the raw preview.
+                opacity: fade.transformed === 'full' ? 0 : 1,
               }}
             />
             <div
               aria-hidden
               className={`absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none ${
-                cinematic ? 'opacity-100' : 'opacity-0'
+                fade.transformed === 'full' ? 'opacity-100' : 'opacity-0'
               }`}
               style={{
                 background:

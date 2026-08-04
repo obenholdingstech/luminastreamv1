@@ -89,6 +89,49 @@ test('a new session applies again — and there is no reset to misuse', () => {
   assert.equal(typeof pref.reset, 'undefined', 'same rule as the auto-start latch');
 });
 
+// ─── the crossfade ─────────────────────────────────────────────────────────
+
+import { crossfadeState } from './unifiedLens.js';
+
+test('ontrack BEFORE live: the preview holds until a frame is decoded', () => {
+  // stream assigned, nothing decoded, not yet cinematic
+  assert.deepEqual(
+    crossfadeState({ streamPresent: true, transformedReady: false, cinematic: false }),
+    { preview: 'visible', transformed: 'hidden' },
+  );
+  // decode lands first → ambient behind the ring; live flips it to full
+  assert.deepEqual(
+    crossfadeState({ streamPresent: true, transformedReady: true, cinematic: false }),
+    { preview: 'hidden', transformed: 'ambient' },
+  );
+  assert.deepEqual(
+    crossfadeState({ streamPresent: true, transformedReady: true, cinematic: true }),
+    { preview: 'hidden', transformed: 'full' },
+  );
+});
+
+test('live BEFORE decode: cinematic with no pixels is still the PREVIEW, not a black flash', () => {
+  assert.deepEqual(
+    crossfadeState({ streamPresent: true, transformedReady: false, cinematic: true }),
+    { preview: 'visible', transformed: 'hidden' },
+    'the fade starts only when there is something to fade TO',
+  );
+});
+
+test('no stream (or a replaced one, ready reset) always returns the stage to the preview', () => {
+  for (const cinematic of [false, true]) {
+    assert.deepEqual(
+      crossfadeState({ streamPresent: false, transformedReady: false, cinematic }),
+      { preview: 'visible', transformed: 'hidden' },
+    );
+  }
+  // ready without a stream is a stale flag, never a visible layer
+  assert.deepEqual(
+    crossfadeState({ streamPresent: false, transformedReady: true, cinematic: true }),
+    { preview: 'visible', transformed: 'hidden' },
+  );
+});
+
 // ─── the orphan reaper ─────────────────────────────────────────────────────
 
 import { isOrphanVideoLeg } from './unifiedLens.js';
