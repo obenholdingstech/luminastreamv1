@@ -26,10 +26,11 @@ export function createAutoStartLatch() {
       return true;
     },
 
-    /** A new audio session means a fresh latch; no session means none. */
-    reset() {
-      firedFor = null;
-    },
+    // There is deliberately NO reset(). Session identities are unique
+    // (server-allocated per claim), so a new session re-arms the latch by
+    // being new — and a manual reset is exactly the hazard: called during a
+    // stop, it re-armed the latch for a session identity still visible
+    // mid-teardown, one render away from a second paid vendor session.
   };
 }
 
@@ -60,8 +61,6 @@ export function createVoicePreference() {
       return true;
     },
 
-    reset() {
-      appliedFor = null;
-    },
+    // No reset(), for the same reason as the auto-start latch above.
   };
 }

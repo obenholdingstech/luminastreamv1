@@ -34,12 +34,23 @@ test('nothing fires before the session is real', () => {
   assert.equal(latch.shouldStart(ready()), true, 'the real moment still fires');
 });
 
-test('a NEW session fires again; reset clears the memory', () => {
+test('a NEW session fires again — being new is the only re-arm', () => {
   const latch = createAutoStartLatch();
   assert.equal(latch.shouldStart(ready()), true);
   assert.equal(latch.shouldStart(ready({ sessionId: 'sess-2' })), true, 'new session, new video');
-  latch.reset();
-  assert.equal(latch.shouldStart(ready({ sessionId: 'sess-2' })), true, 'reset forgets');
+});
+
+// The 4 Aug incident, as a sequence: the user stops the lens, and for a few
+// renders the OLD session identity is still visible while the video phase has
+// already returned to 'off'. A latch that could be reset re-fired here and
+// opened a second paid vendor session on a page that said "Lens off".
+test('a stopped session can NEVER re-fire, however the teardown state flickers', () => {
+  const latch = createAutoStartLatch();
+  assert.equal(latch.shouldStart(ready()), true, 'the session starts once');
+  assert.equal(typeof latch.reset, 'undefined', 'the reset footgun does not exist');
+  for (const videoPhase of ['stopping', 'off', 'off']) {
+    assert.equal(latch.shouldStart(ready({ videoPhase })), false, `mid-teardown: ${videoPhase}`);
+  }
 });
 
 // ─── the pre-start voice choice ────────────────────────────────────────────
@@ -71,12 +82,11 @@ test('a choice the agent already confirmed sends nothing — and stays sent', ()
   );
 });
 
-test('a new session applies again; reset forgets', () => {
+test('a new session applies again — and there is no reset to misuse', () => {
   const pref = createVoicePreference();
   assert.equal(pref.shouldApply(voiceState()), true);
   assert.equal(pref.shouldApply(voiceState({ sessionId: 'sess-2' })), true);
-  pref.reset();
-  assert.equal(pref.shouldApply(voiceState({ sessionId: 'sess-2' })), true);
+  assert.equal(typeof pref.reset, 'undefined', 'same rule as the auto-start latch');
 });
 
 test('nothing applies without a session, a connection, or a choice', () => {
