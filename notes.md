@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 (night) — 6.6/10 decoded: trim knob, laggard doctrine, fps meter
+
+- **#70:** video path 300→700ms (her 400ms lead = the calibration); live "lips earlier/later" trim, 100ms steps, persisted; one normalizer at every boundary.
+- **#71:** Direct mode fixed structurally — THE LAGGARD IS THE MASTER CLOCK. Audio takes the hold in passthrough (WebAudio delay line, videoPath − mouth→ear); voice-safety contract tested (engage only while verifiably running; every failure gives the voice back; per-track mute; claim follows engagement).
+- **#72:** fps instrument (rVFC → sliding window → 1Hz publish) in the fidelity line. 50fps synthesis decided from this number next.
+- **Next:** her dual-mode drill with trim knob; then frame synthesis (blend first, elite interpolation if her eye demands).
+
 ## 4 August 2026 (later) — sync 5/10 diagnosed and rebuilt; upscale live
 
 - **Root cause of 5/10:** controller ate agent `tail_latency_ms` — blind to utterance duration (dominant!), backlog, network. Short utterances masked it, long ones exposed it.
