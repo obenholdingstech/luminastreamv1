@@ -26,6 +26,10 @@ Measure the WHOLE audio path where it is true — the browser hears both ends on
 
 `upscaleShaders.js` (WebGL2 GLSL: 9-tap Catmull-Rom bicubic upsample; AMD CAS contrast-adaptive sharpen; flip parity documented and asserted), `glUpscaler.js` (OffscreenCanvas + two-pass FBO renderer, throws where the platform can't deliver), `frameUpscale.js` (insertable-streams loop, inline transform, input closed exactly once, renderer failure = honest passthrough mid-stream too), `upscaleStage.js` (active only when wrap returned a DIFFERENT stream — no claimed resolution without produced pixels). Pipeline: receive → align → upscale → present, both P3 slots now real; readout says **1080p** only when the GPU actually produced it. 11 new tests (252 total).
 
+### Post-deploy verification (probe, production)
+
+First probe run after #68's deploy FAILED on the probe's own stale assertion — it demanded the "720p" readout, and the readout now honestly says **1080p** because the upscaler engaged. The stale assertion was replaced with the honesty rule itself: whatever resolution the fidelity line claims must match the pixels the element decodes. Corrected run: **PASS — delivering 1920px wide, billed 0s** (`fix/probe-fidelity-claim`). Evidence frame updated: cinematic view, 1080p claim, "video held 0.0s" (honest — the fake mic never speaks, so the controller rests at zero), Mouth→Ear stat present. Honest cost note: the two stale-assertion failed runs consumed ~154s of the internal video meter (899s → 745s) before their reservations settled — the probe's own finally-cleanup and the executioner did their jobs; the assertion, not the pipeline, was at fault.
+
 ### Where the 9/10 verdict lives now
 CEO drill, closed headphones (meter assumes no speaker bleed): watch Mouth→Ear and "video held" converge, judge lips vs voice, report the numbers seen. `DEFAULT_VIDEO_PATH_MS` is the tuning knob her data may move. The inherent physics stands stated: perfect sync to a re-spoken voice means the lens runs seconds behind reality during long sentences — the meter makes that visible instead of mysterious.
 
