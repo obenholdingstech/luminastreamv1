@@ -6,12 +6,14 @@ import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video,
 
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useMicLevel } from '@/hooks/useMicLevel';
+import { useSyncMeter } from '@/hooks/useSyncMeter';
 import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
 import { endSession, openSession, releaseOnUnload } from '@/lib/sessionClient';
 import { PHASE, createSessionHolder } from '@/lib/sessionHolder';
 import { VIDEO_PHASE, useLensVideo } from '@/hooks/useLensVideo';
 import { createVoiceSelector } from '@/lib/voiceSelection';
+import { findLiveRemoteAudioTrack } from '@/lib/remoteAudioTrack';
 import { shouldToggleCleanView } from '@/lib/cleanView';
 import {
   createAutoStartLatch,
@@ -594,6 +596,45 @@ export default function Studio() {
       current?.removeEventListener?.('ended', read);
     };
   }, [room]);
+
+  // The agent's audio track, for the sync meter's EAR. Same discipline as
+  // micTrack above, in full: the SELECTION policy lives in src/lib
+  // (findLiveRemoteAudioTrack, tested), publications are held in state and
+  // refreshed from the SDK's events — and the track's own `ended` is
+  // listened to directly, because a device-level termination fires no room
+  // event at all and would otherwise leave the meter analysing a corpse.
+  const [remoteAudioTrack, setRemoteAudioTrack] = useState(null);
+  useEffect(() => {
+    if (!room) {
+      setRemoteAudioTrack(null);
+      return undefined;
+    }
+    let current = null;
+    const read = () => {
+      const found = findLiveRemoteAudioTrack(room.remoteParticipants);
+      if (current !== found) {
+        current?.removeEventListener?.('ended', read);
+        found?.addEventListener?.('ended', read);
+        current = found;
+      }
+      setRemoteAudioTrack(found);
+    };
+    read();
+    room.on(RoomEvent.TrackSubscribed, read);
+    room.on(RoomEvent.TrackUnsubscribed, read);
+    room.on(RoomEvent.ParticipantDisconnected, read);
+    return () => {
+      room.off(RoomEvent.TrackSubscribed, read);
+      room.off(RoomEvent.TrackUnsubscribed, read);
+      room.off(RoomEvent.ParticipantDisconnected, read);
+      current?.removeEventListener?.('ended', read);
+    };
+  }, [room]);
+
+  // The mouth→ear measurement: the true A/V number, measured at the ear.
+  // PR A: a METER only — the video-delay controller still runs on the
+  // agent's tail; it starts listening to this once the numbers are proven.
+  const sync = useSyncMeter(micTrack, remoteAudioTrack);
 
   const reduceMotion = useReducedMotion();
   const paintLevel = useCallback((level) => {
@@ -1298,6 +1339,15 @@ export default function Studio() {
               className="mt-10 flex items-stretch divide-x divide-[#161626] border border-[#161626] rounded-xl bg-[#0B0B14]/70 py-3"
             >
               <Stat label="Latency" value={latencyMs} unit="ms" />
+              {/* Mouth→ear: the WHOLE voice path measured at the ear —
+                  speech duration, queue, synthesis, backlog, network, jitter
+                  buffer, all of it. This is the number video sync answers
+                  to; "Latency" above is the agent's own (smaller) tail. */}
+              <Stat
+                label="Mouth→Ear"
+                value={sync?.medianMs != null ? Math.round(sync.medianMs) : null}
+                unit="ms"
+              />
               <Stat label="Utterances" value={utterances.length || null} />
               <div className="flex flex-col items-center gap-1 px-5">
                 <span className="text-[9px] tracking-[0.2em] uppercase text-[#4A5568]">Mic</span>
