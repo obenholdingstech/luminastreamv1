@@ -245,6 +245,15 @@ export default function Studio() {
   const effectiveVoiceLabels = liveVoiceList
     ? voiceLabels
     : Object.fromEntries(voiceManifest.voices.map((v) => [v.id, v.label]));
+  // A stored choice is only a choice while the current list still offers it.
+  // A voice deleted from the account (or absent from the agent's live list)
+  // would otherwise leave the controlled <select> with no matching option —
+  // the browser displays the FIRST entry while the latch requests the ghost.
+  // The stored value itself is kept: the list in view changes (manifest
+  // pre-connect, broadcast after), and a choice invalid against one may be
+  // perfectly valid against the next.
+  const validChosenVoice =
+    chosenVoice && effectiveVoiceChoices.includes(chosenVoice) ? chosenVoice : null;
   const [voicePref] = useState(() => createVoicePreference());
 
   const voiceSelector = useMemo(
@@ -309,6 +318,12 @@ export default function Studio() {
   // reconnecting, so neither costs a new reservation.
   const [avatar, setAvatar] = useState(null); // { dataUrl, name } | null
   const [avatarError, setAvatarError] = useState('');
+  // FileReader is asynchronous: between the pick and onload there is a
+  // window where the UI promises an avatar it does not yet hold. The video
+  // auto-start waits for this flag — without it, a Start pressed inside
+  // that window opened the session with NO reference image, and the latch
+  // (correctly) refused a second start to add it.
+  const [avatarReading, setAvatarReading] = useState(false);
   const [livePrompt, setLivePrompt] = useState('');
   const [promptApplied, setPromptApplied] = useState(false);
   const avatarInputRef = useRef(null);
@@ -336,6 +351,7 @@ export default function Studio() {
         // the stream keeps animating the PREVIOUS identity, and saying
         // nothing would be the UI claiming something the vendor never did.
         setAvatar({ dataUrl, name: file.name });
+        setAvatarReading(false);
         if (video.phase === VIDEO_PHASE.live) {
           const ok = await video.updateImage(dataUrl);
           if (!ok) {
@@ -345,6 +361,13 @@ export default function Studio() {
           }
         }
       };
+      // A failed read MUST clear the flag, or the video leg waits forever
+      // for an identity that is never coming.
+      reader.onerror = () => {
+        setAvatarReading(false);
+        setAvatarError('the image could not be read — try picking it again');
+      };
+      setAvatarReading(true);
       reader.readAsDataURL(file);
     },
     [video],
@@ -426,6 +449,10 @@ export default function Studio() {
   // recedes (press H for the fully raw view).
   const [autoLatch] = useState(() => createAutoStartLatch());
   useEffect(() => {
+    // A pick mid-read: hold the video leg WITHOUT consuming the latch —
+    // audio proceeds, and this effect re-fires the moment the read settles,
+    // so the avatar the user was promised actually rides the start.
+    if (avatarReading) return;
     if (
       autoLatch.shouldStart({
         sessionId: allocation?.identity ?? null,
@@ -439,7 +466,7 @@ export default function Studio() {
         ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
       });
     }
-  }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt]);
+  }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt, avatarReading]);
 
   const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
 
@@ -454,13 +481,16 @@ export default function Studio() {
       voicePref.shouldApply({
         sessionId: allocation?.identity ?? null,
         connected: isConnected,
-        chosen: chosenVoice,
+        // The VALIDATED choice: by this point the agent's broadcast has
+        // arrived (confirmedVoice gates shouldApply), so the list in force
+        // is the live one — a stored id it no longer offers is not sent.
+        chosen: validChosenVoice,
         confirmedVoice,
       })
     ) {
-      requestVoice(chosenVoice);
+      requestVoice(validChosenVoice);
     }
-  }, [allocation, isConnected, chosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
+  }, [allocation, isConnected, validChosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
   // The invariant behind the fix above, enforced structurally: NO audio
@@ -837,7 +867,7 @@ export default function Studio() {
               </label>
               <select
                 id="lens-voice"
-                value={isConnected && confirmedVoice ? confirmedVoice : (chosenVoice ?? confirmedVoice ?? '')}
+                value={isConnected && confirmedVoice ? confirmedVoice : (validChosenVoice ?? confirmedVoice ?? '')}
                 onChange={(e) => {
                   chooseVoice(e.target.value);
                   if (isConnected) requestVoice(e.target.value);
@@ -849,7 +879,7 @@ export default function Studio() {
                     the list while the session would actually use the agent's
                     default. A placeholder keeps the display honest until a
                     real choice exists. */}
-                {!chosenVoice && !(isConnected && confirmedVoice) && (
+                {!validChosenVoice && !(isConnected && confirmedVoice) && (
                   <option value="" disabled className="bg-[#08080F]">
                     choose a voice…
                   </option>
@@ -861,7 +891,7 @@ export default function Studio() {
                 ))}
               </select>
             </div>
-            {!isConnected && chosenVoice && (
+            {!isConnected && validChosenVoice && (
               <span className="text-[9px] text-[#3E4A5F]">
                 applies when the lens starts
               </span>
