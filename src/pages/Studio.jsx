@@ -21,7 +21,7 @@ import {
   crossfadeState,
   isOrphanVideoLeg,
 } from '@/lib/unifiedLens';
-import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS } from '@/lib/alignStage';
+import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
 
 // The product surface: LuminaStream as a lens.
@@ -640,30 +640,30 @@ export default function Studio() {
   // arriving BEFORE the lips means the video is being held too long — press
   // toward "lips earlier". The stage clamps; this just remembers and feeds.
   const [videoPathMs, setVideoPathMsState] = useState(() => {
+    // Missing is distinguished from zero: an absent key means "never
+    // trimmed" (use the default); a stored "0" is a trim the user made.
+    // Every value passes through the lib's single normalizer, so storage,
+    // the stage, and the UI can never disagree about legality (CodeRabbit).
     try {
-      const stored = Number(globalThis.localStorage?.getItem('lens-video-path-ms'));
-      return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_VIDEO_PATH_MS;
+      const raw = globalThis.localStorage?.getItem('lens-video-path-ms');
+      if (raw == null || raw === '') return DEFAULT_VIDEO_PATH_MS;
+      return clampVideoPathMs(Number(raw)) ?? DEFAULT_VIDEO_PATH_MS;
     } catch {
       return DEFAULT_VIDEO_PATH_MS;
     }
   });
-  const trimVideoPath = useCallback(
-    (deltaMs) => {
-      setVideoPathMsState((prev) => {
-        const next = Math.max(
-          VIDEO_PATH_LIMITS.min,
-          Math.min(VIDEO_PATH_LIMITS.max, prev + deltaMs),
-        );
-        try {
-          globalThis.localStorage?.setItem('lens-video-path-ms', String(next));
-        } catch {
-          /* private mode — the trim still holds for this visit */
-        }
-        return next;
-      });
-    },
-    [],
-  );
+  const trimVideoPath = useCallback((deltaMs) => {
+    setVideoPathMsState((prev) => clampVideoPathMs(prev + deltaMs) ?? prev);
+  }, []);
+  // Persistence is an EFFECT of the value, never a side effect inside the
+  // state updater — React is free to replay updaters (CodeRabbit).
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem('lens-video-path-ms', String(videoPathMs));
+    } catch {
+      /* private mode — the trim still holds for this visit */
+    }
+  }, [videoPathMs]);
   useEffect(() => {
     video.pipeline.stages.align.setVideoPathMs?.(videoPathMs);
   }, [videoPathMs, video.pipeline]);

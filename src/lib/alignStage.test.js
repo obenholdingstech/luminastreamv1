@@ -1,7 +1,7 @@
 // Run: node --test src/lib/alignStage.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAlignStage } from './alignStage.js';
+import { clampVideoPathMs, createAlignStage } from './alignStage.js';
 import { createElasticDelay } from './elasticDelay.js';
 
 function fakeDelayFactory({ supported = true } = {}) {
@@ -107,6 +107,26 @@ test('the trim knob: applies from the next observation, clamps, refuses junk', (
   stage.observeMouthToEar(400);
   assert.deepEqual(observed, [800, 1000, 1000, 1000, 400]);
   assert.equal(stage.videoPathMs(), 0);
+});
+
+test('clampVideoPathMs is THE boundary: zero legal, junk null, extremes clamped', () => {
+  assert.equal(clampVideoPathMs(0), 0, 'zero is a claim, not junk');
+  assert.equal(clampVideoPathMs(700), 700);
+  assert.equal(clampVideoPathMs(99_999), 2000);
+  assert.equal(clampVideoPathMs(-5), 0);
+  assert.equal(clampVideoPathMs(NaN), null);
+  assert.equal(clampVideoPathMs('700'), null, 'strings are the CALLER\'s parsing problem');
+  assert.equal(clampVideoPathMs(undefined), null);
+});
+
+test('a constructor fed junk falls back to the default, not to broken state', () => {
+  const observed = [];
+  const stage = createAlignStage({
+    elastic: { observe: (ms) => observed.push(ms), targetMs: () => 0, reset: () => {} },
+    videoPathMs: NaN,
+  });
+  stage.observeMouthToEar(1500);
+  assert.deepEqual(observed, [1500 - 700], 'the drill-calibrated default took over');
 });
 
 test('release() resets the clock too — a new session starts from zero', () => {

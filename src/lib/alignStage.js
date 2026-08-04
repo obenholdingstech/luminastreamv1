@@ -32,13 +32,27 @@ export const DEFAULT_VIDEO_PATH_MS = 700;
 // exceed 2s would mean the estimate is broken, not the knob.
 export const VIDEO_PATH_LIMITS = { min: 0, max: 2000 };
 
+/**
+ * THE normalization for a video-path value — every boundary (constructor,
+ * setter, persisted storage, UI stepper) goes through this one function, so
+ * no two of them can disagree about what a legal value is. Junk answers
+ * null; the caller supplies its own fallback. Zero is LEGAL: "the video
+ * path costs nothing" is a strange claim but a claim, not junk.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function clampVideoPathMs(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(VIDEO_PATH_LIMITS.min, Math.min(VIDEO_PATH_LIMITS.max, value));
+}
+
 export function createAlignStage({
   elastic = createElasticDelay(),
   createDelay = (targetMs) => createFrameDelay({ targetMs }),
   videoPathMs = DEFAULT_VIDEO_PATH_MS,
 } = {}) {
   let delay = null;
-  let pathMs = videoPathMs;
+  let pathMs = clampVideoPathMs(videoPathMs) ?? DEFAULT_VIDEO_PATH_MS;
 
   return {
     name: 'align',
@@ -77,8 +91,8 @@ export function createAlignStage({
      * smoothly, exactly as it does for a real latency change.
      */
     setVideoPathMs(ms) {
-      if (!Number.isFinite(ms)) return;
-      pathMs = Math.max(VIDEO_PATH_LIMITS.min, Math.min(VIDEO_PATH_LIMITS.max, ms));
+      const next = clampVideoPathMs(ms);
+      if (next !== null) pathMs = next;
     },
 
     videoPathMs() {
