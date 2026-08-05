@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 5 August 2026 (later) — synthesis PROVEN LIVE; incident mis-attributed 1hr, resolved honestly
+
+- Post-#78 probe failure did not implicate #78: `POST /api/video/session` 502 `vendor_session_failed` — transient Decart-side create outage (~1hr; #78 never touches the offer/create path, and the path recovered with no code change). Revert PR #79 opened on the wrong read, **closed unmerged** once the instrumented run exonerated the code.
+- Post-recovery probe **PASS**: evidence frame reads **1080P · 21FPS · SYNTHESIZED · BLEND** — the tier ladder live; headless (no WebGPU) correctly earns blend, motion withheld. Dev ledger was at 29s (wall worked); reset to 0/3000; post-run 5s spent / 2995s remaining / 0 open.
+- Lesson: one probe gates two failure domains (pipeline + vendor leg); a failing probe names a symptom, the diagnosis is earned. Wrangler tail unusable locally (different CF account — dashboard is her wall).
+- **Next:** CEO session → her readout names her tier (motion expected on her hardware) + fps → the 50fps verdict.
+
 ## 5 August 2026 — adaptive frame synthesis shipped (CEO tier directive)
 
 - **Pipeline canon now 5 stages:** receive → align → **synthesize** → upscale → present (after align: queue math; before upscale: half the pixels).
