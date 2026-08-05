@@ -1174,6 +1174,11 @@ export default function Studio() {
                   <Video size={10} className="inline mr-1" aria-hidden />
                   {fidelity.delivering.height}p
                   {deliveredFps != null && ` · ${deliveredFps}fps`}
+                  {/* The tier LABEL is the synthesis stage's claim about what
+                      runs; the fps NUMBER stays the meter's measurement of
+                      what the element presents. Kept separate on purpose —
+                      when they disagree, the disagreement is the diagnosis. */}
+                  {fidelity.synthLabel && ` · ${fidelity.synthLabel}`}
                   {!fidelity.upscaleActive && ' · upscale pending'}
                   {/* The applied hold, not a vanity light: how far the video
                       is standing behind real time to meet its voice. State,

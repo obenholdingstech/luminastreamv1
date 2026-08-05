@@ -25,6 +25,8 @@ import {
 } from '@/lib/videoClient';
 import { createAlignStage } from '@/lib/alignStage';
 import { createFramePipeline } from '@/lib/framePipeline';
+import { createSynthStage } from '@/lib/synthStage';
+import { probeSynthCapability } from '@/lib/synthProbe';
 import { createUpscaleStage } from '@/lib/upscaleStage';
 import { createVideoNegotiator, NEGOTIATION } from '@/lib/videoNegotiator';
 
@@ -72,9 +74,47 @@ export function useLensVideo(adminToken) {
   // 720p, the fidelity is ours). Each is an honest passthrough where its
   // platform pieces are missing.
   const pipeline = useMemo(
-    () => createFramePipeline({ align: createAlignStage(), upscale: createUpscaleStage() }),
+    () =>
+      createFramePipeline({
+        align: createAlignStage(),
+        synthesize: createSynthStage(),
+        upscale: createUpscaleStage(),
+      }),
     [],
   );
+
+  // Tier changes (probe verdict arriving, governor demotion) must reach the
+  // readout without a poll — the stage publishes, this state re-renders.
+  const [synthTier, setSynthTier] = useState('off');
+  useEffect(
+    () => pipeline.stages.synthesize.subscribe?.(setSynthTier),
+    [pipeline],
+  );
+
+  // The capability benchmark runs ONCE, at the first session start (CEO
+  // directive: check the device, then choose the tier). Fired from start()
+  // rather than mount so an idle tab never spins a GPU probe; the loop reads
+  // its mode live, so a verdict landing after the stream is up simply
+  // switches synthesis on.
+  const probeStateRef = useRef('idle');
+  const runSynthProbe = useCallback(() => {
+    if (probeStateRef.current !== 'idle') return;
+    probeStateRef.current = 'running';
+    probeSynthCapability()
+      .then((res) => {
+        if (mountedRef.current) {
+          pipeline.stages.synthesize.adopt(res);
+        } else {
+          // The verdict arrived for a page nobody is looking at — the GPU
+          // state it built must not outlive the tab (sessionHolder lesson).
+          for (const r of Object.values(res.renderers ?? {})) r?.dispose?.();
+        }
+        probeStateRef.current = 'done';
+      })
+      .catch(() => {
+        probeStateRef.current = 'done'; // no grant is a valid verdict
+      });
+  }, [pipeline]);
 
   const negotiator = useMemo(
     () =>
@@ -132,6 +172,7 @@ export function useLensVideo(adminToken) {
     async (/** @type {{prompt?: string, requestedSeconds?: number}} */ options = {}) => {
       terminalRef.current = false;
       setError('');
+      runSynthProbe();
       try {
         const session = await negotiator.start(options);
         if (!mountedRef.current) {
@@ -153,7 +194,7 @@ export function useLensVideo(adminToken) {
         }
       }
     },
-    [negotiator, refreshBudget],
+    [negotiator, refreshBudget, runSynthProbe],
   );
 
   const stop = useCallback(async () => {
@@ -206,10 +247,23 @@ export function useLensVideo(adminToken) {
   useEffect(
     () => () => {
       pipeline.stages.align.release?.();
+      pipeline.stages.synthesize.release?.();
       pipeline.stages.upscale.release?.();
     },
     [pipeline],
   );
 
-  return { phase, error, budget, stream, localStream, pipeline, start, stop, updatePrompt, updateImage };
+  return {
+    phase,
+    error,
+    budget,
+    stream,
+    localStream,
+    pipeline,
+    synthTier,
+    start,
+    stop,
+    updatePrompt,
+    updateImage,
+  };
 }
