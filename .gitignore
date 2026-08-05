@@ -54,3 +54,7 @@ agent/*report*.json
 # Playwright E2E artifacts (screenshots, traces, reports)
 /test-results/
 /playwright-report/
+
+# Rendered from ROADMAP.md by scripts/render-roadmap-pdf.mjs — a rendering,
+# never a second source of truth
+/ROADMAP.pdf

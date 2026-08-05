@@ -1,6 +1,6 @@
 # LuminaStream — Roadmap & Canon
 
-**v2.4 · 2 August 2026**
+**v2.5 · 4 August 2026**
 
 This is the canonical description of what LuminaStream is, what state it is in,
 and what order the remaining work happens in. It exists because the previous
@@ -39,7 +39,12 @@ Four consequences follow, and they are the reason this paragraph is at the top:
 
 ## 2. Where we actually are
 
-Stage 1 — the voice engine — is **done and running in production**.
+Stage 1 — the voice engine — is **done and running in production**. On top of
+it, the session layer (P1), video (P2), and A/V sync & fidelity (P3) have all
+shipped: the browser lens at `/` runs the full transformed person — avatar face
+through Decart Lucy 2.5, cloned voice, upscaled to 1080p, dual-mode
+lip-sync — spend-walled end to end. The CEO scored the overall live experience
+**8.5/10 on 4 Aug 2026 and locked it in**.
 
 | | |
 |---|---|
@@ -49,14 +54,20 @@ Stage 1 — the voice engine — is **done and running in production**.
 | Quality | CEO scorecard **8.7 overall** — clean 8, latency-feel 8.3, "is it ME?" 8.5 |
 | Frontend | Cloudflare Pages (`studio.luminastream.live`) + Worker (`luminastream-api`) |
 | Verified | CEO ran the lens against the live agent, 1 Aug 2026 — it works |
+| Video | Decart Lucy 2.5, white-label topology (Worker control plane, direct media), `SpendLedger`-walled, **3 DO requests per session of any length** |
+| Fidelity | Lucy's fixed 720p upscaled client-side to **1080p** (Catmull-Rom + CAS, WebGL2); readout claims only what it delivers |
+| Sync | Measured at the ear (mouth→ear meter); dual-mode alignment — the laggard is the master clock; drill-calibrated with a live trim knob |
+| Score | **8.5/10 overall, CEO, 4 Aug 2026 — locked in** (voice drill 9/10 on 3 Aug; clarity 8.4 and sync 6.6 mid-arc, then the 6.6 was decoded and rebuilt) |
 | Apple enrolment | **Started 2 Aug 2026.** P6's critical path; the lead time was the risk, and it is now running down. |
 | Cloudflare plan | **Workers Free** (2 Aug 2026), which includes SQLite-backed Durable Objects within daily quotas. P1's **O(1) invariant** protects both: on Free it keeps us under a quota whose breach *fails operations*, and on Paid it keeps cost proportional to sessions **served** rather than to hours **streamed**. It does not make usage free — cost still grows with session count, and both quotas can still be exceeded at volume. |
 
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
 
-What does **not** exist yet: video of any kind, more than one concurrent
-speaker, any database, any billing, and the native app.
+What does **not** exist yet: 50fps output (one frame-synthesis stage remains,
+gated on the CEO's on-screen fps reading), any database, any billing, and the
+native app. Concurrency exists but is small: pool of two rooms, held ≤ 6 until
+the concurrent-CPU drill.
 
 ---
 
@@ -301,9 +312,30 @@ time.
 - Retires: the shared `luminastream-test` room, the `agent_busy` state, and the
   admin-password gate on the lens.
 
-### P2 — Video *(~1 week)* ⟵ **NEXT**
+### P2 — Video ✅ *(closed 3 Aug 2026 — planned ~1 week, done in two days)*
 
-Decart Lucy 2.5 in the browser studio, spend-walled.
+Decart Lucy 2.5 in the browser studio, spend-walled. **Shipped in full**, in
+the order this section demanded — the wall merged before the key existed:
+
+- **P2a** — the `SpendLedger` DO live and production-drilled before any vendor
+  key existed (#43): reserve→settle, debit-on-reserve, dev ceilings
+  180 s / 3000 s, five money mutations each convicting its guard.
+- **P2b** — the probe verdict (#46): `maxSessionDuration` is **enforced at
+  runtime against generation** — wall #2 is real, browser-direct topology
+  confirmed. First metered vendor spend: $0.60, through our own ledger.
+- **P2c** — the white-label topology implemented: Worker control plane with the
+  raw key never leaving the server, stateless session control (ICE/prompts cost
+  zero DO requests), vendor-truth settle, the executioner alarm with bounded
+  retries. 3 DO requests per video session, any length, verified in production.
+- **P2d** — video in the lens (#49), behind the composable frame pipeline
+  (receive → align → upscale → present) that made P3 a slot-fill, not a
+  retrofit.
+- Then the product on top: reference avatar + live restyle prompt + voice
+  dropdown (#50–52), the blank-render root cause found and fixed with a render
+  probe that bills 0 s (#55–57), Clean View (#58), and the one-button unified
+  lens with cinematic mode (#60).
+
+The design text below is retained as built — it is now description, not plan.
 
 **The `SpendLedger` is the prepaid wallet enforcer from day one, temporarily
 wearing dev-cap clothes** (CEO, 3 Aug 2026). LuminaStream's business model is
@@ -369,11 +401,8 @@ key — which therefore never leaves the server in ANY form, not even ephemeral
 — while WebRTC media flows browser↔Decart directly ("media quality identical",
 control-only latency).
 
-**Status: committed design, not yet implemented.** What is LIVE today is P2a —
-reserve/settle bookkeeping, with settle taking a client-reported `usedSeconds`
-clamped to the grant, and a reaper that resolves ledger records only. The
-three consequences below are what **P2c builds**, each closing a
-previously-flagged hole; none of them exists until it does:
+**Status: implemented and live** (P2c, 3 Aug 2026). The three consequences
+below are built, each closing a previously-flagged hole:
 
 1. **The ledger's reaper becomes the executioner** *(P2c)* — **server-
    authoritative, vendor-executed**, and honest about the difference: the
@@ -426,16 +455,40 @@ error stream, not by connection death, so that error event is the signal to
 listen for. Lucy 2.5 is **720p fixed** (1280×720, WebRTC) — which
 makes the upscaling mandate below real rather than optional.
 
-### P3 — A/V sync *(~1 week)*
+### P3 — A/V sync & fidelity ✅ *(locked 4 Aug 2026 at **8.5/10**, CEO score — one named follow-up open: frame synthesis toward 50fps)*
 
-**Audio is the master clock.** Video buffers to match audio; audio never waits.
+Built, scored mid-arc (clarity 8.4 / sync 6.6), the 6.6 decoded and rebuilt,
+then **locked at 8.5 overall by the CEO on 4 Aug 2026**. What the arc proved
+changed the doctrine itself:
 
-- Build the offset meter **first**, then tune what the numbers convict.
-- The buffer must be **elastic**, subscribing to the agent's live per-utterance
-  tail latency. p95 near 1900 ms in free conversation is *structural* — synthesised
-  speech takes about as long to play as it took to say, so continuous talking
-  accumulates a backlog that drains at pauses. A fixed delay either desyncs under
-  load or adds permanent latency.
+- **Measurement moved to the ear.** The first controller consumed the agent's
+  `tail_latency_ms` and scored 5/10 — that number is blind to utterance
+  duration (dominant), backlog, and network. The shipped meter measures
+  **mouth→ear**: local mic onset → remote track onset, both on one browser
+  clock, so everything in between is captured by construction (#66–67).
+- **The master-clock rule generalised — the laggard is the master clock.** The
+  original "audio is the pacing leg" was converted-mode truth wearing a
+  universal costume. In converted mode audio lags, so video holds (elastic
+  buffer, bounded queue). In passthrough/Direct mode **video** is the laggard,
+  so audio takes the hold — a WebAudio delay line targeting
+  videoPath − mouth→ear, with an absolute voice-safety contract: engage only
+  while the delayed path is verifiably running, and every failure gives the
+  voice back. Degraded sync is possible; silence is not (#71).
+- **Calibration is a knob, not a deploy.** Video-path estimate drill-calibrated
+  to 700 ms from the CEO's measured 400 ms lead; a live "lips earlier / lips
+  later" trim (100 ms steps, persisted) puts final calibration in her hands
+  (#70).
+- **The upscaling mandate, delivered** (design below): Catmull-Rom + CAS in
+  WebGL2, 720p → 1080p, honesty structural — the readout claims 1080p only
+  when the upscaler actually produced it (#68–69). Clarity moved 7 → 8.4.
+- **Instrument before tuning, again:** a delivered-fps meter now sits in the
+  fidelity readout (#72). First measurement: 18fps under the probe's headless
+  software rendering; the CEO's hardware number decides the 50fps approach.
+
+**The open item — 50fps frame synthesis.** GPU midpoint blending first
+(honestly labelled "smoothed"), true motion-compensated interpolation only if
+blending fails the CEO's eye — that is where her budget green light may apply.
+Gated on her on-screen fps reading, not folklore.
 
 **Upscaling mandate (CEO, 3 Aug 2026): enterprise-grade fidelity to FHD/2K,
 client-side, staged.** Lucy outputs 720p, period; crispness beyond that is our
@@ -870,9 +923,15 @@ A console-adjustable cap walled by an env-only ceiling. Defaulting the ceiling t
 the starting cap means an un-overridden environment can only ever spend *less*.
 A malformed override is fatal, never a silent default. *(30 Jul)*
 
-**23. Audio is the pacing leg.**
-Video can be buffered to match audio; never the reverse. Any sync budget must be
-elastic, not fixed. *(structural, carried forward)*
+**23. The laggard is the master clock.** *(amended 4 Aug 2026 — was "audio is
+the pacing leg")*
+The original rule was converted-mode truth stated as universal law: in
+converted mode audio lags, so video buffers to match it. In passthrough the
+video path is the laggard, and holding video there widens the gap. The general
+rule: whichever leg arrives last is the clock; the other leg takes the elastic
+hold — and when audio takes it, the voice-safety contract is absolute (every
+failure gives the voice back). Any sync budget must be elastic, not fixed.
+*(structural, carried forward; generalised in #71)*
 
 **24. Present both, when only an ear can judge.**
 A 100 ms hangover hit the latency target with identical drill transcripts — but
@@ -906,6 +965,32 @@ where the real value lives, always. *(31 Jul)*
 Branching off an unmerged branch puts the parent's commits inside the child's
 diff, and the reviewer cannot tell the two changes apart. *(31 Jul)*
 
+### Earned since v2.4
+
+**30. A mock you invented is a mirror, not a wall.**
+The white-label adapter spoke field names I made up, and the test stub spoke
+them back — every test green, the CEO's first drill 502. Vendor stubs must cite
+the doc or live exchange their shapes came from. *(3 Aug, #50)*
+
+**31. UI state with a lifecycle is a lib with a test, from the first draft.**
+Lifecycle logic written inside a component three separate times; each
+extraction (`sessionHolder`, `videoNegotiator`, `voiceSelection`) immediately
+exposed real bugs the component version was hiding. The tell: the extracted
+libs had tests, the hooks did not. *(3 Aug — P1b, P2d, voice dropdown)*
+
+**32. Measure the experience, not the component.**
+The sync controller consumed the agent's own tail-latency number and scored
+5/10: that number cannot see utterance duration, backlog, or network — the
+three things that dominated. The shipped meter measures mouth→ear, the thing
+the user actually experiences, and captures everything in between by
+construction. *(4 Aug, #66)*
+
+**33. An asserted claim must match delivered pixels.**
+The render probe demanded "720p" after the upscaler made the output 1080p —
+stale twice in one day. A probe asserts the honesty *rule* (claim ==
+delivered), never a frozen value; and it asserts it against the element that
+carries the product, not the first `<video>` it finds. *(4 Aug, #69)*
+
 ---
 
 ## 5. Human-only walls
@@ -924,9 +1009,12 @@ pasted output.
 
 | | Why it matters |
 |---|---|
-| `DECART_API_KEY` via `wrangler secret put` | **Only after** the P2 spend wall is merged and verified. |
-| Confirm Decart's billing basis | Specifically: what "per second of active generation" meters. |
+| Report the on-screen **fps number** from a live session (and the trim value you settled on) | The fps number picks the 50fps approach — blend vs motion-compensated interpolation — and the trim value becomes the shipped default. |
+| Confirm Decart's billing basis | Specifically: what "per second of active generation" meters — reconciles our ledger against their invoice. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
+
+Done since v2.4: `DECART_API_KEY` placed (3 Aug — after the wall merged, as
+required); Decart account topped up with auto-top-up enabled (4 Aug).
 
 ---
 

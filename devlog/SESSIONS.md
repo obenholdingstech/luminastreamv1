@@ -4,6 +4,33 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 4 August 2026 (close) — SYNC LOCKED AT 8.5/10; roadmap v2.5 + the canonical PDF
+
+**Task (CEO, verbatim key parts):** "Sync Locked at 8.5/10 — Roadmap Update & Next Steps. I decided to test your progress this evening, and I love where we are at. The syncing is good and completely manageable now. I am giving the overall experience an 8.5/10. Let's lock that in for now and move ahead with the project. ... Give me a plain-English breakdown of exactly where we currently stand on the roadmap after these recent architectural upgrades and sync fixes. ... Please update the PDF version of the roadmap to reflect our current reality and send it over. I need an updated, canonical document in front of me so I can review it."
+
+### The score, logged same-day (rule 2)
+**8.5/10 overall, CEO, 4 Aug 2026 — locked in.** Her own live test of the deployed #70–#73 arc (trim knob, dual-mode laggard alignment, fps instrument, 1080p upscale). "The syncing is good and completely manageable now." Sub-scores not provided; the trajectory on record: sync 5 → 6.6 → locked at 8.5 overall; clarity 7 → 8.4. Still invited from her drill: the on-screen fps number and the trim value she settled on — both named in ROADMAP §6 as the open CEO actions, because they decide the 50fps approach and the shipped `videoPathMs` default.
+
+### ROADMAP.md v2.4 → v2.5 (this PR)
+The document had drifted badly behind the code — it still declared "P2 — NEXT" with P2 two days closed and P3 built, scored, and locked. Per §7's own rule ("when this document and the code disagree, the code is right and this document is a bug"), fixed:
+
+- **§2 rewritten:** P1+P2+P3 shipped; new table rows for Video (white-label topology, 3 DO req/session), Fidelity (720p→1080p client-side), Sync (measured at the ear, laggard doctrine), Score (8.5 locked). "What does not exist yet" is now honest: 50fps synthesis, database, billing, native app.
+- **P2 marked ✅ closed 3 Aug** with the shipped ledger→probe→topology→lens arc; the "committed design, not yet implemented" status paragraph — stale since P2c went live — now says implemented.
+- **P3 marked ✅ locked 4 Aug at 8.5** with what the arc proved (ear measurement, laggard generalization, calibration-as-knob, honest upscaler, fps instrument) and the one named follow-up: frame synthesis toward 50fps, gated on her measured number.
+- **Doctrine 23 amended in place** — "audio is the pacing leg" was converted-mode truth stated as universal law; now "the laggard is the master clock," citing #71. Four new entries under "Earned since v2.4": **30** a mock you invented is a mirror, not a wall (#50); **31** UI state with a lifecycle is a lib with a test (three extractions, each exposing bugs); **32** measure the experience, not the component (#66); **33** an asserted claim must match delivered pixels (#69).
+- **§6 refreshed:** `DECART_API_KEY` moved to done (placed 3 Aug, after the wall, as required); new top action — report the on-screen fps + final trim value.
+
+### The PDF (repeatable, not artisanal)
+No PDF had ever existed in the repo — "update the PDF" therefore meant "create the pipeline." `scripts/render-roadmap-pdf.mjs`: ROADMAP.md → marked (new devDependency) → styled HTML → Playwright Chromium `page.pdf()` — A4, print styles, versioned footer with page numbers, 19 pages. Output `/ROADMAP.pdf` is **gitignored by design**: it is a rendering of ROADMAP.md, never a second source of truth; the next update is `node scripts/render-roadmap-pdf.mjs`, not a hand-built document. First page verified visually (rule 8) via `sips` render. Delivered copy: `~/Desktop/LuminaStream-Roadmap-v2.5.pdf`.
+
+### Files changed
+ROADMAP.md (v2.5), scripts/render-roadmap-pdf.mjs (new), .gitignore (+/ROADMAP.pdf), package.json + package-lock.json (marked devDep), devlog/SESSIONS.md, notes.md.
+
+### Verification
+Local ritual (lint, typecheck, `node --test src/lib/*.test.js`, build) green; PDF generated and page 1 screenshot-verified; CodeRabbit review per workflow.
+
+---
+
 ## 4 August 2026 (night) — the 6.6/10 drill decoded: calibration, the laggard doctrine, the fps instrument
 
 **Task (CEO):** clarity 8.4/10; sync 6.6/10 — converted audio ~400ms ahead; passthrough "misaligned... feels like the sync logic was designed exclusively for converted mode"; target 50fps; explicit budget green light, "never lose current progress or break production."
