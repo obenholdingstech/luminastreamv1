@@ -4,6 +4,32 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 4 August 2026 (evening drill) — the CEO's screenshots ANSWER the two open questions; the chrome fails legibility over a bright wall; the interpolation mandate
+
+**Task (CEO, verbatim key parts):** "I cannot see the live FPS or the trim value controls on the UI during a live session. I performed a hard refresh to clear my cache, but the 'lips earlier/later' dial and the FPS fidelity readout are not rendering clearly on the screen. ... Go ahead and rent the external GPU and spin up true motion-compensated interpolation on a test branch. I want to see what happens when we push this to the absolute limit."
+
+### The drill result, logged same-day (rule 2) — and it contains the two numbers §6 was waiting for
+Two screenshots, both live Converted sessions against production, 4 Aug ~18:55:
+
+- **Delivered fps: 19** — on BOTH browsers (Chrome and Edge, hardware-accelerated), agreeing with the headless probe's 18. The folklore range ("20–25") is dead: **Lucy delivers ~18–19fps.** This is the number the 50fps work builds from — blending doubles it to ~38; reaching 50+ needs ~×2.6, i.e. true interpolation.
+- **Trim: 700ms** (the shipped default, unmoved — she could not read the control well enough to use it, see below).
+- Supporting readings: latency 1324/1271ms; one Mouth→Ear sample of 5909ms during a long utterance (structural backlog doing exactly what the physics said); video held 3.0s / 0.8s — the elastic working; 1080p claimed and delivered; budget line visible and counting.
+- Protocol note, honestly recorded: one screenshot is Microsoft Edge — drill canon says real Chrome only. No harm here (both browsers agree on every number), but the canon stands.
+
+### The legibility failure — a real bug, root-caused
+The controls were rendering; they were **unreadable**. Root cause in the code: the fidelity readout and trim controls wear dark slate text (`#4A5568`, `#64748B`) and near-black borders (`#1A1A2E`) — colors chosen for the dark idle page — floated at 60% opacity over live video, protected only by a dark text-shadow. That shadow is a bet that the scene behind the text is dark; her wall is white and yellow, and the bet lost. Elements with their own dark pill backgrounds (mode toggle, live strip) stayed readable in the same frame — which is the fix, generalized.
+
+### The fix (this PR): the lens-console panel
+Every control and readout now lives in ONE `lens-console` wrapper. In cinematic mode the panel carries its own scrim — `rgba(7,9,20,.6)` + 18px backdrop-blur + hairline border — so legibility is independent of what the camera sees. Outside cinematic mode the class is inert (idle page pixel-identical, screenshot-verified). The washed-out rows also got honest colors for a dark ground: readout/trim `#94A3B8`, trim value `#E2E8F0`, borders `#475569`, budget `#7C8AA5`.
+
+### The interpolation mandate — recorded, with the walls it must respect
+Her directive: rent the external GPU, spin up true motion-compensated interpolation on a test branch, push to the absolute limit. Accepted as a **drill** (evidence-gathering, not a production commitment — the roadmap's rejection of a GPU server in the production video path stands until evidence overturns it, and the physics prediction is on record: a server hop adds network round-trip + one-frame lookahead ≥ ~100–200ms against the sync just locked at 8.5). Two rails planned: **Rail A** — client-side WebGPU motion-compensated interpolation on her Apple Silicon, zero rental, zero new credentials; **Rail B** — the rented-GPU absolute-limit drill, which requires a GPU-provider account/API key: **credential minting is a human wall — hers.** Claude prepares the full kit; she mints the key.
+
+### Verification
+Lint / typecheck / 272 lib tests / build green; idle-page screenshot pre-merge (panel inert); post-deploy render probe + live-layer check after merge.
+
+---
+
 ## 4 August 2026 (close) — SYNC LOCKED AT 8.5/10; roadmap v2.5 + the canonical PDF
 
 **Task (CEO, verbatim key parts):** "Sync Locked at 8.5/10 — Roadmap Update & Next Steps. I decided to test your progress this evening, and I love where we are at. The syncing is good and completely manageable now. I am giving the overall experience an 8.5/10. Let's lock that in for now and move ahead with the project. ... Give me a plain-English breakdown of exactly where we currently stand on the roadmap after these recent architectural upgrades and sync fixes. ... Please update the PDF version of the roadmap to reflect our current reality and send it over. I need an updated, canonical document in front of me so I can review it."
