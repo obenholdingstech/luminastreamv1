@@ -68,11 +68,26 @@ console.log('[drill] bench (pure model inference)');
 const bench = await (await fetch(`${base}/bench`, { method: 'POST', headers: H })).json();
 console.log('[drill] bench:', JSON.stringify(bench));
 
-// ---- 4. the artifact: multiply the real 19fps by 3 → ~57fps
-console.log('[drill] interpolate ×3 (this is the long step)');
-const interp = await (
+// ---- 4. the artifact: multiply the real 19fps by 3 → ~57fps. Async on the
+// server (the first run's synchronous call outlived the HTTP client's header
+// timeout and orphaned the job) — kick, then poll.
+console.log('[drill] interpolate ×3 (async, polling)');
+const kick = await (
   await fetch(`${base}/interpolate?multi=3`, { method: 'POST', headers: H })
 ).json();
+console.log('[drill] kicked:', JSON.stringify(kick));
+let interp = null;
+for (let i = 0; i < 180; i++) {
+  await new Promise((r) => setTimeout(r, 10_000));
+  const st = await (await fetch(`${base}/interpolate/status`, { headers: H })).json();
+  if (st.state === 'done') {
+    interp = st.result;
+    break;
+  }
+  if (st.state === 'failed') throw new Error(`interpolate failed: ${st.error}`);
+  if (i % 3 === 0) console.log(`[drill] interpolating… (${(i + 1) * 10}s)`);
+}
+if (!interp) throw new Error('interpolate did not finish within 30min');
 console.log('[drill] interpolate:', JSON.stringify(interp));
 
 // ---- 5. bring everything home
@@ -88,7 +103,9 @@ for (const name of ['source.mp4', 'interpolated.mp4', 'side-by-side.mp4', 'timin
 
 // ---- 6. the verdict arithmetic, from measured parts
 const lookaheadMs = 1000 / 19; // interpolation needs the NEXT frame: one real-frame interval
-const synthMs = bench.ok ? bench.p50_ms : interp.ms_per_output_frame_incl_io;
+const synthMs = bench.ok
+  ? (bench['1080p']?.p50_ms ?? bench['720p']?.p50_ms)
+  : interp.ms_per_output_frame_incl_io;
 const addedMs = lookaheadMs + transport.frameRoundTripMs.p50 + synthMs;
 const summary = {
   gpu: bench.gpu ?? 'see health',
@@ -101,7 +118,7 @@ const summary = {
     frameRoundTripP50Ms: transport.frameRoundTripMs.p50,
     synthesisP50Ms: synthMs,
     totalAddedP50Ms: Math.round(addedMs * 10) / 10,
-    note: 'added to the video path in a server-hop topology; converted mode absorbs part of it inside the existing elastic hold, Direct mode pays it in full',
+    note: 'per-frame round trip + on-GPU synthesis + one-frame lookahead. A pipelined streaming topology would overlap transfers (one-way, not round-trip), so this is the honest UPPER bound of the tax; the uplink serialization it contains is real and unavoidable on this network either way.',
   },
 };
 writeFileSync(`${OUT}/drill-summary.json`, JSON.stringify(summary, null, 2));

@@ -101,10 +101,12 @@ async def upload_clip(file: UploadFile = File(...), x_drill_token: str = Header(
     raw = os.path.join(WORK, "source_upload")
     with open(raw, "wb") as f:
         f.write(await file.read())
-    # Normalize to h264 mp4 WITHOUT resampling time: keep every frame and its
-    # native rate so the interpolation multiplies the real 19fps, not a lie.
-    r = sh(["ffmpeg", "-y", "-i", raw, "-c:v", "libx264", "-crf", "18", "-an",
-            os.path.join(OUT, "source.mp4")])
+    # MediaRecorder webm is VFR on a 1ms timebase; a naive re-encode read it
+    # as 1000fps and produced an 11,823-frame monster on the first run.
+    # Normalize to CFR at the instrument-measured delivered rate (19fps) so
+    # the interpolation multiplies the REAL rate, not a container artifact.
+    r = sh(["ffmpeg", "-y", "-i", raw, "-vf", "fps=19", "-c:v", "libx264",
+            "-crf", "18", "-an", os.path.join(OUT, "source.mp4")])
     if r.returncode != 0:
         note(f"clip normalize FAILED: {r.stderr[-400:]}")
         raise HTTPException(status_code=422, detail=r.stderr[-400:])
@@ -133,22 +135,24 @@ def bench(x_drill_token: str = Header(default="")):
         model.load_model(os.path.join(WORK, "rife", "train_log"), -1)
         model.eval()
         model.device()
-        # 720p padded to /32 as RIFE requires
-        w, h = 1280, 736
-        i0 = torch.rand(1, 3, h, w, device="cuda")
-        i1 = torch.rand(1, 3, h, w, device="cuda")
-        for _ in range(5):
-            model.inference(i0, i1)
-        torch.cuda.synchronize()
-        times = []
-        for _ in range(50):
-            t0 = time.perf_counter()
-            model.inference(i0, i1)
+        result = {"ok": True, "gpu": gpu_name()}
+        # v4.26 wants dimensions padded to /64 (the first run's /32 padding
+        # failed with a 768-vs-736 tensor mismatch). Bench both the vendor-
+        # native 720p and the product's upscaled 1080p.
+        for label, w, h in (("720p", 1280, 768), ("1080p", 1920, 1088)):
+            i0 = torch.rand(1, 3, h, w, device="cuda")
+            i1 = torch.rand(1, 3, h, w, device="cuda")
+            for _ in range(5):
+                model.inference(i0, i1)
             torch.cuda.synchronize()
-            times.append((time.perf_counter() - t0) * 1000)
-        times.sort()
-        result = {"ok": True, "p50_ms": round(times[25], 2), "p95_ms": round(times[47], 2),
-                  "gpu": gpu_name()}
+            times = []
+            for _ in range(50):
+                t0 = time.perf_counter()
+                model.inference(i0, i1)
+                torch.cuda.synchronize()
+                times.append((time.perf_counter() - t0) * 1000)
+            times.sort()
+            result[label] = {"p50_ms": round(times[25], 2), "p95_ms": round(times[47], 2)}
         note(f"bench: {result}")
         return result
     except Exception as e:  # noqa: BLE001 — report, never crash the drill
@@ -156,13 +160,50 @@ def bench(x_drill_token: str = Header(default="")):
         return JSONResponse({"ok": False, "reason": str(e)})
 
 
+JOB = {"state": "idle", "result": None, "error": None}
+
+
 @app.post("/interpolate")
-def interpolate(multi: int = 3, x_drill_token: str = Header(default="")):
-    """The artifact: source.mp4 -> multi× frame rate, plus a side-by-side."""
+def interpolate_start(multi: int = 3, x_drill_token: str = Header(default="")):
+    """Kick the long job in a thread — the first run died of an HTTP client
+    timeout while the server kept grinding, which is how a drill orphans its
+    own work. POST returns immediately; poll GET /interpolate/status."""
     auth(x_drill_token)
+    if JOB["state"] == "running":
+        return {"ok": True, "state": "running"}
     src = os.path.join(OUT, "source.mp4")
     if not os.path.exists(src):
         raise HTTPException(status_code=409, detail="upload /clip first")
+    # Sanity wall: the VFR bug produced an 11,823-frame source once. Refuse
+    # anything implausible for a ~12s clip instead of burning an hour of GPU.
+    probe = sh(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", src])
+    nb = int(json.loads(probe.stdout)["streams"][0].get("nb_frames") or 0)
+    if nb > 1000:
+        raise HTTPException(status_code=422, detail=f"source has {nb} frames — normalization failed")
+    import threading
+
+    JOB.update(state="running", result=None, error=None)
+    threading.Thread(target=_interpolate_job, args=(multi,), daemon=True).start()
+    return {"ok": True, "state": "running", "source_frames": nb}
+
+
+@app.get("/interpolate/status")
+def interpolate_status(x_drill_token: str = Header(default="")):
+    auth(x_drill_token)
+    return JOB
+
+
+def _interpolate_job(multi):
+    try:
+        JOB["result"] = _interpolate(multi)
+        JOB["state"] = "done"
+    except Exception as e:  # noqa: BLE001 — the job must report, not vanish
+        note(f"interpolate job FAILED: {e}")
+        JOB.update(state="failed", error=str(e))
+
+
+def _interpolate(multi):
+    src = os.path.join(OUT, "source.mp4")
     tier = model_tier()
     t0 = time.perf_counter()
 
@@ -178,7 +219,7 @@ def interpolate(multi: int = 3, x_drill_token: str = Header(default="")):
         produced = glob.glob(os.path.join(OUT, "source_*X*.mp4"))
         if r.returncode != 0 or not produced:
             note(f"RIFE interpolate FAILED: {r.stderr[-600:]}")
-            raise HTTPException(status_code=500, detail=r.stderr[-600:])
+            raise RuntimeError(r.stderr[-600:])
         os.replace(produced[0], os.path.join(OUT, "interpolated.mp4"))
         method = tier
     else:
@@ -187,7 +228,7 @@ def interpolate(multi: int = 3, x_drill_token: str = Header(default="")):
                 "-c:v", "libx264", "-crf", "18", "-an", os.path.join(OUT, "interpolated.mp4")],
                timeout=3600)
         if r.returncode != 0:
-            raise HTTPException(status_code=500, detail=r.stderr[-600:])
+            raise RuntimeError(r.stderr[-600:])
         method = "ffmpeg-minterpolate"
     wall_s = time.perf_counter() - t0
 
