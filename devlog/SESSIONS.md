@@ -28,6 +28,9 @@ Her directive: rent the external GPU, spin up true motion-compensated interpolat
 ### Verification
 Lint / typecheck / 272 lib tests / build green; idle-page screenshot pre-merge (panel inert); post-deploy render probe + live-layer check after merge.
 
+### INCIDENT (same evening): the panel swallowed the stream — caught by the probe's evidence frame, fixed within the hour
+The #75 wrapper had wrapped the `lens-backdrop` block (it sits mid-document-order between the voice column and the control cluster — I never checked). Two invariants broke at once on production: the cinematic recede rule exempts the backdrop by DIRECT-child selector, so wrapped, the stream itself dimmed to 60%; and the panel's `backdrop-filter` creates a **containing block**, so the backdrop's `inset-0` filled the panel instead of the viewport — the live stream rendered inside a 576px box. The probe's assertions PASSED throughout (they check intrinsic pixels, not layout); **the evidence frame caught it** — rule 8 earning its keep against its own author. A first probe run also rendered fully unstyled (CSS 200-OK seconds later; transient edge race right after deploy — re-run styled, noted, not papered over). Fix: the backdrop moved above the wrapper, direct child of `main` again, with the two invariants written into the JSX comment. Absolute positioning + `-z-10` make document order irrelevant to its layout, which is why the move is safe.
+
 ---
 
 ## 4 August 2026 (close) — SYNC LOCKED AT 8.5/10; roadmap v2.5 + the canonical PDF
