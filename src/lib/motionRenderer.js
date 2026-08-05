@@ -176,78 +176,95 @@ export async function createMotionRenderer({
   const gridH = Math.ceil(lumaH / TILE);
   const code = shaders({ srcW, srcH, lumaW, lumaH, gridW, gridH });
 
-  const canvas = new OffscreenCanvasCtor(srcW, srcH);
-  const ctx = canvas.getContext('webgpu');
-  if (!ctx) throw new Error('webgpu canvas context unavailable');
-  const format = gpu.getPreferredCanvasFormat();
-  ctx.configure({ device, format, alphaMode: 'opaque' });
+  // Everything below can throw AFTER the device exists (context refusal,
+  // validation, exotic drivers) — and a throwing factory returns nothing
+  // for the caller to dispose, so the device must not outlive the failure.
+  let R;
+  try {
+    R = (() => {
+      const canvas = new OffscreenCanvasCtor(srcW, srcH);
+      const ctx = canvas.getContext('webgpu');
+      if (!ctx) throw new Error('webgpu canvas context unavailable');
+      const format = gpu.getPreferredCanvasFormat();
+      ctx.configure({ device, format, alphaMode: 'opaque' });
 
-  const tex = (w, h, fmt, usage) => device.createTexture({ size: [w, h], format: fmt, usage });
-  // Spec-fixed numeric usage flags (this module is typed without WebGPU lib
-  // types): COPY_DST 0x2, TEXTURE_BINDING 0x4, STORAGE_BINDING 0x8,
-  // RENDER_ATTACHMENT 0x10.
-  const U = { COPY_DST: 0x2, TEXTURE_BINDING: 0x4, STORAGE_BINDING: 0x8, RENDER_ATTACHMENT: 0x10 };
-  const srcA = tex(srcW, srcH, 'rgba8unorm', U.COPY_DST | U.TEXTURE_BINDING | U.RENDER_ATTACHMENT);
-  const srcB = tex(srcW, srcH, 'rgba8unorm', U.COPY_DST | U.TEXTURE_BINDING | U.RENDER_ATTACHMENT);
-  const lumaA = tex(lumaW, lumaH, 'r32float', U.STORAGE_BINDING | U.TEXTURE_BINDING);
-  const lumaB = tex(lumaW, lumaH, 'r32float', U.STORAGE_BINDING | U.TEXTURE_BINDING);
-  const motionTex = tex(gridW, gridH, 'rg32float', U.STORAGE_BINDING | U.TEXTURE_BINDING);
+      const tex = (w, h, fmt, usage) => device.createTexture({ size: [w, h], format: fmt, usage });
+      // Spec-fixed numeric usage flags (this module is typed without WebGPU lib
+      // types): COPY_DST 0x2, TEXTURE_BINDING 0x4, STORAGE_BINDING 0x8,
+      // RENDER_ATTACHMENT 0x10.
+      const U = { COPY_DST: 0x2, TEXTURE_BINDING: 0x4, STORAGE_BINDING: 0x8, RENDER_ATTACHMENT: 0x10 };
+      const srcA = tex(srcW, srcH, 'rgba8unorm', U.COPY_DST | U.TEXTURE_BINDING | U.RENDER_ATTACHMENT);
+      const srcB = tex(srcW, srcH, 'rgba8unorm', U.COPY_DST | U.TEXTURE_BINDING | U.RENDER_ATTACHMENT);
+      const lumaA = tex(lumaW, lumaH, 'r32float', U.STORAGE_BINDING | U.TEXTURE_BINDING);
+      const lumaB = tex(lumaW, lumaH, 'r32float', U.STORAGE_BINDING | U.TEXTURE_BINDING);
+      const motionTex = tex(gridW, gridH, 'rg32float', U.STORAGE_BINDING | U.TEXTURE_BINDING);
 
-  const module = (c) => device.createShaderModule({ code: c });
-  const downPipe = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: module(code.downsample), entryPoint: 'main' },
-  });
-  const matchPipe = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: module(code.blockMatch), entryPoint: 'main' },
-  });
-  const warpModule = module(code.warp);
-  const warpPipe = device.createRenderPipeline({
-    layout: 'auto',
-    vertex: { module: warpModule, entryPoint: 'vmain' },
-    fragment: { module: warpModule, entryPoint: 'fmain', targets: [{ format }] },
-    primitive: { topology: 'triangle-list' },
-  });
+      const module = (c) => device.createShaderModule({ code: c });
+      const downPipe = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: module(code.downsample), entryPoint: 'main' },
+      });
+      const matchPipe = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: module(code.blockMatch), entryPoint: 'main' },
+      });
+      const warpModule = module(code.warp);
+      const warpPipe = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: warpModule, entryPoint: 'vmain' },
+        fragment: { module: warpModule, entryPoint: 'fmain', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
 
-  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-  // Numeric usage flags, not the GPUBufferUsage global: this module is typed
-  // without WebGPU lib types, and the constants are spec-fixed values
-  // (UNIFORM = 0x40, COPY_DST = 0x8).
-  const params = device.createBuffer({ size: 16, usage: 0x40 | 0x8 });
+      const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+      // Numeric usage flags, not the GPUBufferUsage global: this module is typed
+      // without WebGPU lib types, and the constants are spec-fixed values
+      // (UNIFORM = 0x40, COPY_DST = 0x8).
+      const params = device.createBuffer({ size: 16, usage: 0x40 | 0x8 });
 
-  const downBindA = device.createBindGroup({
-    layout: downPipe.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: srcA.createView() },
-      { binding: 1, resource: lumaA.createView() },
-    ],
-  });
-  const downBindB = device.createBindGroup({
-    layout: downPipe.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: srcB.createView() },
-      { binding: 1, resource: lumaB.createView() },
-    ],
-  });
-  const matchBind = device.createBindGroup({
-    layout: matchPipe.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: lumaA.createView() },
-      { binding: 1, resource: lumaB.createView() },
-      { binding: 2, resource: motionTex.createView() },
-    ],
-  });
-  const warpBind = device.createBindGroup({
-    layout: warpPipe.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: srcA.createView() },
-      { binding: 1, resource: srcB.createView() },
-      { binding: 2, resource: sampler },
-      { binding: 3, resource: motionTex.createView() },
-      { binding: 4, resource: { buffer: params } },
-    ],
-  });
+      const downBindA = device.createBindGroup({
+        layout: downPipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: srcA.createView() },
+          { binding: 1, resource: lumaA.createView() },
+        ],
+      });
+      const downBindB = device.createBindGroup({
+        layout: downPipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: srcB.createView() },
+          { binding: 1, resource: lumaB.createView() },
+        ],
+      });
+      const matchBind = device.createBindGroup({
+        layout: matchPipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: lumaA.createView() },
+          { binding: 1, resource: lumaB.createView() },
+          { binding: 2, resource: motionTex.createView() },
+        ],
+      });
+      const warpBind = device.createBindGroup({
+        layout: warpPipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: srcA.createView() },
+          { binding: 1, resource: srcB.createView() },
+          { binding: 2, resource: sampler },
+          { binding: 3, resource: motionTex.createView() },
+          { binding: 4, resource: { buffer: params } },
+        ],
+      });
+      return { ctx, srcA, srcB, downPipe, matchPipe, warpPipe, sampler, params, downBindA, downBindB, matchBind, warpBind, canvas };
+    })();
+  } catch (err) {
+    try {
+      device.destroy();
+    } catch {
+      // device already lost
+    }
+    throw err;
+  }
+  const { ctx, srcA, srcB, downPipe, matchPipe, warpPipe, params, downBindA, downBindB, matchBind, warpBind, canvas } = R;
 
   let disposed = false;
   let lost = false;

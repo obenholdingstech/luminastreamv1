@@ -134,11 +134,21 @@ export function createFrameSynthesis({
             prev.close?.();
             prev = frame.clone();
             const slotMs = intervalUs / 1000 / factor;
-            for (const m of mids) {
-              await writeOrClose(writer, m);
-              await sleep(slotMs);
+            // The paced write sequence owns every frame in it until each
+            // write lands. writeOrClose closes the one it was writing when a
+            // write rejects, but the REST of the queue would leak with it —
+            // so the remainder is closed before the failure propagates.
+            const pending = [...mids, frame];
+            try {
+              while (pending.length > 0) {
+                await writeOrClose(writer, pending[0]);
+                pending.shift();
+                if (pending.length > 0) await sleep(slotMs);
+              }
+            } catch (err) {
+              for (const rest of pending.slice(1)) rest?.close?.();
+              throw err;
             }
-            await writeOrClose(writer, frame);
           }
         } catch {
           /* track ended or generator closed */

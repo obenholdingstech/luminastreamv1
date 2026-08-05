@@ -70,6 +70,23 @@ test('filling the upscale slot changes what the pipeline DELIVERS, with nothing 
   assert.equal(d.pending.length, 2, 'align and synthesize remain pending');
 });
 
+test('an active synthesis stage surfaces its tier label; an inactive one claims nothing', () => {
+  const synthesize = {
+    name: 'synthesize',
+    active: true,
+    label: 'synthesized · motion',
+    apply: (frames) => frames,
+    describe: () => 'synthesize: motion ×3',
+  };
+  const d = createFramePipeline({ synthesize }).describe();
+  assert.equal(d.synthActive, true);
+  assert.equal(d.synthLabel, 'synthesized · motion');
+
+  synthesize.active = false;
+  const d2 = createFramePipeline({ synthesize }).describe();
+  assert.equal(d2.synthLabel, null, 'no claim while nothing synthesizes');
+});
+
 test('stages compose in order — align, then synthesize, then upscale', () => {
   const order = [];
   const mk = (name) => ({

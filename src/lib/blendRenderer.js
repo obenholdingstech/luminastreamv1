@@ -56,12 +56,24 @@ export function createBlendRenderer({
   const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false });
   if (!gl) throw new Error('webgl2 unavailable');
 
-  const program = gl.createProgram();
-  gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, VERTEX_FULLSCREEN));
-  gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, FRAGMENT_BLEND));
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(`program link failed: ${gl.getProgramInfoLog(program)}`);
+  // Construction failures after the context exists must not strand it —
+  // a thrown factory returns nothing for the caller to dispose.
+  let program;
+  try {
+    program = gl.createProgram();
+    gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, VERTEX_FULLSCREEN));
+    gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, FRAGMENT_BLEND));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(`program link failed: ${gl.getProgramInfoLog(program)}`);
+    }
+  } catch (err) {
+    try {
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      // context already lost
+    }
+    throw err;
   }
 
   const makeTexture = () => {
@@ -90,6 +102,10 @@ export function createBlendRenderer({
      */
     synthesize(a, b, t, timestamp) {
       if (disposed) throw new Error('blend renderer disposed');
+      // A lost context turns every GL call into a silent no-op — the canvas
+      // would keep yielding stale frames INSIDE budget, so the governor
+      // would never demote. Throwing routes it to onRenderError, which does.
+      if (gl.isContextLost?.()) throw new Error('blend renderer context lost');
       gl.viewport(0, 0, size.width, size.height);
       gl.useProgram(program);
       gl.activeTexture(gl.TEXTURE0);

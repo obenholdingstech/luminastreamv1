@@ -124,7 +124,11 @@ export function createSynthStage({ createSynthesis = createFrameSynthesis } = {}
       renderers = {};
       controller.current = { factor: 1, renderer: null };
       governor = null;
+      const wasOff = tier === 'off';
       tier = 'off';
+      // Subscribers hear every tier transition — release included, or a UI
+      // that outlives the stage keeps claiming the tier that just died.
+      if (!wasOff) notify();
     },
 
     describe() {

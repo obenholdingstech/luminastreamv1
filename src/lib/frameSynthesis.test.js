@@ -106,16 +106,14 @@ test('factor 3 emits two intermediates per pair at 1/3 and 2/3', async () => {
   assert.equal(p.written.length, 4, 'real, mid, mid, real');
 });
 
-test("'off' forwards untouched and drops pair-state so a later upgrade cannot bridge the gap", async () => {
+test("'off' is a pure forward: every frame untouched, the renderer never consulted", async () => {
   const f1 = frame(1);
   const f2 = frame(2);
   const f3 = frame(3);
   const p = fakePlatform([f1, f2, f3]);
   const r = fakeRenderer();
-  const controller = { current: { factor: 2, renderer: r } };
+  const controller = { current: { factor: 1, renderer: null } };
   const synth = createFrameSynthesis({ ...p, controller, sleep: noSleep });
-  // Start in 'off'; upgrade AFTER f2 has already passed.
-  controller.current = { factor: 1, renderer: null };
   synth.wrap(stream());
   await settle();
   assert.deepEqual(p.written.map((w) => w.n), [1, 2, 3], 'pure forward in off');
@@ -199,7 +197,7 @@ test('a throwing renderer forwards the real frame, reports, and the stream survi
   synth.release();
 });
 
-test('every input is closed exactly once; pair-state clones are closed too', async () => {
+test('the transfer contract: written inputs are NOT closed by the loop; pair-state clones are, exactly once', async () => {
   const f1 = frame(1);
   const f2 = frame(2);
   const clones = [];
@@ -220,9 +218,56 @@ test('every input is closed exactly once; pair-state clones are closed too', asy
   await settle();
   synth.release();
   await settle();
-  // Inputs are written (transferred), never closed by the loop while alive;
-  // clones ARE the loop's own and must be closed when replaced or on exit.
+  // A successful write TRANSFERS the frame — closing it here would be a
+  // double-free on the real platform.
+  assert.equal(f1.closed, 0, 'written input left to the generator');
+  assert.equal(f2.closed, 0, 'written input left to the generator');
+  // The clones are the loop's own and must be closed when replaced/on exit.
+  assert.ok(clones.length > 0, 'pair-state was actually cloned');
   for (const c of clones) assert.equal(c.closed, 1, 'pair-state clone closed exactly once');
+});
+
+test('a rejected write closes the frame being written AND the rest of the paced queue', async () => {
+  // factor 3 on the pair (1,2): the paced queue is [mid⅓, mid⅔, real 2].
+  // The writer accepts the first write (real frame 1) and rejects the next —
+  // mid⅓ is closed by writeOrClose, and mid⅔ + real 2 must be closed by the
+  // queue cleanup. An unclosed VideoFrame pins GPU memory.
+  const made = [];
+  const renderer = {
+    synthesize(a, b, t, ts) {
+      const out = { synth: t, timestamp: ts, closed: 0, close() { this.closed += 1; } };
+      made.push(out);
+      return out;
+    },
+    dispose() {},
+  };
+  const f1 = frame(1);
+  const f2 = frame(2);
+  const p = fakePlatform([f1, f2]);
+  let writes = 0;
+  p.Generator = function () {
+    this.kind = 'video';
+    this.writable = {
+      getWriter: () => ({
+        write: async () => {
+          writes += 1;
+          if (writes >= 2) throw new Error('generator gone');
+        },
+        releaseLock: () => {},
+      }),
+    };
+  };
+  const synth = createFrameSynthesis({
+    ...p,
+    controller: { current: { factor: 3, renderer } },
+    sleep: noSleep,
+  });
+  synth.wrap(stream());
+  await settle();
+  assert.equal(made.length, 2, 'both mids were rendered before the failing write');
+  for (const m of made) assert.equal(m.closed, 1, 'every owned output closed exactly once');
+  assert.equal(f2.closed, 1, 'the real frame owned by the failed sequence is closed');
+  synth.release();
 });
 
 test('per-frame render cost reaches onSample — the governor sees what synthesis costs', async () => {
