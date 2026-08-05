@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 (night) — GPU DRILL VERDICT: network is the tax, GPU was never the constraint
+
+- **CEO ordered the absolute-limit drill** (her funded RunPod key in secrets.env; key used, never printed/logged). Branch `drill/gpu-interpolation`; two 4090 pods, ~15min, **~$0.19**, both terminations VERIFIED.
+- **Numbers:** RIFE v4.26 inference **14.5ms @1080p** on the 4090; transport from this network **314ms RTT, 1171ms per 120KB frame round-trip** → tax upper bound **~1.24s**, pipelined estimate still ~0.7s — vs the entire current 0.7s video path. Server-hop interpolation ≈ doubles the video path; **compute is 15ms, the network charges 50–80× that to reach it.**
+- **Artifacts on her Desktop** (LuminaStream-GPU-Drill/): original 19fps vs true motion-compensated 57fps + side-by-side — the smoothness is real; the topology to get it live must be client-side.
+- Three live-run bugs convicted+fixed (VFR 1000fps monster + sanity wall; async job vs client timeout; /64 padding). Pod-1 runaway terminated mid-job by doctrine.
+- **Next:** her eyes on side-by-side.mp4 → if the smoothness earns it, build the client-side synthesis stage with 15ms as the measured compute ceiling; kit stays on the branch, reusable for any future GPU question.
+
 ## 4 August 2026 (late) — legibility SHIPPED + regression caught & fixed within the hour; evidence committed
 
 - **#75** (console scrim panel) merged → its own post-deploy probe evidence frame exposed a regression the assertions can't see: the panel's `backdrop-filter` made it the backdrop's containing block (stream boxed at 576px) AND the wrap broke the direct-child dim exemption (stream at 60%). **#76** moved the backdrop out; invariants now in the JSX comment.

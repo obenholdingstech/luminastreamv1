@@ -4,6 +4,30 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 4 August 2026 (night) — THE GPU DRILL: the network is the tax, the GPU was never the constraint
+
+**Task (CEO, verbatim key parts):** "No, let's skip Rail A entirely. I want to go straight to Option 2 with the rented GPU to test the absolute limit. I already have a RunPod account that is fully funded. I am adding the RunPod API key to the secrets.env file right now. ... Deploy the specific GPU, spin up the heavyweight interpolation container, and execute the entire testing drill autonomously. ... let's get the real numbers on how that latency tax trades against the true 50fps visual smoothness."
+
+### What ran
+Branch `drill/gpu-interpolation` — a full autonomous kit: `pod-bootstrap.sh` (pod pulls it from this public branch at boot), `server.py` (FastAPI: WS echo for transport, timed RIFE inference for synthesis, async interpolate job for the artifact), `capture-source.mjs` (12s of the REAL production transformed stream via MediaRecorder on the element's srcObject), `provision.sh`/`teardown.sh`/`run-drill.sh` (teardown trapped on every exit path, termination VERIFIED). RIFE v4.26 from the author's own HF repo (`hzwer/RIFE`, URL HEAD-verified before use — no invented mirrors). The RunPod key: read from secrets.env, exported into requests, never printed, never logged, never left this machine; the pod carried only a random per-drill token.
+
+### Live-run failures, each convicted and fixed (commit `e31ea6f`)
+1. **VFR trap:** MediaRecorder webm on a 1ms timebase re-encoded into an 11,823-frame "1000fps" monster; the server ground it while (2) killed the client. Fixed: CFR normalize at the instrument-measured 19fps + a sanity wall refusing implausible frame counts. Pod 1 terminated mid-job rather than letting it bill (~10min, ~$0.12).
+2. **HTTP client header timeout** orphaned the server-side job → interpolate is now an async thread with a status endpoint, kicked and polled.
+3. **RIFE v4.26 pads to /64** not /32 (768-vs-736 tensor mismatch) → bench fixed, run at both 720p and 1080p.
+
+### THE NUMBERS (pod 2, RTX 4090, secure cloud, $0.74/hr, ~5min, verified terminated)
+- **Synthesis (pure GPU):** RIFE v4.26 inference **7.1ms @720p, 14.5ms @1080p** (p50; p95 within 0.02ms). Batch job: 224 real frames → 670 @ 57fps in 13.7s wall including decode/encode.
+- **Transport (Mac ↔ pod, this network):** WS RTT **p50 314ms / p95 396ms**; one 120KB frame-sized round trip **p50 1171ms / p95 1829ms** (uplink serialization dominates).
+- **Latency tax, upper bound (round-trip topology):** 53ms lookahead + 1171ms transport + 14.5ms synthesis ≈ **1.24s added to the video path**. Charitable pipelined one-way estimate still ≈ **0.7s+**. The current entire calibrated video path is 0.7s.
+- **The verdict the numbers force:** the GPU does the work in **15ms**; the network charges **~50–80× that** to reach it. Server-hop interpolation would roughly DOUBLE the video path on the very connection the product runs on — against a sync just locked at 8.5. The absolute limit was tested and it lost to the speed of light plus a residential uplink, not to compute. **The same 15ms-class computation running client-side pays no transport at all** — which is the strongest possible evidence FOR the client-side synthesis stage, now with a measured ceiling for what it must beat.
+- **Smoothness:** delivered for her eye, not asserted: `~/Desktop/LuminaStream-GPU-Drill/` — original-19fps.mp4, interpolated-57fps.mp4 (true motion-compensated ×3), side-by-side.mp4, drill-summary.json.
+
+### Cost
+Two pods, ~15min total ≈ **$0.19** of a funded RunPod account. Both terminations verified against the API (404/GONE). Capture session settled clean (probe-pattern Stop + reset).
+
+---
+
 ## 4 August 2026 (evening drill) — the CEO's screenshots ANSWER the two open questions; the chrome fails legibility over a bright wall; the interpolation mandate
 
 **Task (CEO, verbatim key parts):** "I cannot see the live FPS or the trim value controls on the UI during a live session. I performed a hard refresh to clear my cache, but the 'lips earlier/later' dial and the FPS fidelity readout are not rendering clearly on the screen. ... Go ahead and rent the external GPU and spin up true motion-compensated interpolation on a test branch. I want to see what happens when we push this to the absolute limit."
