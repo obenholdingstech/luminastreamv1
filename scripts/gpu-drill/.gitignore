@@ -1,0 +1,3 @@
+# Drill state and artifacts: pod ids, per-drill tokens, captured clips,
+# downloaded mp4s. Ephemeral and/or large; never committed.
+out/
