@@ -892,6 +892,13 @@ export default function Studio() {
           />
         </div>
 
+        {/* lens-console: every control and readout in ONE panel. In cinematic
+            mode the panel carries its own scrim (CSS), because legibility must
+            not depend on what the camera happens to see — the 4 Aug drill put
+            this chrome over a white-and-yellow wall and the CEO could not read
+            the fps number or find the trim buttons. A text-shadow tuned for
+            dark scenes is a bet on the scene; a contained backdrop is not. */}
+        <div className="lens-console w-full max-w-xl flex flex-col items-center">
         {/* Status. aria-live so the state change is announced, not just seen —
             this is the one piece of text that tells you whether your voice is
             actually going anywhere. */}
@@ -1153,7 +1160,7 @@ export default function Studio() {
                   names what is pending — claiming FHD before the stage exists
                   would be the kind of lie this project keeps refusing. */}
               {video.phase === VIDEO_PHASE.live && (
-                <span className="text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
+                <span className="text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
                   <Video size={10} className="inline mr-1" aria-hidden />
                   {fidelity.delivering.height}p
                   {deliveredFps != null && ` · ${deliveredFps}fps`}
@@ -1178,24 +1185,24 @@ export default function Studio() {
                 smoothly. Rendered only while the aligned stream is live,
                 because trimming a stopped lens calibrates nothing. */}
             {video.phase === VIDEO_PHASE.live && fidelity.alignActive && (
-              <div className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#4A5568]">
+              <div className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
                 <span>sync trim</span>
                 <button
                   type="button"
                   onClick={() => trimVideoPath(-100)}
                   disabled={videoPathMs <= VIDEO_PATH_LIMITS.min}
                   title="the lips move before the voice arrives — hold the video longer"
-                  className="rounded-full border border-[#1A1A2E] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                  className="rounded-full border border-[#475569] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] hover:border-[#A5B4FC] disabled:opacity-40"
                 >
                   lips later
                 </button>
-                <span className="tabular-nums text-[#64748B]">{videoPathMs}ms</span>
+                <span className="tabular-nums text-[#E2E8F0]">{videoPathMs}ms</span>
                 <button
                   type="button"
                   onClick={() => trimVideoPath(100)}
                   disabled={videoPathMs >= VIDEO_PATH_LIMITS.max}
                   title="the voice arrives before the lips — release the video sooner"
-                  className="rounded-full border border-[#1A1A2E] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] disabled:opacity-40"
+                  className="rounded-full border border-[#475569] px-2.5 py-1 transition-colors hover:text-[#A5B4FC] hover:border-[#A5B4FC] disabled:opacity-40"
                 >
                   lips earlier
                 </button>
@@ -1288,7 +1295,7 @@ export default function Studio() {
             )}
 
             {video.budget && (
-              <span className="text-[9px] text-[#3E4A5F] tabular-nums">
+              <span className="text-[9px] text-[#7C8AA5] tabular-nums">
                 video budget {Math.floor(video.budget.remainingSeconds / 60)}m{' '}
                 {video.budget.remainingSeconds % 60}s remaining
               </span>
@@ -1471,6 +1478,7 @@ export default function Studio() {
             </motion.div>
           )}
         </AnimatePresence>
+        </div>
       </main>
 
       {/* Both values are the SERVER's now, so the footer reports what was

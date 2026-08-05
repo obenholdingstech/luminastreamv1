@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 (evening drill) — her screenshots = the two numbers; chrome legibility fixed; interpolation drill accepted
+
+- **CEO's drill screenshots answered §6 without her realizing: 19fps delivered** (Chrome AND Edge, matches headless 18 — folklore dead), **trim untouched at 700ms** (she couldn't read the control — that's the bug).
+- Legibility root cause: dark slate text + near-black borders + dark text-shadow = a bet the scene is dark; her white/yellow wall won the bet. Fix: `lens-console` panel — every control on its own scrim (blur+tint) in cinematic mode; inert idle. Colors lifted to dark-ground values.
+- **Interpolation mandate accepted as a drill:** Rail A = client WebGPU interpolation (no rental); Rail B = rented-GPU absolute limit — blocked on HER minting the provider key (credential wall). Physics on record: server hop taxes the sync ~100–200ms.
+- **Next:** merge+deploy the panel → she re-drills and can finally USE the trim; build Rail A; hand her the Rail B provisioning kit.
+
 ## 4 August 2026 (close) — SYNC LOCKED 8.5/10 (CEO); roadmap v2.5 + canonical PDF
 
 - **CEO scored the deployed arc 8.5/10 overall and locked it** ("syncing is good and completely manageable now"). Trajectory on record: sync 5 → 6.6 → 8.5 locked; clarity 7 → 8.4.

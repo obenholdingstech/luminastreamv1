@@ -148,6 +148,23 @@ video::-webkit-media-controls {
   text-shadow: 0 1px 14px rgba(0, 0, 0, 0.85);
 }
 
+/* The console panel. In cinematic mode every control sits on its OWN scrim —
+   a contained blur-and-tint — instead of floating naked over the stream. The
+   text-shadow above is a bet that the scene behind the text is dark; the 4 Aug
+   drill lost that bet against a white-and-yellow wall, where the fps readout
+   and the trim buttons became rumors. A backdrop the panel carries with it is
+   legible over ANY scene, which is the only kind of legible that counts for a
+   product whose background is whatever the camera sees. Outside cinematic
+   mode the class is inert — the page keeps its flat dark ground. */
+.cinematic-chrome .lens-console {
+  background: rgba(7, 9, 20, 0.6);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.25rem;
+  padding: 0.25rem 2rem 1.75rem;
+}
+
 /* The lens ring yields the stage entirely: once the stream IS the person,
    a 260px ring floating over their face is clutter, not status. opacity
    keeps its layout so nothing below jumps. It stays gone even under the
