@@ -892,6 +892,85 @@ export default function Studio() {
           />
         </div>
 
+        {/* The backdrop — the transition IS the product moment (CEO, 4 Aug):
+            on Start the page fades slowly toward the person's own camera
+            while the lens connects, then crossfades into the transformed
+            stream when it goes live. Two stacked <video> layers, each owning
+            only its opacity; the raw feed is dimmed and desaturated so it
+            reads as "materializing", never as the finished thing.
+
+            MUST be a direct child of <main>, NEVER inside lens-console. Two
+            invariants depend on that position: the cinematic recede rule
+            exempts it by DIRECT-child selector (`> *:not(.lens-backdrop)`) —
+            wrapped, the stream itself dims to 60%; and the console's
+            backdrop-filter creates a CONTAINING BLOCK, so an inset-0 backdrop
+            inside it fills the panel instead of the viewport. Both happened
+            (#75 — the stream shrank into the panel box on production; caught
+            by the post-deploy probe's evidence frame, not by the assertions,
+            which only check intrinsic pixels). */}
+        {(video.localStream || video.stream) && (
+          <div className="lens-backdrop absolute inset-0 -z-10 overflow-hidden">
+            {video.localStream && (
+              <video
+                ref={localElRef}
+                // The probe (and any future instrument) must be able to tell
+                // the camera preview from the vendor's output — asserting on
+                // "a <video> plays" would pass on the fake camera alone.
+                data-role="camera-preview"
+                autoPlay
+                playsInline
+                muted
+                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-[1600ms] ease-out motion-reduce:transition-none ${
+                  fade.preview === 'hidden' ? 'opacity-0' : 'opacity-30'
+                }`}
+                style={{ filter: 'saturate(0.55) brightness(0.6)' }}
+              />
+            )}
+            {video.stream && (
+              <video
+                ref={videoElRef}
+                data-role="transformed-stream"
+                autoPlay
+                playsInline
+                muted
+                className={`absolute inset-0 w-full h-full object-cover transition-[opacity,transform] duration-[1200ms] ease-out motion-reduce:transition-none ${
+                  fade.transformed === 'full'
+                    ? 'opacity-100 scale-100'
+                    : fade.transformed === 'ambient'
+                      ? 'opacity-40 scale-[1.03]'
+                      : 'opacity-0 scale-[1.03]'
+                }`}
+              />
+            )}
+            {/* Readability, in two regimes: before live, a radial mask keeps
+                the center column legible over the materializing feed; once
+                cinematic, edge scrims take over so the header and controls
+                sit on darkness while the face stays untouched. */}
+            <div
+              aria-hidden
+              className="absolute inset-0 transition-opacity duration-[1200ms] motion-reduce:transition-none"
+              style={{
+                background:
+                  'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
+                // The mask lifts when the TRANSFORMED layer takes the stage —
+                // keyed on the same policy as the layers, so a live-but-not-
+                // yet-decoded moment never unmasks the raw preview.
+                opacity: fade.transformed === 'full' ? 0 : 1,
+              }}
+            />
+            <div
+              aria-hidden
+              className={`absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none ${
+                fade.transformed === 'full' ? 'opacity-100' : 'opacity-0'
+              }`}
+              style={{
+                background:
+                  'linear-gradient(to bottom, rgba(5,5,10,0.65) 0%, transparent 24%, transparent 68%, rgba(5,5,10,0.78) 100%)',
+              }}
+            />
+          </div>
+        )}
+
         {/* lens-console: every control and readout in ONE panel. In cinematic
             mode the panel carries its own scrim (CSS), because legibility must
             not depend on what the camera happens to see — the 4 Aug drill put
@@ -1068,75 +1147,6 @@ export default function Studio() {
                 {voiceSel.rejection.reason}
               </span>
             )}
-          </div>
-        )}
-
-        {/* The backdrop — the transition IS the product moment (CEO, 4 Aug):
-            on Start the page fades slowly toward the person's own camera
-            while the lens connects, then crossfades into the transformed
-            stream when it goes live. Two stacked <video> layers, each owning
-            only its opacity; the raw feed is dimmed and desaturated so it
-            reads as "materializing", never as the finished thing. */}
-        {(video.localStream || video.stream) && (
-          <div className="lens-backdrop absolute inset-0 -z-10 overflow-hidden">
-            {video.localStream && (
-              <video
-                ref={localElRef}
-                // The probe (and any future instrument) must be able to tell
-                // the camera preview from the vendor's output — asserting on
-                // "a <video> plays" would pass on the fake camera alone.
-                data-role="camera-preview"
-                autoPlay
-                playsInline
-                muted
-                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-[1600ms] ease-out motion-reduce:transition-none ${
-                  fade.preview === 'hidden' ? 'opacity-0' : 'opacity-30'
-                }`}
-                style={{ filter: 'saturate(0.55) brightness(0.6)' }}
-              />
-            )}
-            {video.stream && (
-              <video
-                ref={videoElRef}
-                data-role="transformed-stream"
-                autoPlay
-                playsInline
-                muted
-                className={`absolute inset-0 w-full h-full object-cover transition-[opacity,transform] duration-[1200ms] ease-out motion-reduce:transition-none ${
-                  fade.transformed === 'full'
-                    ? 'opacity-100 scale-100'
-                    : fade.transformed === 'ambient'
-                      ? 'opacity-40 scale-[1.03]'
-                      : 'opacity-0 scale-[1.03]'
-                }`}
-              />
-            )}
-            {/* Readability, in two regimes: before live, a radial mask keeps
-                the center column legible over the materializing feed; once
-                cinematic, edge scrims take over so the header and controls
-                sit on darkness while the face stays untouched. */}
-            <div
-              aria-hidden
-              className="absolute inset-0 transition-opacity duration-[1200ms] motion-reduce:transition-none"
-              style={{
-                background:
-                  'radial-gradient(circle at 50% 45%, transparent 18%, #08080F 72%)',
-                // The mask lifts when the TRANSFORMED layer takes the stage —
-                // keyed on the same policy as the layers, so a live-but-not-
-                // yet-decoded moment never unmasks the raw preview.
-                opacity: fade.transformed === 'full' ? 0 : 1,
-              }}
-            />
-            <div
-              aria-hidden
-              className={`absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none ${
-                fade.transformed === 'full' ? 'opacity-100' : 'opacity-0'
-              }`}
-              style={{
-                background:
-                  'linear-gradient(to bottom, rgba(5,5,10,0.65) 0%, transparent 24%, transparent 68%, rgba(5,5,10,0.78) 100%)',
-              }}
-            />
           </div>
         )}
 
