@@ -13,7 +13,9 @@
     "e2e": "E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test",
     "e2e:report": "playwright show-report",
     "probe:decart": "E2E_DECART_PROBE=1 E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test e2e/decart-duration.probe.spec.js",
-    "probe:video": "E2E_VIDEO_PROBE=1 E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test e2e/video-render.probe.spec.js"
+    "probe:video": "E2E_VIDEO_PROBE=1 E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test e2e/video-render.probe.spec.js",
+    "drill:capture": "E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" node scripts/gpu-drill/capture-source.mjs",
+    "drill:gpu": "bash scripts/gpu-drill/run-drill.sh"
   },
   "dependencies": {
     "framer-motion": "^11.16.4",
