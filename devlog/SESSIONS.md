@@ -4,31 +4,6 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
-## 5 August 2026 — ADAPTIVE FRAME SYNTHESIS: the tier ladder, built to the directive
-
-**Task (CEO, verbatim key parts):** "Client-Side Synthesis Directive: Multi-Tier Adaptive Scaling ... We cannot assume every user will be on high-end hardware ... Device Capability Benchmark ... High-End: full WebGPU motion-compensated interpolation (50fps target). Mid-Range: fall back to lightweight midpoint blending. Low-End/Unsupported: bypass synthesis entirely ... Our rule remains: A/V Sync and low latency take precedence over frame synthesis. Proceed with the build using this progressive fallback model."
-
-*(Context from the GPU drill that decided this direction — full record on branch `drill/gpu-interpolation`: RIFE-class synthesis measured 7–15ms on a discrete GPU while the network charged ~1.2s to reach it; client-side won on physics, ~$0.19 spent, both pods verified terminated.)*
-
-### What was built (branch `feat/adaptive-frame-synthesis`)
-The pipeline's canon order grew a stage: **receive → align → synthesize → upscale → present**. Position chosen twice over: AFTER align so the elastic queue holds native-rate frames (multiplying first would shrink the 150-frame queue below the 4s elastic ceiling), BEFORE upscale so synthesis runs at 720p — half the pixels of 1080p.
-
-- **`synthCapability.js`** — the policy core, pure. `decideSynthTier`: a tier is granted only on PROOF (renderer built AND benched inside budget — budgets are 60% of the output frame interval, headroom for upscale/page/encode). `createSynthGovernor`: strike-counting demotion — sustained overload demotes, a lone GC spike never does (good frames pay strikes down). No runtime promotion, by design. **The test suite caught a real inversion during the build:** `demotedTier('nonsense')` would have PROMOTED unknown tiers to motion via indexOf's −1 wrapping to index 0 — exactly the fail-open shape doctrine 26 exists for; fixed and pinned.
-- **`frameSynthesis.js`** — the mechanism: insertable-streams loop holding a pair-state clone (a written frame is transferred), emitting intermediates with correct interleaved timestamps and paced writes. Mode is LIVE-SWITCHABLE ({factor, renderer} read per iteration) so verdicts and demotions land mid-stream without rewrapping. Discontinuity guard (gap outside 10–250ms restarts the pair — never smear across a stall). A throwing renderer forwards the real frame and reports; the stream never dies for a shader.
-- **`blendRenderer.js`** — mid tier: one WebGL2 pass, `mix(A,B,t)`, 19→38fps.
-- **`motionRenderer.js`** — top tier, WebGPU, three passes: ¼-res luma downsample → full-search ±7 block match per 16-luma-px tile (zero-motion bias against junk vectors) → motion-warped blend whose occlusion fallback degrades DISAGREEING pixels to plain crossfade (a wrong vector must cost blend-quality, never smearing). 19→57fps. Upload + motion search run once per PAIR (keyed on frame identity), the warp once per intermediate.
-- **`synthProbe.js`** — the session-start benchmark the directive ordered: builds each renderer, times 12 real synthesize calls on gradient frames (flush-gated, medians after warmup), grants the best tier that fits. Keeps the built renderers — demotion needs blend standing by.
-- **`synthStage.js`** — policy wiring: adopt (late verdicts switch on live), demote ladder motion→blend→off disposing each loser, per-tier governors, honest `tier`/`label`/`active`.
-- Wiring: probe fires at first `start()` (never for an idle tab); readout gains `· synthesized · motion` / `· synthesized · blend` — the LABEL is the stage's claim, the fps NUMBER stays the meter's measurement, kept separate so disagreement is diagnosis.
-
-### Sync precedence, mechanically
-The rule is enforced three ways, not hoped: budgets grant tiers from measurement; governors revoke them under sustained load; renderer failure demotes on the spot with the real frame already forwarded. 'off' is a floor that cannot fail. Latency price when synthesizing: (factor−1)/factor of one frame interval (~35ms at ×3) — absorbed by the same trim/elastic machinery as every video-path cost.
-
-### Verification
-21 new tests (293 total, all green); lint (exhaustive-deps caught a missing dep in my own hook wiring — the #62 gate paying for itself), typecheck, build green. Live tier proof on real hardware: the CEO's next session readout.
-
----
-
 ## 4 August 2026 (evening drill) — the CEO's screenshots ANSWER the two open questions; the chrome fails legibility over a bright wall; the interpolation mandate
 
 **Task (CEO, verbatim key parts):** "I cannot see the live FPS or the trim value controls on the UI during a live session. I performed a hard refresh to clear my cache, but the 'lips earlier/later' dial and the FPS fidelity readout are not rendering clearly on the screen. ... Go ahead and rent the external GPU and spin up true motion-compensated interpolation on a test branch. I want to see what happens when we push this to the absolute limit."

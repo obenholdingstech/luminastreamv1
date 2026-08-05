@@ -2,14 +2,6 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
-## 5 August 2026 — adaptive frame synthesis shipped (CEO tier directive)
-
-- **Pipeline canon now 5 stages:** receive → align → **synthesize** → upscale → present (after align: queue math; before upscale: half the pixels).
-- **Tier ladder per directive:** motion (WebGPU block-match MC warp, 19→57fps) / blend (WebGL2 midpoint, 19→38fps) / off (native, bulletproof). Session-start probe BENCHES each renderer (proof, not presence; budgets = 60% of output interval); strike-governor demotes on sustained overload; renderer throw demotes instantly with the real frame already forwarded. No runtime promotion.
-- Tests caught a live inversion: `demotedTier(unknown)` would have promoted to motion (indexOf −1 → index 0) — fail-open shape, fixed + pinned. 21 new tests, 293 green.
-- Readout: `· synthesized · motion/blend` label = stage's claim; fps number = meter's truth; kept separate so disagreement diagnoses.
-- **Next:** merge+deploy → CEO session reads her real tier + fps → 50fps verdict against her eye.
-
 ## 4 August 2026 (late) — legibility SHIPPED + regression caught & fixed within the hour; evidence committed
 
 - **#75** (console scrim panel) merged → its own post-deploy probe evidence frame exposed a regression the assertions can't see: the panel's `backdrop-filter` made it the backdrop's containing block (stream boxed at 576px) AND the wrap broke the direct-child dim exemption (stream at 60%). **#76** moved the backdrop out; invariants now in the JSX comment.
