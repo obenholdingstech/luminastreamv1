@@ -4,6 +4,25 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 5 August 2026 (later) — SYNTHESIS PROVEN LIVE; and an incident honestly mis-attributed for one hour
+
+### The incident, in the order it actually happened
+1. #78 merged and deployed green. The post-deploy render probe FAILED — "the transformed \<video\> must be decoding frames" — deterministically, headless AND headed on real GPU. Read as: the new pipeline stage broke production. **Revert PR #79 opened** per the never-break-production rule.
+2. While #79 sat in review, the instrumented debug run (page console + failing-response capture against production) found the truth: `POST /api/video/session` → **502 `vendor_session_failed`** — the WORKER's create call to Decart failing server-side, both video layers null because the video leg never started. Client-side pipeline code cannot cause a Worker 502. **#78 exonerated.**
+3. Wrangler tail was a dead end (local login is a different Cloudflare account — the Worker deploys via CI's token; dashboard forensics are the CEO's wall). ~1 hour after onset, the identical request path recovered with no code change on either side: transient vendor-side create failures.
+4. Post-recovery, with #78 still deployed: **RENDER PROBE PASS — delivering 1920px wide, billed 5s** — and the evidence frame shows the tier ladder LIVE: **"1080P · 21FPS · SYNTHESIZED · BLEND · VIDEO HELD 0.0S"**. The GPU-less headless probe machine was granted exactly the mid tier the directive prescribes (motion correctly withheld — no WebGPU; blend built + benched under budget). First real-world proof the capability probe grades hardware honestly.
+5. **#79 closed UNMERGED** with the evidence. Nothing was reverted.
+
+### Lessons, named
+- **Correlation with a deploy is not causation by the deploy.** The one probe was gating two failure domains (our pipeline AND the vendor leg), and a vendor outage landing minutes after a merge wore the merge's face. The tell I initially missed: the failure screenshot's state was consistent with NO stream at all, not a broken transform.
+- The 4 Aug legibility arc's lesson inverted: there the probe's evidence frame caught what assertions missed; here the assertion fired for a cause outside the code under test. **A failing probe names a SYMPTOM; the diagnosis still has to be earned** — the revert-first reflex was correct under uncertainty, and closing it unmerged once evidence arrived was equally correct.
+- Also swept up: the dev-budget bank had drained to 29s (the probe's own preflight wall caught it — working as designed); ledger reset to 0/3000 via the admin API before the re-runs.
+
+### Where synthesis stands
+Live on production, all three tiers reachable, governor armed. The blend tier is proven end-to-end by the probe. The motion tier's first real grant happens on hardware with WebGPU — the CEO's session readout is the instrument: her fidelity line will name her tier and her fps.
+
+---
+
 ## 5 August 2026 — ADAPTIVE FRAME SYNTHESIS: the tier ladder, built to the directive
 
 **Task (CEO, verbatim key parts):** "Client-Side Synthesis Directive: Multi-Tier Adaptive Scaling ... We cannot assume every user will be on high-end hardware ... Device Capability Benchmark ... High-End: full WebGPU motion-compensated interpolation (50fps target). Mid-Range: fall back to lightweight midpoint blending. Low-End/Unsupported: bypass synthesis entirely ... Our rule remains: A/V Sync and low latency take precedence over frame synthesis. Proceed with the build using this progressive fallback model."
