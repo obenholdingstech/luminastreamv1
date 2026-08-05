@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 (late) — legibility SHIPPED + regression caught & fixed within the hour; evidence committed
+
+- **#75** (console scrim panel) merged → its own post-deploy probe evidence frame exposed a regression the assertions can't see: the panel's `backdrop-filter` made it the backdrop's containing block (stream boxed at 576px) AND the wrap broke the direct-child dim exemption (stream at 60%). **#76** moved the backdrop out; invariants now in the JSX comment.
+- Final probe evidence: stream full-bleed over saturated green, panel readouts crisply legible — 1080P · 18FPS · SYNC TRIM 700MS all readable over a worst-case bright scene. check-live 3/3 PASS. Budget 224s remaining, both probe runs billed 0s.
+- Lesson banked: a filter/backdrop-filter ancestor is a containing block for absolute descendants; and the probe's evidence FRAME catches what its assertions cannot — keep reading the picture.
+- **Next:** CEO re-drills (controls now readable → she can dial the trim); interpolation drill Rails A/B per the evening entry.
+
 ## 4 August 2026 (evening drill) — her screenshots = the two numbers; chrome legibility fixed; interpolation drill accepted
 
 - **CEO's drill screenshots answered §6 without her realizing: 19fps delivered** (Chrome AND Edge, matches headless 18 — folklore dead), **trim untouched at 700ms** (she couldn't read the control — that's the bug).
