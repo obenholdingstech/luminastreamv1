@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 4 August 2026 (close) — SYNC LOCKED 8.5/10 (CEO); roadmap v2.5 + canonical PDF
+
+- **CEO scored the deployed arc 8.5/10 overall and locked it** ("syncing is good and completely manageable now"). Trajectory on record: sync 5 → 6.6 → 8.5 locked; clarity 7 → 8.4.
+- ROADMAP.md v2.5: P2 marked closed (was still "NEXT"), P3 marked locked-at-8.5, doctrine 23 amended to "the laggard is the master clock", new doctrines 30–33, CEO actions refreshed.
+- PDF pipeline: `node scripts/render-roadmap-pdf.mjs` (marked + Playwright, versioned footer). `/ROADMAP.pdf` gitignored — a rendering, never a second truth. Copy on her Desktop.
+- **Next:** she reviews the PDF → we plan next steps. Open decision inputs from her: on-screen fps number + settled trim value (pick the 50fps approach + shipped videoPathMs). By dependency, P4 (identity & persistence) is next major; 50fps synthesis is the P3 follow-up.
+
 ## 4 August 2026 (night) — 6.6/10 decoded: trim knob, laggard doctrine, fps meter
 
 - **#70:** video path 300→700ms (her 400ms lead = the calibration); live "lips earlier/later" trim, 100ms steps, persisted; one normalizer at every boundary.
