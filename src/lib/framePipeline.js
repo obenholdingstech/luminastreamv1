@@ -29,7 +29,7 @@
 
 /** @typedef {{ kind: string, stream: MediaStream|null, width: number, height: number }} Frames */
 
-export const STAGES = ['receive', 'align', 'upscale', 'present'];
+export const STAGES = ['receive', 'align', 'synthesize', 'upscale', 'present'];
 
 /** Lucy 2.5's fixed output — measured against the vendor's own docs. */
 export const VENDOR_NATIVE = { width: 1280, height: 720 };
@@ -65,13 +65,20 @@ export function passthroughStage(name, plannedIn) {
  * Build the pipeline. `overrides` lets a later phase supply a real stage
  * without this module knowing anything about WebGL or MetalFX.
  *
- * @param {{ align?: any, upscale?: any }} [overrides]
+ * @param {{ align?: any, synthesize?: any, upscale?: any }} [overrides]
  */
 export function createFramePipeline(overrides = {}) {
   const stages = {
     // P3 — the elastic buffer. Named now because A/V sync must be able to
     // slot in without the video surface being rebuilt around it.
     align: overrides.align ?? passthroughStage('align', 'P3 — elastic A/V buffer'),
+    // P3+ — adaptive frame synthesis (CEO directive, 5 Aug 2026). AFTER
+    // align, deliberately: the align queue holds native-rate frames (150
+    // frames ≈ 7.9s at 19fps); multiplying the rate BEFORE it would shrink
+    // the same queue to under the elastic ceiling. BEFORE upscale, also
+    // deliberately: synthesizing at 720p is half the pixels of 1080p.
+    synthesize:
+      overrides.synthesize ?? passthroughStage('synthesize', 'P3+ — adaptive frame synthesis'),
     // P3 (browser, WebGL) / P6 (native, MetalFX).
     upscale: overrides.upscale ?? passthroughStage('upscale', 'P3 — WebGL FSR-class'),
   };
@@ -93,6 +100,7 @@ export function createFramePipeline(overrides = {}) {
         height: VENDOR_NATIVE.height,
       };
       frames = stages.align.apply(frames);
+      frames = stages.synthesize.apply(frames);
       frames = stages.upscale.apply(frames);
       return { ...frames, kind: 'present' };
     },
@@ -110,8 +118,14 @@ export function createFramePipeline(overrides = {}) {
           : VENDOR_NATIVE,
         upscaleActive: upscaled,
         alignActive: stages.align.active,
+        // The synthesis label reports the RUNNING tier (or null when off) —
+        // the fps number itself always comes from the meter, which measures
+        // what the element actually presents.
+        synthActive: stages.synthesize.active ?? false,
+        synthLabel: stages.synthesize.active ? stages.synthesize.label ?? null : null,
         pending: STAGES.filter(
-          (s) => (s === 'align' || s === 'upscale') && !stages[s].active,
+          (s) =>
+            (s === 'align' || s === 'upscale' || s === 'synthesize') && !stages[s].active,
         ).map((s) => stages[s].describe()),
       };
     },

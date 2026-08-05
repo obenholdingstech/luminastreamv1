@@ -16,8 +16,11 @@ import {
   FIDELITY_TARGETS,
 } from './framePipeline.js';
 
-test('the pipeline is the canon order — receive, align, upscale, present', () => {
-  assert.deepEqual(STAGES, ['receive', 'align', 'upscale', 'present']);
+test('the pipeline is the canon order — receive, align, synthesize, upscale, present', () => {
+  // synthesize sits AFTER align (the elastic queue must hold native-rate
+  // frames, not multiplied ones) and BEFORE upscale (synthesis at 720p is
+  // half the pixels of 1080p).
+  assert.deepEqual(STAGES, ['receive', 'align', 'synthesize', 'upscale', 'present']);
 });
 
 test('a bare pipeline passes frames through at the VENDOR native resolution', () => {
@@ -35,9 +38,12 @@ test('an unfilled slot reports itself as pending — never as capability', () =>
   const d = createFramePipeline().describe();
   assert.equal(d.upscaleActive, false);
   assert.equal(d.alignActive, false);
+  assert.equal(d.synthActive, false);
+  assert.equal(d.synthLabel, null, 'no tier claimed while nothing synthesizes');
   assert.deepEqual(d.delivering, VENDOR_NATIVE);
-  assert.equal(d.pending.length, 2);
+  assert.equal(d.pending.length, 3);
   assert.ok(d.pending.some((s) => s.includes('align')));
+  assert.ok(d.pending.some((s) => s.includes('synthesize')));
   assert.ok(d.pending.some((s) => s.includes('upscale')));
   assert.ok(d.pending.every((s) => /P3|P6/.test(s)), 'each names the phase that fills it');
 });
@@ -61,10 +67,27 @@ test('filling the upscale slot changes what the pipeline DELIVERS, with nothing 
   assert.equal(d.upscaleActive, true);
   assert.deepEqual(d.delivering, FIDELITY_TARGETS.fhd);
   assert.deepEqual(d.vendorNative, VENDOR_NATIVE, 'the vendor number never changes');
-  assert.equal(d.pending.length, 1, 'only align remains pending');
+  assert.equal(d.pending.length, 2, 'align and synthesize remain pending');
 });
 
-test('stages compose in order — align runs before upscale', () => {
+test('an active synthesis stage surfaces its tier label; an inactive one claims nothing', () => {
+  const synthesize = {
+    name: 'synthesize',
+    active: true,
+    label: 'synthesized · motion',
+    apply: (frames) => frames,
+    describe: () => 'synthesize: motion ×3',
+  };
+  const d = createFramePipeline({ synthesize }).describe();
+  assert.equal(d.synthActive, true);
+  assert.equal(d.synthLabel, 'synthesized · motion');
+
+  synthesize.active = false;
+  const d2 = createFramePipeline({ synthesize }).describe();
+  assert.equal(d2.synthLabel, null, 'no claim while nothing synthesizes');
+});
+
+test('stages compose in order — align, then synthesize, then upscale', () => {
   const order = [];
   const mk = (name) => ({
     name,
@@ -75,8 +98,16 @@ test('stages compose in order — align runs before upscale', () => {
     },
     describe: () => name,
   });
-  createFramePipeline({ align: mk('align'), upscale: mk('upscale') }).run(null);
-  assert.deepEqual(order, ['align', 'upscale'], 'aligning after upscaling would waste the work');
+  createFramePipeline({
+    align: mk('align'),
+    synthesize: mk('synthesize'),
+    upscale: mk('upscale'),
+  }).run(null);
+  assert.deepEqual(
+    order,
+    ['align', 'synthesize', 'upscale'],
+    'synthesis after the queue, before the pixel multiplication',
+  );
 });
 
 test('a pass-through stage is inert and says which phase fills it', () => {
