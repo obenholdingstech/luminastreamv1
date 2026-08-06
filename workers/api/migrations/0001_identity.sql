@@ -39,9 +39,17 @@ CREATE TABLE auth_identities (
   subject TEXT NOT NULL,
   -- password provider only; scrypt/PBKDF2 output, never reversible.
   password_hash TEXT,
-  verified INTEGER NOT NULL DEFAULT 0,
+  verified INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
   created_at INTEGER NOT NULL,
-  UNIQUE (provider, subject)
+  UNIQUE (provider, subject),
+  -- The credential invariant, enforced where it cannot be forgotten: a
+  -- password identity MUST carry a hash, an OAuth identity MUST NOT (a hash
+  -- on a google/apple row would be a credential nothing ever checks — the
+  -- most dangerous kind).
+  CHECK (
+    (provider = 'password' AND password_hash IS NOT NULL)
+    OR (provider IN ('google', 'apple') AND password_hash IS NULL)
+  )
 );
 CREATE INDEX idx_auth_identities_user ON auth_identities (user_id);
 

@@ -91,11 +91,15 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
       return { historyId: id };
     },
 
-    /** The session's end and its COGS record (vendor summary VERBATIM). */
+    /**
+     * The session's end and its COGS record (vendor summary VERBATIM).
+     * Idempotent by predicate: a retry can never overwrite a finalized
+     * record — the first close wins, the second matches zero rows.
+     */
     async closeSession(historyId, { ttsChars = 0, sttSeconds = 0, videoSeconds = 0, vendorSummary = null } = {}) {
       await d1
         .prepare(
-          'UPDATE session_history SET ended_at = ?2, tts_chars = ?3, stt_seconds = ?4, video_seconds = ?5, vendor_summary = ?6 WHERE id = ?1',
+          'UPDATE session_history SET ended_at = ?2, tts_chars = ?3, stt_seconds = ?4, video_seconds = ?5, vendor_summary = ?6 WHERE id = ?1 AND ended_at IS NULL',
         )
         .bind(historyId, now(), ttsChars, sttSeconds, videoSeconds, vendorSummary ? JSON.stringify(vendorSummary) : null)
         .run();

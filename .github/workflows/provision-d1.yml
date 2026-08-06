@@ -1,11 +1,12 @@
 # P4a — one-time D1 provisioning (manual trigger only).
 #
-# Creates the identity databases for production and staging and applies the
-# committed migrations. Runs on workflow_dispatch because database CREATION
-# is an infrastructure act, not a deploy: it happens once, deliberately, and
-# its output (the database ids) gets committed into wrangler.jsonc by a
-# follow-up PR — the deploy workflow never references a binding before the
-# database behind it exists.
+# Creates the identity databases for production and staging and prints their
+# ids — NOTHING more; schema arrives when the follow-up PR commits the
+# binding and puts `d1 migrations apply` in the deploy workflow. Runs on
+# workflow_dispatch because database CREATION is an infrastructure act, not
+# a deploy: it happens once, deliberately, and its output (the database ids)
+# gets committed into wrangler.jsonc by that follow-up PR — the deploy
+# workflow never references a binding before the database behind it exists.
 #
 # Safe to re-run: create is skipped when the database already exists, and
 # `d1 migrations apply` is idempotent (it tracks applied migrations).
@@ -31,6 +32,10 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job never pushes; a persisted GitHub token in .git/config
+          # would only be something for a dependency script to find.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -1,6 +1,7 @@
 // Run: node --test (from workers/api)
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createDb } from '../src/db.js';
 import { createFakeD1 } from '../testkit/fakeD1.js';
 
@@ -76,6 +77,27 @@ test('session history: start writes machine time; close stores the vendor summar
   assert.match(close.sql, /UPDATE session_history/);
   assert.equal(close.binds[0], 'id-1');
   assert.equal(close.binds[5], JSON.stringify({ billed_seconds: 89 }), 'verbatim, not paraphrased');
+});
+
+test('a completed session cannot be closed again — the first close wins by predicate', async () => {
+  const d1 = createFakeD1();
+  const db = createDb(d1, fixedDeps());
+  await db.closeSession('h1', { ttsChars: 1 });
+  assert.match(
+    d1.executed[0].sql,
+    /AND ended_at IS NULL/,
+    'the idempotency predicate — a retry matches zero rows instead of overwriting the record',
+  );
+});
+
+test('the schema enforces the credential invariant — a pin until real D1 executes it', () => {
+  // The fake cannot execute SQL, so the constraint is pinned as text here;
+  // execution-level proof arrives when migrations apply against real D1 in
+  // the binding PR. A pin that disappears is a red test, not a silent loss.
+  const sql = readFileSync(new URL('../migrations/0001_identity.sql', import.meta.url), 'utf8');
+  assert.match(sql, /provider = 'password' AND password_hash IS NOT NULL/);
+  assert.match(sql, /provider IN \('google', 'apple'\) AND password_hash IS NULL/);
+  assert.match(sql, /verified IN \(0, 1\)/);
 });
 
 test('ids and clocks come from the injected deps — no second clock hides in SQL', async () => {
