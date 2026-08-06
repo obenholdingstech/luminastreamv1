@@ -54,6 +54,11 @@ export function useLensVideo(adminToken) {
   const [error, setError] = useState('');
   const [budget, setBudget] = useState(null);
   const [stream, setStream] = useState(null);
+  // The vendor's stream EXACTLY as it arrives — retained beside the processed
+  // one because Direct mode presents raw (CEO verdict, 6 Aug 2026): no delay,
+  // no synthesis, no upscale between Decart and the screen. Both states are
+  // set and nulled together; the page chooses per mode.
+  const [rawStream, setRawStream] = useState(null);
   // The raw camera, for the connecting fade: visible while the vendor leg
   // negotiates, gone the moment teardown stops capturing. Reported by the
   // negotiator, never read from getUserMedia here — one owner per stream.
@@ -127,7 +132,10 @@ export function useLensVideo(adminToken) {
         // Every remote frame enters through the pipeline — receive → align →
         // upscale → present — even while the middle stages are inert.
         onStream: (raw) => {
-          if (mountedRef.current) setStream(pipeline.run(raw).stream);
+          if (mountedRef.current) {
+            setRawStream(raw);
+            setStream(pipeline.run(raw).stream);
+          }
         },
         onLocalStream: (raw) => {
           if (mountedRef.current) setLocalStream(raw);
@@ -258,6 +266,7 @@ export function useLensVideo(adminToken) {
     error,
     budget,
     stream,
+    rawStream,
     localStream,
     pipeline,
     synthTier,

@@ -7,7 +7,6 @@ import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video,
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useMicLevel } from '@/hooks/useMicLevel';
 import { useSyncMeter } from '@/hooks/useSyncMeter';
-import { useAudioAlign } from '@/hooks/useAudioAlign';
 import { useFpsMeter } from '@/hooks/useFpsMeter';
 import { API_BASE } from '@/lib/apiBase';
 import { LENS_MODES, agentModeFor, deriveLensStatus, medianTailMs } from '@/lib/lensState';
@@ -180,7 +179,6 @@ export default function Studio() {
     requestAgentMode,
     agentConfig,
     requestAgentConfig,
-    setTrackVolume,
   } = useLiveKitVoice(url, token);
 
   // ── access ────────────────────────────────────────────────────────────
@@ -306,9 +304,17 @@ export default function Studio() {
   const video = useLensVideo(adminToken);
   const videoElRef = useRef(null);
   const localElRef = useRef(null);
+  // RAW PASSTHROUGH (CEO verdict, 6 Aug 2026): Direct mode presents the
+  // vendor's stream exactly as it arrives — no elastic delay, no synthesis,
+  // no upscale between Decart and the screen. The pipeline's processed
+  // stream is Converted mode's; the page picks per confirmed mode, and a
+  // mid-session mode switch swaps the element's source instantly.
+  const presentingRaw =
+    agentMode === agentModeFor('direct') && Boolean(video.rawStream);
+  const presentedStream = presentingRaw ? video.rawStream : video.stream;
   useEffect(() => {
-    if (videoElRef.current) videoElRef.current.srcObject = video.stream ?? null;
-  }, [video.stream]);
+    if (videoElRef.current) videoElRef.current.srcObject = presentedStream ?? null;
+  }, [presentedStream]);
   useEffect(() => {
     if (localElRef.current) localElRef.current.srcObject = video.localStream ?? null;
   }, [video.localStream]);
@@ -322,7 +328,7 @@ export default function Studio() {
   useEffect(() => {
     setTransformedReady(false);
     const el = videoElRef.current;
-    if (!el || !video.stream) return undefined;
+    if (!el || !presentedStream) return undefined;
     if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       setTransformedReady(true);
       return undefined;
@@ -330,12 +336,12 @@ export default function Studio() {
     const ready = () => setTransformedReady(true);
     el.addEventListener('loadeddata', ready);
     return () => el.removeEventListener('loadeddata', ready);
-  }, [video.stream]);
+  }, [presentedStream]);
   const fidelity = video.pipeline.describe();
-  // What rate the pipeline ACTUALLY presents (the 50fps mandate's first
-  // step: measure before synthesizing). Null renders as nothing — the
-  // readout never invents a frame rate.
-  const deliveredFps = useFpsMeter(videoElRef, video.stream);
+  // The rate of what the element ACTUALLY presents — raw or processed,
+  // whichever mode chose. Null renders as nothing; the readout never
+  // invents a frame rate.
+  const deliveredFps = useFpsMeter(videoElRef, presentedStream);
 
   // ── A/V sync (P3): audio is the master clock, measured at the ear ─────
   // The sync meter measures the true mouth→ear delay per utterance (local
@@ -446,8 +452,8 @@ export default function Studio() {
     return () => globalThis.removeEventListener?.('keydown', onKey);
   }, []);
   useEffect(() => {
-    if (cleanViewElRef.current) cleanViewElRef.current.srcObject = video.stream ?? null;
-  }, [video.stream, cleanView]);
+    if (cleanViewElRef.current) cleanViewElRef.current.srcObject = presentedStream ?? null;
+  }, [presentedStream, cleanView]);
   // Hidden must mean INOPERABLE: without this, focus stays on an underlying
   // button and Tab/Enter can press controls the overlay conceals — Stop,
   // invisibly. The chrome goes inert, focus moves into the overlay, and the
@@ -677,14 +683,12 @@ export default function Studio() {
   // Direct-mode audio alignment — THE LAGGARD IS THE MASTER CLOCK (doctrine
   // generalized, 4 Aug evening): in converted mode audio is slow and video
   // holds (above); in Direct mode audio returns in ~350ms while the video
-  // leg costs ~700ms, so AUDIO takes the hold, through a WebAudio delay
-  // line that engages only while verifiably running and gives the voice
-  // back on any failure. Engaged only under a confirmed Direct mode.
-  const { holdMs: audioHoldMs, observe: observeAudioAlign } = useAudioAlign({
-    track: remoteAudioTrack,
-    enabled: isConnected && agentMode === agentModeFor('direct'),
-    setTrackVolume,
-  });
+  // leg costs ~700ms, so audio COULD take the hold through a WebAudio delay
+  // line (useAudioAlign — built, tested, kept for the native shell). It is
+  // deliberately NOT engaged: the CEO chose rawness over alignment for
+  // passthrough (6 Aug 2026 — the hold's engagement read as a jump on her
+  // screen). Direct mode adds zero artificial delay anywhere; the laggard
+  // doctrine governs Converted mode only.
 
   // The applied hold, as RENDER-VISIBLE state: the render that displays it
   // happens before the effect that moves it, so reading targetMs() during
@@ -700,12 +704,11 @@ export default function Studio() {
   useEffect(() => {
     if (!Number.isFinite(sync?.lastMs) || lastFedMeasurementRef.current === sync) return;
     lastFedMeasurementRef.current = sync;
-    // ONE measurement feeds BOTH holds; each side floors at zero, so
-    // exactly one of them is ever non-zero for a given regime.
+    // The measurement feeds the VIDEO hold (Converted's elastic). Direct
+    // mode is raw by verdict — nothing to feed there.
     video.pipeline.stages.align.observeMouthToEar?.(sync.lastMs);
-    observeAudioAlign(sync.lastMs, videoPathMs);
     setAppliedHoldMs(video.pipeline.stages.align.targetMs?.() ?? 0);
-  }, [sync, video.pipeline, observeAudioAlign, videoPathMs]);
+  }, [sync, video.pipeline]);
 
   const reduceMotion = useReducedMotion();
   const paintLevel = useCallback((level) => {
@@ -1169,7 +1172,19 @@ export default function Studio() {
                   delivers. While the upscale slot is empty it says 720p and
                   names what is pending — claiming FHD before the stage exists
                   would be the kind of lie this project keeps refusing. */}
-              {video.phase === VIDEO_PHASE.live && (
+              {video.phase === VIDEO_PHASE.live && presentingRaw && (
+                /* Raw passthrough (CEO verdict, 6 Aug): the element shows the
+                   vendor's stream untouched, so the readout claims VENDOR
+                   truth only — native resolution, measured rate, no pipeline
+                   labels for work the presented pixels never received. */
+                <span className="text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
+                  <Video size={10} className="inline mr-1" aria-hidden />
+                  {fidelity.vendorNative.height}p
+                  {deliveredFps != null && ` · ${deliveredFps}fps`}
+                  {' · raw passthrough · press H for clean view'}
+                </span>
+              )}
+              {video.phase === VIDEO_PHASE.live && !presentingRaw && (
                 <span className="text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
                   <Video size={10} className="inline mr-1" aria-hidden />
                   {fidelity.delivering.height}p
@@ -1185,10 +1200,6 @@ export default function Studio() {
                       not a render-time read — written by the same effect
                       that moves the target, so it is never a beat behind. */}
                   {fidelity.alignActive && ` · video held ${(appliedHoldMs / 1000).toFixed(1)}s`}
-                  {/* Direct mode's mirror image: when the delay line has the
-                      voice, say so — a held stream the UI stays quiet about
-                      is a mystery, not a feature. */}
-                  {audioHoldMs > 0 && ` · audio held ${(audioHoldMs / 1000).toFixed(1)}s`}
                   {' · press H for clean view'}
                 </span>
               )}
@@ -1197,9 +1208,9 @@ export default function Studio() {
             {/* The sync trim — the calibration knob, in the language of the
                 symptom rather than the mechanism. Buttons step the video-path
                 estimate 100ms at a time; the elastic slews the picture there
-                smoothly. Rendered only while the aligned stream is live,
-                because trimming a stopped lens calibrates nothing. */}
-            {video.phase === VIDEO_PHASE.live && fidelity.alignActive && (
+                smoothly. Rendered only while the aligned stream is live AND
+                presented — a raw passthrough has nothing to trim. */}
+            {video.phase === VIDEO_PHASE.live && fidelity.alignActive && !presentingRaw && (
               <div className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
                 <span>sync trim</span>
                 <button

@@ -2,7 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SYNTH_TARGET_FPS,
   TIER_BUDGET_MS,
+  TIER_PLAN,
   createSynthGovernor,
   decideSynthTier,
   demotedTier,
@@ -35,6 +37,16 @@ test('a tier is granted only on PROOF: built renderer AND bench inside budget', 
     'off',
     'junk measurements grant nothing',
   );
+});
+
+test('the output target is the CEO-locked 30fps for BOTH tiers — a rate, not a multiplier', () => {
+  // 6 Aug 2026: 57fps was overshoot (uncanny smoothness on avatar detail).
+  // The tiers differ in HOW a frame is made, never in how many.
+  assert.equal(SYNTH_TARGET_FPS, 30);
+  assert.equal(TIER_PLAN.motion.targetFps, 30);
+  assert.equal(TIER_PLAN.blend.targetFps, 30);
+  assert.equal(TIER_PLAN.off.targetFps, null);
+  assert.equal(TIER_BUDGET_MS.motion, TIER_BUDGET_MS.blend, 'same grid, same budget');
 });
 
 test('the demotion ladder is motion → blend → off, and off is the floor', () => {

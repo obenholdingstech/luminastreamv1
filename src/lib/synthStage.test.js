@@ -38,7 +38,7 @@ test('before any verdict the stage is off and wrap still installs (late verdicts
   const out = stage.apply(frames());
   assert.notEqual(out.stream, undefined);
   assert.equal(stage.active, false, 'wrapped but off is NOT active — honesty');
-  assert.equal(record.deps.controller.current.factor, 1);
+  assert.equal(record.deps.controller.current.targetFps, null);
 });
 
 test('adopt grants the tier and arms the controller with the granted renderer', () => {
@@ -50,7 +50,7 @@ test('adopt grants the tier and arms the controller with the granted renderer', 
   stage.adopt({ tier: 'motion', renderers: { motion, blend } });
   assert.equal(stage.tier, 'motion');
   assert.equal(stage.active, true);
-  assert.equal(record.deps.controller.current.factor, 3);
+  assert.equal(record.deps.controller.current.targetFps, 30, 'the CEO-locked target rate');
   assert.equal(record.deps.controller.current.renderer, motion);
   assert.equal(stage.label, 'synthesized · motion');
 });
@@ -61,7 +61,7 @@ test('a granted tier whose renderer is missing collapses to off — a wish is no
   assert.equal(stage.tier, 'off');
 });
 
-test('sustained overload demotes motion → blend, disposing the loser; blend keeps its own budget', () => {
+test('sustained overload demotes ONE rung at a time, each tier judged by a FRESH governor', () => {
   const record = {};
   const stage = createSynthStage({ createSynthesis: fakeSynthesisFactory(record) });
   stage.apply(frames());
@@ -79,13 +79,13 @@ test('sustained overload demotes motion → blend, disposing the loser; blend ke
   assert.equal(record.deps.controller.current.renderer, blend);
   assert.deepEqual(tiers, ['motion', 'blend']);
 
-  // blend's budget is LOOSER — the same per-frame cost must not demote it
-  // (mutation check: reusing motion's governor would fail here).
-  for (let i = 0; i < GOVERNOR_DEFAULTS.demoteAtStrikes; i++) record.deps.onSample(over);
-  assert.equal(stage.tier, 'blend', 'inside blend budget → the tier holds');
-
-  const overBlend = TIER_BUDGET_MS.blend + 5;
-  for (let i = 0; i < GOVERNOR_DEFAULTS.demoteAtStrikes; i++) record.deps.onSample(overBlend);
+  // Fresh-governor discrimination (mutation check: a governor carried over
+  // from motion would already be demoted/striked and fall through early):
+  // one-short of the threshold must HOLD the tier...
+  for (let i = 0; i < GOVERNOR_DEFAULTS.demoteAtStrikes - 1; i++) record.deps.onSample(over);
+  assert.equal(stage.tier, 'blend', 'blend answers to its own strike count, not motion leftovers');
+  // ...and the final strike lands it on the floor.
+  record.deps.onSample(over);
   assert.equal(stage.tier, 'off', 'blend overload lands on the floor');
   assert.equal(blend.disposed, 1);
 });
