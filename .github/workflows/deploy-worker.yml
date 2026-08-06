@@ -46,6 +46,19 @@ jobs:
         working-directory: workers/api
         run: node --test
 
+      # Schema BEFORE code (P4a): a Worker that ships expecting a table the
+      # database does not have yet fails at runtime; migrations are additive
+      # and idempotent (wrangler tracks what has applied), so the old Worker
+      # keeps running happily against the newer schema during the gap.
+      - name: Apply D1 migrations (production identity database)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/api
+          command: d1 migrations apply luminastream-identity --remote
+          wranglerVersion: "4.36.0"
+
       - name: Deploy Worker (top-level env = production)
         uses: cloudflare/wrangler-action@v3
         with:

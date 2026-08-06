@@ -71,6 +71,19 @@
     { "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] },
     { "tag": "v2", "new_sqlite_classes": ["SpendLedger"] }
   ],
+  // P4 — the system of record (ROADMAP §P4): the first storage whose job is
+  // to remember a person between sessions. Database created by the manual
+  // provision workflow BEFORE this binding was committed (a deploy must
+  // never reference a binding before the thing behind it exists); schema
+  // rides deploys via `d1 migrations apply` in the deploy workflow. The id
+  // is not a secret — it grants nothing without account auth.
+  "d1_databases": [
+    {
+      "binding": "IDENTITY_DB",
+      "database_name": "luminastream-identity",
+      "database_id": "e1ff8f00-0e53-44b2-8ec1-ca29d647a0c3"
+    }
+  ],
   "env": {
     "staging": {
       "name": "luminastream-api-staging",
@@ -117,6 +130,15 @@
       "migrations": [
         { "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] },
         { "tag": "v2", "new_sqlite_classes": ["SpendLedger"] }
+      ],
+      // Staging's OWN identity database — a staging deploy must never be
+      // able to write production's users, same isolation rule as the DOs.
+      "d1_databases": [
+        {
+          "binding": "IDENTITY_DB",
+          "database_name": "luminastream-identity-staging",
+          "database_id": "102a88e7-c24c-4160-a038-5a25142489b2"
+        }
       ]
     }
   }
