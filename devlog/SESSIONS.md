@@ -4,6 +4,24 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 6 August 2026 (later) — SPEND GOVERNOR TO DEV-UNLIMITED (CEO directive)
+
+**Task (CEO, verbatim key parts):** "Everything is working as expected, but the Spain governor. that was on first on the speech to text text to speech side. It prevents me... from not hearing the converted voice. So I want you to remove that spend governor entirely for this development process. that way i can be able to test freely as long as am logged in"
+
+### What was happening
+The agent's per-run budgets (5,000 TTS chars / 300 STT seconds) are small against a real testing session; once exhausted, every reservation is refused and — per doctrine 21, never truncate an utterance — the WHOLE utterance is abandoned. To her ear: the converted voice goes silent mid-drill.
+
+### What changed — the numbers, never the machinery
+"Remove entirely" implemented as **DEV-UNLIMITED defaults** rather than deletion: `DEFAULT_MAX_TTS_CHARS = 1e9`, `DEFAULT_MAX_STT_SECONDS = 1e8` (named `DEV_UNLIMITED_*`, with the old bounded numbers preserved in the comment for re-arming). Everything doctrine 22 built stays armed — reserve-then-call, refusal arithmetic, env-only ceilings, fatal-on-malformed env — and env overrides can LOWER the caps without a deploy if a bounded posture is ever wanted again. The startup line now announces the posture as a WARNING ("SPEND GOVERNOR: DEV-UNLIMITED") — an unlimited governor that logs like a bounded one is how a dev setting survives into a launch unnoticed. The knobs registry fallback ceiling follows. P5 wallets re-arm real per-user numbers; that phase is where this posture dies.
+
+### Guardrails that remain
+The lens stays behind the admin gate (free spend is reachable only logged-in); systemd's StartLimitBurst still stops a crash loop from burning warm-up synthesis all night; the VIDEO SpendLedger is untouched (she named the speech side only). Spend is now bounded by the ElevenLabs account itself — her explicit call as spend authority.
+
+### Verification
+`agent/` pytest: **224 passed** (defaults re-pinned at the new values so a silent change is a red test, not a mid-drill surprise). VPS picks the change up via the pull-based deploy (~2 min after merge), restarts through the health-gated deploy script; the journal will show the DEV-UNLIMITED warning at startup.
+
+---
+
 ## 6 August 2026 — THE LOCK-IN: 30fps target, raw passthrough (CEO verdicts)
 
 **Task (CEO, verbatim key parts):** "i like the motion but ... that sixty FPS target was too much because he's making the motion look buttery smooth. And due to the fact that not the whole pixels are on the details of the screen the motion of the avatar is looking somehow so i think leaving it at 30 fps will be best then for the passthrough i noticed that theres a jumpscene that tries to match my voice, what if we make the passthrough to be raw, that means the raw stream from decart doesnt go through any piplines ... without being delayed or upscaled ... after this we can then lock in and move ahead with other areas of the project"

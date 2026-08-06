@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 6 August 2026 (later) — spend governor → DEV-UNLIMITED (CEO)
+
+- Speech-side caps (5000 chars / 300s per run) were silencing her drills (refusal = whole utterance abandoned). Defaults opened to 1e9/1e8 — **numbers moved, machinery armed** (reserve/refuse/ceilings/fatal-env intact; env can lower without deploy; startup WARNING announces the posture).
+- Guardrails: admin gate still walls the lens; systemd StartLimitBurst still stops crash-loop spend; video SpendLedger untouched. P5 wallets re-arm real numbers.
+- agent pytest 224 green; VPS self-deploys ~2min post-merge.
+
 ## 6 August 2026 — LOCK-IN: 30fps target + raw passthrough (CEO verdicts); P3 fully closed
 
 - **30fps as a TARGET RATE:** 57 was overshoot (uncanny on avatar detail). Grid resampler replaces ×factor — synth at fractional t on a 30fps grid, reals snapped within 8ms, passed-over reals dropped+closed. Budgets 20ms both tiers. 296 tests green.

@@ -186,10 +186,27 @@ KNOBS = {
 }
 
 # Fallback slider bounds for the dynamic governor knobs when no live ceiling is
-# supplied to metadata() (mirrors spend_governor's DEFAULT_MAX_* — the broadcast
-# always passes the real ceiling; this is only for a metadata() call without it).
+# supplied to metadata(). Resolved from a real SpendGovernor (lazily, cached)
+# rather than mirrored literals: a mirrored number and the governor's ACTUAL
+# env-resolved wall can disagree the moment an env override exists, and the
+# metadata would then advertise a range the live governor refuses (CodeRabbit,
+# PR 82). The broadcast always passes the real ceiling; this path only serves
+# a metadata() call without one.
 _CAP_CEILING_KEY = {"tts_chars": "tts_chars_ceiling", "stt_seconds": "stt_seconds_ceiling"}
-_CAP_CEILING_FALLBACK = {"tts_chars": 5000.0, "stt_seconds": 300.0}
+_cap_ceiling_fallback_cache = None
+
+
+def _cap_ceiling_fallback():
+    global _cap_ceiling_fallback_cache
+    if _cap_ceiling_fallback_cache is None:
+        from spend_governor import SpendGovernor  # local: avoids import at module load
+
+        g = SpendGovernor()
+        _cap_ceiling_fallback_cache = {
+            "tts_chars": float(g.tts_chars_ceiling),
+            "stt_seconds": float(g.stt_seconds_ceiling),
+        }
+    return _cap_ceiling_fallback_cache
 
 
 def _relevant(engine):
@@ -205,7 +222,7 @@ def _cap_ceiling(name, spend):
     when no snapshot is supplied (metadata() called without a live governor)."""
     if spend and _CAP_CEILING_KEY.get(name) in (spend or {}):
         return spend[_CAP_CEILING_KEY[name]]
-    return _CAP_CEILING_FALLBACK.get(name)
+    return _cap_ceiling_fallback().get(name)
 
 
 def defaults(engine=None):

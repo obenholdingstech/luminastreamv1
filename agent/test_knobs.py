@@ -363,7 +363,13 @@ def test_dynamic_voice_knob_clamp_and_metadata():
     assert md2["voice"]["choices"] == []
 
 
-def test_dynamic_governor_cap_knobs_clamp_and_metadata():
+def test_dynamic_governor_cap_knobs_clamp_and_metadata(monkeypatch):
+    # The no-snapshot fallback resolves through a REAL SpendGovernor, so pin
+    # the environment this test assumes (and reset the lazy cache).
+    for var in ("SPIKE_MAX_TTS_CHARS", "SPIKE_MAX_STT_SECONDS",
+                "SPIKE_MAX_TTS_CHARS_CEILING", "SPIKE_MAX_STT_SECONDS_CEILING"):
+        monkeypatch.delenv(var, raising=False)
+    knobs._cap_ceiling_fallback_cache = None
     # dynamic float: clamp accepts any finite value >= 0 (the apply path/governor
     # clamps it to the live env ceiling), rejects negative and non-finite
     a, _adj, rej = knobs.clamp_params({"tts_chars": 12000, "stt_seconds": 42.5})
@@ -380,11 +386,20 @@ def test_dynamic_governor_cap_knobs_clamp_and_metadata():
     assert md["tts_chars"]["lo"] == 0.0 and md["tts_chars"]["hi"] == 20000
     assert md["stt_seconds"]["hi"] == 600 and md["stt_seconds"]["dynamic"] is True
     assert md["tts_chars"]["group"] == "Spend"
-    # no spend ⇒ falls back to the registry default ceiling, never crashes / None hi
+    # no spend ⇒ falls back to the governor's own env-resolved ceiling
     md2 = {e["name"]: e for e in knobs.metadata("tts")}
-    assert md2["tts_chars"]["hi"] == 5000.0 and md2["stt_seconds"]["hi"] == 300.0
+    assert md2["tts_chars"]["hi"] == 1_000_000_000.0 and md2["stt_seconds"]["hi"] == 100_000_000.0
     # governor caps are tts-only — absent from the rvc broadcast
     assert "tts_chars" not in {e["name"] for e in knobs.metadata("rvc")}
+    # and a LOWERED environment wall must be what the fallback advertises —
+    # metadata must never offer a range the live governor would refuse
+    # (CodeRabbit, PR 82).
+    monkeypatch.setenv("SPIKE_MAX_TTS_CHARS_CEILING", "4000")
+    monkeypatch.setenv("SPIKE_MAX_STT_SECONDS_CEILING", "120")
+    knobs._cap_ceiling_fallback_cache = None
+    md3 = {e["name"]: e for e in knobs.metadata("tts")}
+    assert md3["tts_chars"]["hi"] == 4000.0 and md3["stt_seconds"]["hi"] == 120.0
+    knobs._cap_ceiling_fallback_cache = None  # leave no state for later tests
 
 
 def test_loudness_knobs_clamp_and_defaults():
