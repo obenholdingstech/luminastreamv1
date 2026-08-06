@@ -1,0 +1,104 @@
+// The identity data layer (P4a) — a THIN wrapper over D1, deliberately
+// boring: every function is one named query with explicit binds, so the SQL
+// surface is enumerable, testable against a fake, and greppable when P8's
+// admin asks "what can touch users?".
+//
+// Rules this layer enforces by shape:
+// * ids and clocks are INJECTED (newId/now) — tests own time, and no query
+//   sneaks a second clock in via SQL functions.
+// * a suspended user resolves like a missing one at sign-in (`findIdentity`
+//   joins the status check in) — enforcement is a WHERE clause, exactly what
+//   the schema comment promised.
+// * writes that must land together (user + first identity) go through
+//   `batch()` — D1 batches are atomic per statement group.
+
+/**
+ * @param {any} d1 the D1 binding (env.IDENTITY_DB)
+ * @param {{ newId?: () => string, now?: () => number }} [deps]
+ */
+export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Math.floor(Date.now() / 1000) } = {}) {
+  return {
+    /**
+     * A new user with their first sign-in identity, atomically.
+     * @returns {Promise<{ userId: string }>}
+     */
+    async createUserWithIdentity({ provider, subject, passwordHash = null, displayName = null, verified = false }) {
+      const userId = newId();
+      const t = now();
+      await d1.batch([
+        d1
+          .prepare('INSERT INTO users (id, display_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)')
+          .bind(userId, displayName, t),
+        d1
+          .prepare(
+            'INSERT INTO auth_identities (id, user_id, provider, subject, password_hash, verified, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)',
+          )
+          .bind(newId(), userId, provider, subject, passwordHash, verified ? 1 : 0, t),
+      ]);
+      return { userId };
+    },
+
+    /**
+     * Resolve a sign-in identity — suspended users resolve like missing ones,
+     * so the caller has ONE failure path and no oracle for suspension.
+     * @returns {Promise<{ userId: string, passwordHash: string|null, verified: boolean }|null>}
+     */
+    async findIdentity(provider, subject) {
+      const row = await d1
+        .prepare(
+          'SELECT ai.user_id, ai.password_hash, ai.verified FROM auth_identities ai JOIN users u ON u.id = ai.user_id WHERE ai.provider = ?1 AND ai.subject = ?2 AND u.status = ?3',
+        )
+        .bind(provider, subject, 'active')
+        .first();
+      if (!row) return null;
+      return { userId: row.user_id, passwordHash: row.password_hash ?? null, verified: Boolean(row.verified) };
+    },
+
+    /** @returns {Promise<any|null>} the user's saved lens identity, or null */
+    async getProfile(userId) {
+      const row = await d1.prepare('SELECT * FROM lens_profiles WHERE user_id = ?1').bind(userId).first();
+      return row ?? null;
+    },
+
+    /**
+     * Save the lens identity — partial updates keep unnamed fields, so a
+     * voice change never erases an avatar.
+     */
+    async upsertProfile(userId, { voiceId, voiceName, avatarKey, stylePrompt, videoPathMs } = {}) {
+      await d1
+        .prepare(
+          `INSERT INTO lens_profiles (user_id, voice_id, voice_name, avatar_key, style_prompt, video_path_ms, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT (user_id) DO UPDATE SET
+             voice_id = COALESCE(excluded.voice_id, voice_id),
+             voice_name = COALESCE(excluded.voice_name, voice_name),
+             avatar_key = COALESCE(excluded.avatar_key, avatar_key),
+             style_prompt = COALESCE(excluded.style_prompt, style_prompt),
+             video_path_ms = COALESCE(excluded.video_path_ms, video_path_ms),
+             updated_at = excluded.updated_at`,
+        )
+        .bind(userId, voiceId ?? null, voiceName ?? null, avatarKey ?? null, stylePrompt ?? null, videoPathMs ?? null, now())
+        .run();
+    },
+
+    /** A session opened — written by the machine, never the client. */
+    async recordSessionStart({ userId = null, room, mode = null }) {
+      const id = newId();
+      await d1
+        .prepare('INSERT INTO session_history (id, user_id, room, mode, started_at) VALUES (?1, ?2, ?3, ?4, ?5)')
+        .bind(id, userId, room, mode, now())
+        .run();
+      return { historyId: id };
+    },
+
+    /** The session's end and its COGS record (vendor summary VERBATIM). */
+    async closeSession(historyId, { ttsChars = 0, sttSeconds = 0, videoSeconds = 0, vendorSummary = null } = {}) {
+      await d1
+        .prepare(
+          'UPDATE session_history SET ended_at = ?2, tts_chars = ?3, stt_seconds = ?4, video_seconds = ?5, vendor_summary = ?6 WHERE id = ?1',
+        )
+        .bind(historyId, now(), ttsChars, sttSeconds, videoSeconds, vendorSummary ? JSON.stringify(vendorSummary) : null)
+        .run();
+    },
+  };
+}

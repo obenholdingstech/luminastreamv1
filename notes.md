@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 6 August 2026 (night) — P4 OPENS; P4a foundation shipped
+
+- **P4 (identity & persistence) is the active phase.** Sign-in surface (CEO): email+password → Google → Apple (OAuth creds are her walls; Apple rides the P6 enrolment).
+- P4a built: D1 schema (users / auth_identities-as-rows / lens_profiles / session_history-verbatim-COGS), thin tested db layer (injected clocks, atomic user+identity, suspension-as-WHERE), fakeD1 testkit, manual provision workflow (create+print only — binding lands AFTER databases exist). 175 worker tests green.
+- **Next:** merge → run provision workflow (403 = CEO token-permission edit) → binding+migrations PR → P4b auth (email+password, sessions, rate-limited fail-closed).
+
 ## 6 August 2026 (later) — spend governor → DEV-UNLIMITED (CEO)
 
 - Speech-side caps (5000 chars / 300s per run) were silencing her drills (refusal = whole utterance abandoned). Defaults opened to 1e9/1e8 — **numbers moved, machinery armed** (reserve/refuse/ceilings/fatal-env intact; env can lower without deploy; startup WARNING announces the posture).

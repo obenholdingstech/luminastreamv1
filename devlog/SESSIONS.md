@@ -4,6 +4,25 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 6 August 2026 (night) — P4 OPENS: identity & persistence; P4a foundation built
+
+**Task (CEO, verbatim key parts):** "so whats next in line now, what are we building next according to the roadmap, you know am trusting you with this ... lets keep momentum going" — and, on the sign-in question: "email and password, goggle sign in, apple sign in, thats it"
+
+### The phase
+P4 — the database phase, next by dependency (billing needs an account to charge; admin needs a person to look up; the native app wants an account to sign into). Sign-in surface decided: **email+password, Google, Apple**. Password ships first; the OAuth pair follows behind CEO-minted credentials (Google Cloud console; Apple Services ID once the P6 enrolment completes — the workstreams converge). Apple enrolment already running since 2 Aug.
+
+### P4a — built this session
+- **`workers/api/migrations/0001_identity.sql`**: `users` (with a `status` column NOW so P8 suspension is a WHERE clause, not a migration), `auth_identities` (providers as ROWS, unique(provider, subject), OAuth stores the stable subject never the email), `lens_profiles` (voice/avatar-key/prompt/sync-trim — localStorage graduates), `session_history` (machine-written, vendor summaries VERBATIM per the P2c trust boundary). UUIDs minted in the Worker, unix-seconds timestamps, no AUTOINCREMENT.
+- **`src/db.js`**: thin, enumerable data layer — injected ids/clocks (tests own time), user+first-identity atomic via batch, `findIdentity` joins the suspension check so a suspended user resolves like a missing one (one failure path, no oracle), profile upsert COALESCEs so a voice change never erases an avatar.
+- **`testkit/fakeD1.js` + `test/db.test.js`**: query-composition tests (6) — batches, binds, the no-second-clock rule (`SQL mints no time of its own`). Worker suite 175 green.
+- **`.github/workflows/provision-d1.yml`** (manual): creates `luminastream-identity` + `-staging`, prints ids. Deliberately does NOT apply migrations or touch bindings — `d1 migrations apply` resolves through wrangler.jsonc, and the binding lands only in the follow-up PR once the databases exist. A deploy never references a binding before the thing behind it does.
+- ROADMAP: P4 marked OPENED with the sign-in decision and the P4a–d plan.
+
+### Next
+Merge → run the provision workflow (if the CI token lacks D1 scope it 403s → one-time token-permission edit, CEO's hands) → follow-up PR: bindings + ids + migrations-apply in the deploy workflow → P4b auth.
+
+---
+
 ## 6 August 2026 (later) — SPEND GOVERNOR TO DEV-UNLIMITED (CEO directive)
 
 **Task (CEO, verbatim key parts):** "Everything is working as expected, but the Spain governor. that was on first on the speech to text text to speech side. It prevents me... from not hearing the converted voice. So I want you to remove that spend governor entirely for this development process. that way i can be able to test freely as long as am logged in"

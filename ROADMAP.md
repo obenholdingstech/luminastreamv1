@@ -526,7 +526,7 @@ composable frame pipeline — receive → align (this phase's elastic buffer) �
 upscale → present/publish — never a raw `<video>` element bolted to the
 screen. Costs nothing now; skipping it makes FHD a retrofit later.
 
-### P4 — Identity & persistence *(~1½ weeks)*
+### P4 — Identity & persistence *(~1½ weeks)* ⟵ **OPENED 6 Aug 2026**
 
 **This is the database phase.** Accounts, voice clones, reference images,
 session history — the first storage whose job is to remember a person between
@@ -536,6 +536,36 @@ flow rather than a step someone performs in a vendor dashboard.
 
 Everything downstream waits on this: billing needs an account to charge, and the
 admin system needs a person to look up.
+
+**Sign-in surface (CEO decision, 6 Aug 2026): email + password, Google,
+Apple — that's it.** Password ships first (self-contained); Google and Apple
+follow behind CEO-minted OAuth credentials (Google Cloud console; Apple
+Services ID once the P6 enrolment completes — the two workstreams converge).
+The schema holds all three from day one: sign-in methods are ROWS
+(`auth_identities`), not columns, so adding a provider is an insert, never a
+migration.
+
+The build, four PRs:
+
+- **P4a — the system of record**: Cloudflare D1 (SQLite; the DOs stay
+  coordination-only per §P1). `migrations/0001_identity.sql` — `users`,
+  `auth_identities` (provider+subject unique; OAuth stores the provider's
+  stable subject, never the email), `lens_profiles` (what the lens loads at
+  Start: voice, avatar key, style prompt, the dialed sync trim — what today
+  lives in localStorage graduates here), `session_history` (machine-written,
+  vendor summaries VERBATIM — the COGS record P5 debits and P8 reconciles).
+  Provisioning is a manual workflow (create + print ids); **the binding is
+  committed only after the databases exist** — a deploy never references a
+  binding before the thing behind it does.
+- **P4b — auth**: sign-up/sign-in/sign-out, server-side sessions,
+  rate-limited before auth and fail-closed like every other endpoint;
+  suspended users resolve like missing ones (no suspension oracle). Replaces
+  the admin-password gate for users; the admin gate stays ours.
+- **P4c — the identity vault**: reference image → R2; voice sample →
+  ElevenLabs instant clone → `voice_id` on the profile. (CEO check at this
+  door: the ElevenLabs plan tier must include instant voice cloning.)
+- **P4d — session history live**: written at session end from the paths that
+  already know the numbers (the agent's meters, the video settle).
 
 ### P5 — Billing *(~1½ weeks)*
 
