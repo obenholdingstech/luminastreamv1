@@ -1,0 +1,60 @@
+# P4a — one-time D1 provisioning (manual trigger only).
+#
+# Creates the identity databases for production and staging and prints their
+# ids — NOTHING more; schema arrives when the follow-up PR commits the
+# binding and puts `d1 migrations apply` in the deploy workflow. Runs on
+# workflow_dispatch because database CREATION is an infrastructure act, not
+# a deploy: it happens once, deliberately, and its output (the database ids)
+# gets committed into wrangler.jsonc by that follow-up PR — the deploy
+# workflow never references a binding before the database behind it exists.
+#
+# Safe to re-run: create is skipped when the database already exists, and
+# `d1 migrations apply` is idempotent (it tracks applied migrations).
+#
+# Uses the same CLOUDFLARE_API_TOKEN as the deploy workflow. If that token
+# lacks D1 permissions this job fails with a 403 — the fix is a one-time
+# token-permission edit in the Cloudflare dashboard (CEO's hands: credential
+# scoping is a human wall).
+
+name: Provision D1 (identity)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/api
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job never pushes; a persisted GitHub token in .git/config
+          # would only be something for a dependency script to find.
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+      - name: Create databases (skip when they exist)
+        run: |
+          for name in luminastream-identity luminastream-identity-staging; do
+            if npx wrangler d1 list --json | grep -q "\"$name\""; then
+              echo "$name already exists — skipping create"
+            else
+              npx wrangler d1 create "$name"
+            fi
+          done
+      - name: Print database ids (NOT secrets — they gate nothing without account auth)
+        run: npx wrangler d1 list --json
+      # Migrations are NOT applied here: `d1 migrations apply` resolves the
+      # database through wrangler.jsonc, and the binding is deliberately
+      # absent until these databases exist (a deploy must never reference a
+      # binding before the thing behind it does). The follow-up PR commits
+      # the printed ids into wrangler.jsonc and adds the migrations-apply
+      # step to the deploy workflow — from then on, schema changes ride
+      # deploys like code does.
