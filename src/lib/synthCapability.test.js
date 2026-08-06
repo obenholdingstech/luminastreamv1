@@ -46,7 +46,8 @@ test('the output target is the CEO-locked 30fps for BOTH tiers — a rate, not a
   assert.equal(TIER_PLAN.motion.targetFps, 30);
   assert.equal(TIER_PLAN.blend.targetFps, 30);
   assert.equal(TIER_PLAN.off.targetFps, null);
-  assert.equal(TIER_BUDGET_MS.motion, TIER_BUDGET_MS.blend, 'same grid, same budget');
+  assert.equal(TIER_BUDGET_MS.motion, 20, '1000/30 × 0.6 — the shipped budget, pinned');
+  assert.equal(TIER_BUDGET_MS.blend, 20, 'same grid, same budget');
 });
 
 test('the demotion ladder is motion → blend → off, and off is the floor', () => {
