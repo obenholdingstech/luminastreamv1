@@ -189,7 +189,7 @@ KNOBS = {
 # supplied to metadata() (mirrors spend_governor's DEFAULT_MAX_* — the broadcast
 # always passes the real ceiling; this is only for a metadata() call without it).
 _CAP_CEILING_KEY = {"tts_chars": "tts_chars_ceiling", "stt_seconds": "stt_seconds_ceiling"}
-_CAP_CEILING_FALLBACK = {"tts_chars": 5000.0, "stt_seconds": 300.0}
+_CAP_CEILING_FALLBACK = {"tts_chars": 1_000_000_000.0, "stt_seconds": 100_000_000.0}
 
 
 def _relevant(engine):

@@ -55,8 +55,21 @@ import os
 
 log = logging.getLogger("governor")
 
-DEFAULT_MAX_TTS_CHARS = 5000
-DEFAULT_MAX_STT_SECONDS = 300.0
+# DEV POSTURE (CEO directive, 6 Aug 2026): caps opened to effectively
+# unlimited for the development period — the per-run budgets were cutting her
+# own drills off mid-conversation (a refused reservation abandons the whole
+# utterance, which reads as the converted voice going silent). ONLY THE
+# NUMBERS MOVED: reserve-then-call, refusal, ceilings, and fatal-on-malformed
+# env are all still armed, the startup line announces the posture, and env
+# overrides still lower the caps without a deploy. The lens itself stays
+# behind the admin gate, so this budget is reachable only logged-in.
+# P5 (wallets) re-arms real numbers per user; these constants are the ones to
+# change back if a bounded dev posture is ever wanted again.
+DEV_UNLIMITED_TTS_CHARS = 1_000_000_000
+DEV_UNLIMITED_STT_SECONDS = 100_000_000.0
+
+DEFAULT_MAX_TTS_CHARS = DEV_UNLIMITED_TTS_CHARS
+DEFAULT_MAX_STT_SECONDS = DEV_UNLIMITED_STT_SECONDS
 
 ENV_MAX_TTS_CHARS = "SPIKE_MAX_TTS_CHARS"
 ENV_MAX_STT_SECONDS = "SPIKE_MAX_STT_SECONDS"
@@ -163,6 +176,19 @@ class SpendGovernor:
         self.refusals = 0
 
     def log_startup(self):
+        if (self.max_tts_chars >= DEV_UNLIMITED_TTS_CHARS
+                and self.max_stt_seconds >= DEV_UNLIMITED_STT_SECONDS):
+            # The posture must be unmissable in the journal — an unlimited
+            # governor that announces itself like a bounded one is how a dev
+            # setting survives into a launch unnoticed.
+            log.warning(
+                "SPEND GOVERNOR: DEV-UNLIMITED (CEO, 6 Aug 2026) — caps are "
+                "effectively off for the development period; machinery stays "
+                "armed, env (%s / %s) can lower without a deploy, P5 wallets "
+                "re-arm real numbers",
+                ENV_MAX_TTS_CHARS, ENV_MAX_STT_SECONDS,
+            )
+            return
         log.info(
             "spend caps for this run: TTS %d/%d chars (cap/ceiling), STT %.0f/%.0f s "
             "(cap/ceiling) — cap is console-adjustable up to the env-only ceiling "

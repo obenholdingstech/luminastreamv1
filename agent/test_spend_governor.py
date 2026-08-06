@@ -143,8 +143,11 @@ def test_defaults_when_env_unset(monkeypatch):
     monkeypatch.delenv(ENV_MAX_TTS_CHARS, raising=False)
     monkeypatch.delenv(ENV_MAX_STT_SECONDS, raising=False)
     g = SpendGovernor()
-    assert g.max_tts_chars == DEFAULT_MAX_TTS_CHARS == 5000
-    assert g.max_stt_seconds == DEFAULT_MAX_STT_SECONDS == 300
+    # DEV POSTURE (CEO, 6 Aug 2026): the defaults are effectively unlimited
+    # for the development period — pinned here so a silent change back (or
+    # further) is a red test, not a surprise mid-drill.
+    assert g.max_tts_chars == DEFAULT_MAX_TTS_CHARS == 1_000_000_000
+    assert g.max_stt_seconds == DEFAULT_MAX_STT_SECONDS == 100_000_000.0
 
 
 def test_env_overrides_apply(monkeypatch):

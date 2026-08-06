@@ -382,7 +382,7 @@ def test_dynamic_governor_cap_knobs_clamp_and_metadata():
     assert md["tts_chars"]["group"] == "Spend"
     # no spend ⇒ falls back to the registry default ceiling, never crashes / None hi
     md2 = {e["name"]: e for e in knobs.metadata("tts")}
-    assert md2["tts_chars"]["hi"] == 5000.0 and md2["stt_seconds"]["hi"] == 300.0
+    assert md2["tts_chars"]["hi"] == 1_000_000_000.0 and md2["stt_seconds"]["hi"] == 100_000_000.0
     # governor caps are tts-only — absent from the rvc broadcast
     assert "tts_chars" not in {e["name"] for e in knobs.metadata("rvc")}
 
