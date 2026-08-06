@@ -9,17 +9,19 @@
 //   PUT  /api/me/profile    (cookie) { voiceId?, voiceName?, stylePrompt?, videoPathMs? }
 //
 // Security decisions, written where they live:
-// * CSRF: cookie-authed state changes reject any PRESENT Origin that is not
-//   allowlisted. A cross-site attacker's browser always sends its Origin; a
-//   non-browser client that never auto-attaches cookies sends none — absent
-//   is fine, foreign is refused.
+// * CSRF: cookie-authed state changes reject any PRESENT Origin outside the
+//   trusted-for-credentials tier (allowed AND https — localhost excluded).
+//   A cross-site attacker's browser always sends its Origin; a non-browser
+//   client that never auto-attaches cookies sends none — absent is fine,
+//   foreign is refused.
 // * Enumeration: sign-in answers `invalid_credentials` for a missing account
 //   and a wrong password alike, and the missing-account path verifies
 //   against a dummy hash so both cost the same KDF time. Sign-up necessarily
 //   reveals existence (409) — rate-limited hard; verification email closes
 //   the gap when email infra lands.
-// * Stuffing: sign-in burns TWO limiter keys — per-IP and per-account — so
-//   a distributed guess against one account trips as fast as one machine.
+// * Stuffing: sign-in burns TWO limiter keys — per-IP and per-(IP+account)
+//   pair — capping each source's guesses at an account without handing
+//   anyone who knows the email a lockout lever against its owner.
 
 import {
   LAST_SEEN_THROTTLE_SECONDS,
@@ -36,7 +38,7 @@ import {
   sessionTokenHash,
   verifyPassword,
 } from './auth.js';
-import { isAllowedOrigin } from './cors.js';
+import { isTrustedForCredentials } from './cors.js';
 import { base64UrlEncode, sha256 } from './crypto.js';
 
 /**
@@ -52,11 +54,13 @@ export function createAuthRoutes(kit) {
   const db = (env) => createDb(env.IDENTITY_DB);
 
   // CSRF wall for cookie-authed and account-mutating routes: a PRESENT
-  // Origin must be allowlisted; absent (curl, native apps) is acceptable
-  // because those clients never auto-attach a victim's cookie.
+  // Origin must be in the TRUSTED-for-credentials tier (allowed AND https —
+  // localhost is deliberately excluded, see cors.js); absent (curl, native
+  // apps) is acceptable because those clients never auto-attach a victim's
+  // cookie.
   const foreignOrigin = (request, origin) => {
     const header = request.headers.get('Origin');
-    if (header && !isAllowedOrigin(header)) {
+    if (header && !isTrustedForCredentials(header)) {
       return json({ ok: false, error: 'origin_not_allowed' }, { status: 403, origin });
     }
     return null;
@@ -138,12 +142,19 @@ export function createAuthRoutes(kit) {
       const body = await readJson(request);
       const email = normalizeEmail(body?.email);
       // TWO keys, both burned before any lookup: per-IP (one machine, many
-      // accounts) and per-account (many machines, one account).
-      const ipRefusal = await limited(env, origin, `signin:ip:${clientIp(request)}`);
+      // accounts) and per-(IP+account) PAIR. The pair — not the bare account
+      // — is deliberate (CodeRabbit, PR 85): a bare per-account key lets
+      // anyone who knows a victim's email spend the victim's budget and hold
+      // their sign-in at 429 forever. The pair key caps each source at 10
+      // guesses/min against a given account while the owner's own budget
+      // stays untouchable; the KDF cost is what makes that guess rate
+      // worthless.
+      const ip = clientIp(request);
+      const ipRefusal = await limited(env, origin, `signin:ip:${ip}`);
       if (ipRefusal) return ipRefusal;
-      const subjectKey = base64UrlEncode(await sha256(`signin:${email}`)).slice(0, 32);
-      const subjectRefusal = await limited(env, origin, `signin:sub:${subjectKey}`);
-      if (subjectRefusal) return subjectRefusal;
+      const pairKey = base64UrlEncode(await sha256(`signin:${ip}|${email}`)).slice(0, 32);
+      const pairRefusal = await limited(env, origin, `signin:pair:${pairKey}`);
+      if (pairRefusal) return pairRefusal;
 
       const uniformRefusal = () =>
         json({ ok: false, error: 'invalid_credentials' }, { status: 401, origin });

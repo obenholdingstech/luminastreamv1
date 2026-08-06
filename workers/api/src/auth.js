@@ -113,10 +113,15 @@ export async function verifyPassword(password, stored, { subtle = crypto.subtle 
 // A real hash of an unknowable password ("…" salted at build of this file is
 // wrong — it must be produced by the SAME code path). Generated lazily once:
 // the not-found sign-in path verifies against it so "no such user" costs the
-// same KDF time as "wrong password".
+// same KDF time as "wrong password". A REJECTED derivation is evicted from
+// the cache — caching the rejection would poison every later unknown-account
+// sign-in with a throw where a uniform 401 belongs.
 let dummyHashPromise = null;
 export function dummyPasswordHash(deps) {
-  dummyHashPromise ??= hashPassword(crypto.randomUUID(), deps);
+  dummyHashPromise ??= hashPassword(crypto.randomUUID(), deps).catch((err) => {
+    dummyHashPromise = null;
+    throw err;
+  });
   return dummyHashPromise;
 }
 

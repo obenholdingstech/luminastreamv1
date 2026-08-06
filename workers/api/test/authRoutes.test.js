@@ -99,6 +99,14 @@ test('signup fails CLOSED: a missing limiter is 503, a deny is 429, a foreign Or
   );
   assert.equal(foreign.status, 403);
   assert.equal((await foreign.json()).error, 'origin_not_allowed');
+  // localhost is CORS-allowed for the unauthenticated surface but NOT
+  // trusted for cookie-authed routes — a local process that grabs port 5173
+  // on a signed-in machine must get nothing (CodeRabbit, PR 85).
+  const localhost = await call(
+    req('/api/auth/signup', { method: 'POST', body, origin: 'http://localhost:5173' }),
+    baseEnv(createFakeD1()),
+  );
+  assert.equal(localhost.status, 403, 'http origins never reach the credential surface');
 });
 
 // ── signin ────────────────────────────────────────────────────────────────
@@ -149,7 +157,7 @@ test('signin burns BOTH limiter keys — per-IP and per-account', async () => {
   );
   assert.equal(keys.length, 2);
   assert.match(keys[0], /^signin:ip:/);
-  assert.match(keys[1], /^signin:sub:/);
+  assert.match(keys[1], /^signin:pair:/, 'per-(IP+account) PAIR — a bare account key would be a lockout lever');
 });
 
 test('signin: a below-standard stored hash is rehashed on success — the fleet strengthens without a reset', async () => {
