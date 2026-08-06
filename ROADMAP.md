@@ -1,6 +1,6 @@
 # LuminaStream — Roadmap & Canon
 
-**v2.5 · 4 August 2026**
+**v2.6 · 6 August 2026**
 
 This is the canonical description of what LuminaStream is, what state it is in,
 and what order the remaining work happens in. It exists because the previous
@@ -64,10 +64,10 @@ lip-sync — spend-walled end to end. The CEO scored the overall live experience
 **648 ms is the baseline.** All remaining latency work is optimisation *from*
 that number. The VPS migration people sometimes still propose already happened.
 
-What does **not** exist yet: 50fps output (one frame-synthesis stage remains,
-gated on the CEO's on-screen fps reading), any database, any billing, and the
-native app. Concurrency exists but is small: pool of two rooms, held ≤ 6 until
-the concurrent-CPU drill.
+What does **not** exist yet: any database, any billing, and the native app.
+Concurrency exists but is small: pool of two rooms, held ≤ 6 until the
+concurrent-CPU drill. Frame synthesis EXISTS and is locked: adaptive tiers at
+a 30fps target (see P3).
 
 ---
 
@@ -455,7 +455,7 @@ error stream, not by connection death, so that error event is the signal to
 listen for. Lucy 2.5 is **720p fixed** (1280×720, WebRTC) — which
 makes the upscaling mandate below real rather than optional.
 
-### P3 — A/V sync & fidelity ✅ *(locked 4 Aug 2026 at **8.5/10**, CEO score — one named follow-up open: frame synthesis toward 50fps)*
+### P3 — A/V sync & fidelity ✅ *(locked: 8.5/10 on 4 Aug; synthesis shipped and rate-locked at 30fps on 6 Aug — CLOSED)*
 
 Built, scored mid-arc (clarity 8.4 / sync 6.6), the 6.6 decoded and rebuilt,
 then **locked at 8.5 overall by the CEO on 4 Aug 2026**. What the arc proved
@@ -485,10 +485,30 @@ changed the doctrine itself:
   fidelity readout (#72). First measurement: 18fps under the probe's headless
   software rendering; the CEO's hardware number decides the 50fps approach.
 
-**The open item — 50fps frame synthesis.** GPU midpoint blending first
-(honestly labelled "smoothed"), true motion-compensated interpolation only if
-blending fails the CEO's eye — that is where her budget green light may apply.
-Gated on her on-screen fps reading, not folklore.
+**Frame synthesis: shipped, then rate-locked (CEO verdicts, 5–6 Aug 2026).**
+The GPU drill priced the alternatives first — RIFE-class synthesis costs
+7–15 ms of GPU while a network hop to reach a rented one costs ~50–80× that,
+so the stage is client-side by measurement, not just doctrine. What shipped
+(#78): a three-tier adaptive ladder — WebGPU motion-compensated interpolation,
+WebGL2 midpoint blending, or native untouched — granted per device by a
+session-start BENCHMARK (proof, not API presence) and revoked at runtime by a
+strike-counting governor. Sync outranks synthesis, mechanically.
+
+Two verdicts then closed the phase (6 Aug):
+
+- **The 50fps target is retired as OVERSHOOT, not failure.** At ~57fps the
+  motion read uncanny — buttery smoothness on an avatar whose detail does not
+  fill every pixel outruns the image. The shipped standard is a **30fps
+  TARGET RATE**: frames are synthesized onto a fixed 30fps grid (native ~19
+  has no integer multiple at 30, and the grid holds 30 even if the vendor's
+  rate drifts).
+- **Direct/passthrough mode is RAW, by design.** The vendor's stream reaches
+  the screen exactly as it arrives — no elastic delay, no synthesis, no
+  upscale, no audio hold. The audio-side delay line (built and tested for the
+  laggard doctrine) stays in the codebase unengaged; zero added latency IS
+  passthrough's product truth, and the readout says `raw passthrough` so the
+  claim matches the pixels. The laggard-is-master-clock rule governs
+  Converted mode only.
 
 **Upscaling mandate (CEO, 3 Aug 2026): enterprise-grade fidelity to FHD/2K,
 client-side, staged.** Lucy outputs 720p, period; crispness beyond that is our
@@ -1009,7 +1029,6 @@ pasted output.
 
 | | Why it matters |
 |---|---|
-| Report the on-screen **fps number** from a live session (and the trim value you settled on) | The fps number picks the 50fps approach — blend vs motion-compensated interpolation — and the trim value becomes the shipped default. |
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters — reconciles our ledger against their invoice. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
 

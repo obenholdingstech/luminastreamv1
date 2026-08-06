@@ -1,26 +1,34 @@
 // The mechanism half of the synthesis stage: insertable streams in,
 // insertable streams out, shaped like frameUpscale but with one structural
 // difference — synthesis needs the NEXT frame before it can invent the
-// middle, so real frames leave this loop one pacing-slot late and the
-// invented frames fill the gap. That lookahead ((factor-1)/factor of a frame
-// interval, ~35ms at 19fps ×3) is the entire latency price of smoothness;
-// the trim knob and the elastic absorb it like any other video-path cost.
+// middle, so output leaves this loop up to one native interval late. That
+// lookahead is the entire latency price of smoothness; the trim knob and
+// the elastic absorb it like any other video-path cost.
 //
-// The mode is LIVE-SWITCHABLE: the loop reads { factor, renderer } from a
+// OUTPUT IS A TARGET RATE, NOT A MULTIPLE (CEO verdict, 6 Aug 2026: 30fps —
+// 57 was overshoot). The loop lays a fixed 1000/targetFps grid over time and
+// emits one frame per grid tick: synthesized at fractional t between the
+// bracketing real pair, or the REAL frame itself when a tick lands within
+// SNAP of it (no point inventing what the vendor just delivered). Native
+// ~19fps has no integer factor that lands on 30, and a grid also keeps the
+// output rate steady if the vendor's own rate drifts.
+//
+// The mode is LIVE-SWITCHABLE: the loop reads { targetFps, renderer } from a
 // controller each iteration, so the governor can demote motion → blend →
-// off mid-session without tearing the stream down. 'off' (factor 1) is a
-// pure forward — write on arrival, no timers, no renderer — which is why
+// off mid-session without tearing the stream down. 'off' (targetFps null) is
+// a pure forward — write on arrival, no grid, no renderer — which is why
 // demotion always lands somewhere safe.
 //
 // Frame lifecycle rules (each learned the hard way in frameUpscale):
 // a written frame is TRANSFERRED, so the pair-state keeps a clone(); every
-// input is closed exactly once; a rejected write closes the frame it owned;
-// a renderer failure forwards the real frame and reports — the stream never
+// input is closed exactly once — including a real frame the grid decided
+// NOT to emit; a rejected write closes the whole owned remainder; a
+// renderer failure forwards the real frame and reports — the stream never
 // dies for a shader.
 
 /**
  * @param {{
- *   controller: { current: { factor: number, renderer: any } },
+ *   controller: { current: { targetFps: number|null, renderer: any } },
  *   onSample?: (renderMs: number) => void,
  *   onRenderError?: (err: unknown) => void,
  *   Processor?: any,
@@ -47,6 +55,9 @@ export function createFrameSynthesis({
   // jump) — interpolating across it would smear two unrelated moments.
   const MIN_INTERVAL_US = 10_000;
   const MAX_INTERVAL_US = 250_000;
+  // A grid tick this close to a real frame emits the real frame instead of
+  // synthesizing a near-copy of it.
+  const SNAP_US = 8_000;
 
   return {
     get supported() {
@@ -68,6 +79,8 @@ export function createFrameSynthesis({
         const writer = generator.writable.getWriter();
         /** @type {any} */
         let prev = null;
+        /** @type {number|null} the next output grid time, µs */
+        let nextTickUs = null;
         try {
           while (running) {
             const { value: frame, done } = await reader.read();
@@ -77,19 +90,26 @@ export function createFrameSynthesis({
               break;
             }
 
-            const { factor, renderer } = controller.current;
+            const { targetFps, renderer } = controller.current;
 
-            // 'off' — pure forward. Also drop pair-state so a later upgrade
-            // never interpolates across the gap it was off for.
-            if (factor <= 1 || !renderer) {
+            // 'off' — pure forward. Also drop pair-state AND the grid
+            // cursor, so a later upgrade never interpolates or paces across
+            // the span it was off for.
+            if (targetFps == null || targetFps <= 0 || !renderer) {
               prev?.close?.();
               prev = null;
+              nextTickUs = null;
               await writeOrClose(writer, frame);
               continue;
             }
 
+            const tickUs = 1_000_000 / targetFps;
+
             if (!prev) {
+              // The chain opens on a real frame; the grid starts one tick
+              // after it.
               prev = frame.clone();
+              nextTickUs = frame.timestamp + tickUs;
               await writeOrClose(writer, frame);
               continue;
             }
@@ -100,45 +120,66 @@ export function createFrameSynthesis({
               intervalUs < MIN_INTERVAL_US ||
               intervalUs > MAX_INTERVAL_US
             ) {
-              // Discontinuity: restart the pair, forward the real frame.
+              // Discontinuity: restart the pair and the grid, forward the
+              // real frame.
               prev.close?.();
               prev = frame.clone();
+              nextTickUs = frame.timestamp + tickUs;
               await writeOrClose(writer, frame);
               continue;
             }
 
-            // Render every intermediate UP FRONT (both inputs are certainly
-            // alive here), then pace the writes so presentation is uniform.
-            const mids = [];
+            // Consume every grid tick this pair covers, rendering UP FRONT
+            // (both inputs are certainly alive here), then pace the writes.
+            const outs = [];
+            let usedRealFrame = false;
             let failed = false;
-            for (let i = 1; i < factor; i++) {
-              const t0 = now();
-              try {
-                const ts = Math.round(prev.timestamp + (intervalUs * i) / factor);
-                mids.push(renderer.synthesize(prev, frame, i / factor, ts));
-              } catch (err) {
-                failed = true;
-                onRenderError(err);
-                break;
+            while (nextTickUs != null && nextTickUs <= frame.timestamp + SNAP_US) {
+              if (!usedRealFrame && Math.abs(nextTickUs - frame.timestamp) <= SNAP_US) {
+                // The vendor just delivered this moment — emit it as-is.
+                outs.push(frame);
+                usedRealFrame = true;
+              } else {
+                const t = (nextTickUs - prev.timestamp) / intervalUs;
+                const t0 = now();
+                try {
+                  outs.push(renderer.synthesize(prev, frame, t, Math.round(nextTickUs)));
+                } catch (err) {
+                  failed = true;
+                  onRenderError(err);
+                  break;
+                }
+                onSample(now() - t0);
               }
-              onSample(now() - t0);
+              nextTickUs += tickUs;
             }
+
             if (failed) {
-              for (const m of mids) m?.close?.();
+              for (const o of outs) {
+                if (o !== frame) o?.close?.();
+              }
               prev.close?.();
               prev = frame.clone();
+              nextTickUs = frame.timestamp + tickUs;
               await writeOrClose(writer, frame);
               continue;
             }
 
             prev.close?.();
             prev = frame.clone();
-            const slotMs = intervalUs / 1000 / factor;
+            // A real frame the grid decided not to emit is still OURS to
+            // close — the resampler drops it, nobody else ever sees it.
+            if (!usedRealFrame) frame.close?.();
+
+            if (outs.length === 0) continue; // native outran the grid this pair
+
             // The paced write sequence owns every frame in it until each
             // write lands. writeOrClose closes the one it was writing when a
-            // write rejects, but the REST of the queue would leak with it —
-            // so the remainder is closed before the failure propagates.
-            const pending = [...mids, frame];
+            // write rejects — the remainder is closed before the failure
+            // propagates. Gaps sum to one native interval, whatever the
+            // output count, so pacing never drifts against arrival.
+            const slotMs = intervalUs / 1000 / outs.length;
+            const pending = [...outs];
             try {
               while (pending.length > 0) {
                 await writeOrClose(writer, pending[0]);

@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 6 August 2026 — LOCK-IN: 30fps target + raw passthrough (CEO verdicts); P3 fully closed
+
+- **30fps as a TARGET RATE:** 57 was overshoot (uncanny on avatar detail). Grid resampler replaces ×factor — synth at fractional t on a 30fps grid, reals snapped within 8ms, passed-over reals dropped+closed. Budgets 20ms both tiers. 296 tests green.
+- **Passthrough RAW:** Direct presents the vendor stream untouched (`rawStream` retained; `presentedStream` per mode; readout `720p · raw passthrough`; trim hidden). Audio delay line disengaged entirely (kept in codebase, wired to nothing). Laggard doctrine governs Converted only.
+- ROADMAP v2.6: P3 closed; 50fps retired by verdict; move to other areas (next major by dependency: P4 identity & persistence).
+
 ## 5 August 2026 (later) — synthesis PROVEN LIVE; incident mis-attributed 1hr, resolved honestly
 
 - Post-#78 probe failure did not implicate #78: `POST /api/video/session` 502 `vendor_session_failed` — transient Decart-side create outage (~1hr; #78 never touches the offer/create path, and the path recovered with no code change). Revert PR #79 opened on the wrong read, **closed unmerged** once the instrumented run exonerated the code.

@@ -4,6 +4,24 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 6 August 2026 — THE LOCK-IN: 30fps target, raw passthrough (CEO verdicts)
+
+**Task (CEO, verbatim key parts):** "i like the motion but ... that sixty FPS target was too much because he's making the motion look buttery smooth. And due to the fact that not the whole pixels are on the details of the screen the motion of the avatar is looking somehow so i think leaving it at 30 fps will be best then for the passthrough i noticed that theres a jumpscene that tries to match my voice, what if we make the passthrough to be raw, that means the raw stream from decart doesnt go through any piplines ... without being delayed or upscaled ... after this we can then lock in and move ahead with other areas of the project"
+
+### Verdict 1 — 30fps, as a TARGET RATE (not a multiplier)
+57fps was overshoot: buttery smoothness on an avatar whose detail does not fill every pixel reads uncanny. Native ~19fps has no integer factor landing on 30, so the ×factor scheme was replaced with a **grid resampler**: output frames on a fixed 1000/30ms grid, each synthesized at fractional t between the bracketing real pair, with a real frame SNAPPED (emitted as-is) when a tick lands within 8ms of it — never a synthetic copy of a frame the vendor just delivered. A real frame the grid passes over is dropped and closed (true resampling). Budgets recomputed: 20ms both tiers (1000/30 × 0.6) — dropping the rate made motion cheaper to grant, more hardware qualifies. Both tiers now differ only in HOW a frame is made, never how many. `synthCapability.js` (SYNTH_TARGET_FPS=30), `frameSynthesis.js` (grid cursor, snap, drop-and-close), `synthStage.js` (targetFps controller); tests rewritten to grid assertions (resample-away case, grid restart on discontinuity, snapped-reals-don't-sample) — 296 green.
+
+### Verdict 2 — passthrough is RAW
+The "jumpscene" was the sync machinery holding streams to match the voice. Direct mode now presents **the vendor's stream exactly as it arrives**: `useLensVideo` retains `rawStream` beside the processed one; Studio derives `presentedStream` per confirmed mode and points the transformed element, clean view, transformedReady, and the fps meter at it. The readout claims vendor truth only in raw mode — `720p · Nfps · raw passthrough`, no upscale/synth/hold labels — and the sync-trim hides (nothing to trim on a raw stream). The Direct-mode audio delay line (useAudioAlign) is **disengaged entirely** — built, tested, kept in the codebase for the native shell, wired to nothing. Zero added latency IS passthrough's product truth. The laggard-is-master-clock doctrine now governs Converted only (ROADMAP amended).
+
+### Locked
+ROADMAP v2.6: P3 fully closed — 50fps retired as overshoot (not failure) by CEO verdict; 30fps grid is the shipped standard; Direct-mode rawness is a product decision. §6's fps/trim action row retired. The project moves to other areas.
+
+### Verification
+Lint / typecheck / **296** lib tests / build green; post-merge deploy watch + render probe + check-live.
+
+---
+
 ## 5 August 2026 (later) — SYNTHESIS PROVEN LIVE; and an incident honestly mis-attributed for one hour
 
 ### The incident, in the order it actually happened

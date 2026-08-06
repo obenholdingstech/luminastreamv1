@@ -28,7 +28,7 @@ import {
 } from './synthCapability.js';
 
 export function createSynthStage({ createSynthesis = createFrameSynthesis } = {}) {
-  const controller = { current: { factor: 1, renderer: null } };
+  const controller = { current: { targetFps: null, renderer: null } };
   /** @type {{ motion?: any, blend?: any }} */
   let renderers = {};
   let governor = null;
@@ -45,13 +45,13 @@ export function createSynthStage({ createSynthesis = createFrameSynthesis } = {}
     tier = next;
     const plan = TIER_PLAN[tier];
     controller.current = {
-      factor: plan.factor,
+      targetFps: plan.targetFps,
       renderer: tier === 'off' ? null : renderers[tier] ?? null,
     };
     // A tier without its renderer is a wish, not a mode.
     if (tier !== 'off' && !controller.current.renderer) {
       tier = 'off';
-      controller.current = { factor: 1, renderer: null };
+      controller.current = { targetFps: null, renderer: null };
     }
     governor =
       tier === 'off' ? null : createSynthGovernor({ budgetMs: TIER_BUDGET_MS[tier] });
@@ -122,7 +122,7 @@ export function createSynthStage({ createSynthesis = createFrameSynthesis } = {}
       wrapped = false;
       for (const r of Object.values(renderers)) r?.dispose?.();
       renderers = {};
-      controller.current = { factor: 1, renderer: null };
+      controller.current = { targetFps: null, renderer: null };
       governor = null;
       const wasOff = tier === 'off';
       tier = 'off';
@@ -134,7 +134,7 @@ export function createSynthStage({ createSynthesis = createFrameSynthesis } = {}
     describe() {
       return tier === 'off'
         ? 'synthesize: pass-through (native rate is the truth)'
-        : `synthesize: ${TIER_PLAN[tier].label} ×${TIER_PLAN[tier].factor}`;
+        : `synthesize: ${TIER_PLAN[tier].label} @ ${TIER_PLAN[tier].targetFps}fps target`;
     },
   };
 }

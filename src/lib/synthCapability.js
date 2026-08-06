@@ -24,20 +24,32 @@
 
 export const SYNTH_TIERS = ['motion', 'blend', 'off'];
 
-/** Native delivered rate the multipliers act on (instrument-measured). */
+/** Native delivered rate, instrument-measured — context, not a multiplier. */
 export const NATIVE_FPS = 19;
 
+/**
+ * The output rate, locked by CEO verdict (6 Aug 2026): 57fps was OVERSHOOT —
+ * buttery-smooth motion on an avatar whose detail does not fill every pixel
+ * reads as uncanny; the smoothness outran the image. 30 is the shipped
+ * standard, and it is a TARGET RATE, not a multiplier: native ~19fps has no
+ * integer factor that lands on 30, so the loop synthesizes onto a 30fps
+ * grid — which also keeps the output at 30 if the vendor's rate drifts.
+ */
+export const SYNTH_TARGET_FPS = 30;
+
 export const TIER_PLAN = {
-  motion: { factor: 3, label: 'synthesized · motion' }, // 19 → 57fps
-  blend: { factor: 2, label: 'synthesized · blend' }, //   19 → 38fps
-  off: { factor: 1, label: null },
+  motion: { targetFps: SYNTH_TARGET_FPS, label: 'synthesized · motion' },
+  blend: { targetFps: SYNTH_TARGET_FPS, label: 'synthesized · blend' },
+  off: { targetFps: null, label: null },
 };
 
-// Budget = output interval × 0.6 (headroom for upscale + page + encode).
-// motion: 1000/57 × 0.6 ≈ 10.5ms; blend: 1000/38 × 0.6 ≈ 15.8ms.
+// Budget = output interval × 0.6 (headroom for upscale + page + encode):
+// 1000/30 × 0.6 = 20ms for both tiers. The tiers differ in HOW a frame is
+// made, not how many — dropping 57→30 made motion cheaper to grant, which
+// is the right direction: less work per second, more hardware qualifies.
 export const TIER_BUDGET_MS = {
-  motion: Math.round(((1000 / (NATIVE_FPS * TIER_PLAN.motion.factor)) * 0.6) * 10) / 10,
-  blend: Math.round(((1000 / (NATIVE_FPS * TIER_PLAN.blend.factor)) * 0.6) * 10) / 10,
+  motion: Math.round((1000 / SYNTH_TARGET_FPS) * 0.6 * 10) / 10,
+  blend: Math.round((1000 / SYNTH_TARGET_FPS) * 0.6 * 10) / 10,
 };
 
 /**
