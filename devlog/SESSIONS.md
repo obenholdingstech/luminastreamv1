@@ -4,6 +4,32 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 6 August 2026 (late night) — P4b: AUTH — enterprise walls, one PR
+
+**Task (CEO, verbatim key parts):** "okay lets go ahead with the p4b and so on, you have the road map lets keep working and having in my this is enterprice grade and use the best secure systems and build a solid saas"
+
+### What shipped (branch `feat/p4b-auth`)
+Email+password auth on the Worker — signup / signin / signout / me / profile — with every enterprise commitment written where it lives:
+
+- **Passwords**: PBKDF2-SHA384, 100k iterations, per-hash salt, **versioned storage format** (`pbkdf2-sha384$v1$…`) — strengthening the KDF later is a rehash-on-next-signin (implemented and tested), never a password reset. NIST-style policy: length over composition, 10–200 chars.
+- **Sessions**: 256-bit random tokens in an **HttpOnly Secure cookie**; the database stores only the SHA-256 (migration `0002_auth_sessions`) — a database leak yields nothing a browser can present. 14-day expiry, hourly-throttled last_seen, revocation = DELETE (P8's "sign out everywhere" is one query).
+- **CSRF**: cookie-authed state changes reject any PRESENT Origin not on the allowlist; absent Origin (curl, native) is fine — those clients never auto-attach a victim's cookie. CORS gains `Allow-Credentials` with the exact-origin echo it always had.
+- **Enumeration & stuffing**: sign-in answers `invalid_credentials` uniformly, and the missing-account path burns the SAME KDF time against a dummy hash; sign-in burns TWO limiter keys (per-IP and per-account) so a distributed guess against one account trips as fast as one machine. New `AUTH_LIMITER` (10/60), fail-closed like every guard: missing binding = 503, tested.
+- **Profile**: `PUT /api/me/profile` clamps everything and **refuses client-supplied `avatar_key`** — the upload path (P4c) sets it after bytes actually land in R2; a client that could name its own key could name someone else's.
+- Data layer additions ride the same injected-clock discipline; auth routes get the Worker's own helpers injected (`createAuthRoutes(kit)`) so the whole surface tests end-to-end through `worker.fetch` with a fake env.
+
+### Tests
+19 new (auth core unit + full route drive-through: cookie flows, uniform 401s, dual limiter keys, rehash-on-signin, fail-closed 503/429/403, avatar-key refusal). **196 worker tests green.**
+
+### The two CEO doors this opens (ROADMAP §6)
+1. **`api.luminastream.live` custom domain** (DNS wall): auth cookies are cross-site until the API shares the site with the studio — Chrome tolerates it, Safari does not. One CNAME + Worker custom-domain attach makes every browser first-party.
+2. **Google OAuth client + Apple Services ID** when she's ready — the schema already holds those providers as rows.
+
+### Next
+P4b-ui (the lens learns sign-in/sign-up and loads the saved identity at Start), then P4c (R2 avatar + ElevenLabs voice clone), P4d (session history live).
+
+---
+
 ## 6 August 2026 (night) — P4 OPENS: identity & persistence; P4a foundation built
 
 **Task (CEO, verbatim key parts):** "so whats next in line now, what are we building next according to the roadmap, you know am trusting you with this ... lets keep momentum going" — and, on the sign-in question: "email and password, goggle sign in, apple sign in, thats it"

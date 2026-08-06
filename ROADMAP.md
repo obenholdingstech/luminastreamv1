@@ -1061,6 +1061,8 @@ pasted output.
 |---|---|
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters — reconciles our ledger against their invoice. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
+| **`api.luminastream.live` custom domain** on the Worker (DNS — a human wall) | P4b's auth cookies are cross-site until the API shares the site with the studio; Chrome tolerates that, Safari does not. One CNAME + one Worker custom-domain attach makes every browser first-party. |
+| **Google OAuth client** (Google Cloud console) and **Apple Services ID** (after enrolment) | The Google/Apple sign-in halves of the CEO's P4 decision — credential minting stays in her hands. |
 
 Done since v2.4: `DECART_API_KEY` placed (3 Aug — after the wall merged, as
 required); Decart account topped up with auto-top-up enabled (4 Aug).

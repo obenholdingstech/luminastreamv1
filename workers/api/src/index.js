@@ -19,6 +19,8 @@ import { base64UrlEncode, base64UrlEncodeJson, base64UrlDecode, decodeJson, hmac
 import { mintLiveKitToken } from './livekit.js';
 import { SessionRegistry } from './sessionRegistry.js';
 import { SpendLedger } from './spendLedger.js';
+import { createAuthRoutes } from './authRoutes.js';
+import { createDb } from './db.js';
 
 const VERSION = '0.1.0';
 
@@ -109,6 +111,18 @@ function rateLimitRefusal(state, origin) {
     { status: 503, origin },
   );
 }
+
+// P4b: the auth routes get the Worker's own helpers injected — one limiter
+// discipline, one JSON shape, one IP reader, and the same fail-closed rules,
+// testable end to end without this file.
+const authRoutes = createAuthRoutes({
+  json,
+  readJson,
+  clientIp,
+  checkRateLimit,
+  rateLimitRefusal,
+  createDb,
+});
 
 async function handleVerify(request, env, origin) {
   // Rate-limit BEFORE touching the password path — this endpoint is a password
@@ -1007,6 +1021,27 @@ export default {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       return handleVerify(request, env, origin);
+    }
+
+    // ── P4b: accounts. Cookie sessions, origin-gated, rate-limited hard. ──
+    if (pathname.startsWith('/api/auth/') || pathname === '/api/me/profile') {
+      const method = request.method;
+      if (pathname === '/api/auth/signup' && method === 'POST') {
+        return authRoutes.signup(request, env, origin);
+      }
+      if (pathname === '/api/auth/signin' && method === 'POST') {
+        return authRoutes.signin(request, env, origin);
+      }
+      if (pathname === '/api/auth/signout' && method === 'POST') {
+        return authRoutes.signout(request, env, origin);
+      }
+      if (pathname === '/api/auth/me' && method === 'GET') {
+        return authRoutes.me(request, env, origin);
+      }
+      if (pathname === '/api/me/profile' && method === 'PUT') {
+        return authRoutes.putProfile(request, env, origin);
+      }
+      return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
     }
 
     if (pathname === '/api/livekit/token') {

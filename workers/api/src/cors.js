@@ -17,7 +17,7 @@ const STATIC_ALLOWED = new Set([
   'http://localhost:5173',
 ]);
 
-const ALLOW_METHODS = 'GET, POST, OPTIONS';
+const ALLOW_METHODS = 'GET, POST, PUT, OPTIONS';
 const ALLOW_HEADERS = 'Content-Type, X-Admin-Token';
 const MAX_AGE = '86400';
 
@@ -39,14 +39,22 @@ export function isAllowedOrigin(origin) {
 
 // Response CORS headers for an allowed origin, empty object otherwise (so a
 // disallowed cross-origin caller can't read the body — the browser blocks it).
+//
+// Allow-Credentials arrived with P4b: auth sessions travel in an HttpOnly
+// cookie, and a credentialed response REQUIRES the exact origin echo this
+// module has always done (a wildcard would be rejected by the browser — and
+// is forbidden here anyway). The allowlist stays the boundary; CSRF for the
+// cookie-authed routes is the Origin gate in authRoutes.js.
 export function corsHeaders(origin) {
   if (!isAllowedOrigin(origin)) return {};
-  return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Credentials': 'true',
+    Vary: 'Origin',
+  };
 }
 
-// Preflight: 204 + CORS for an allowed origin, 403 otherwise. We intentionally
-// do NOT send Access-Control-Allow-Credentials — the session travels in the
-// X-Admin-Token header, not a cookie, so no credentialed-CORS surface.
+// Preflight: 204 + CORS for an allowed origin, 403 otherwise.
 export function handlePreflight(request) {
   const origin = request.headers.get('Origin');
   if (!isAllowedOrigin(origin)) return new Response(null, { status: 403 });
@@ -54,6 +62,7 @@ export function handlePreflight(request) {
     status: 204,
     headers: {
       'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': ALLOW_METHODS,
       'Access-Control-Allow-Headers': ALLOW_HEADERS,
       'Access-Control-Max-Age': MAX_AGE,

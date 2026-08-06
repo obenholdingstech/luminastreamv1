@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 6 August 2026 (late night) — P4b auth shipped (enterprise walls)
+
+- Email+password auth live on the Worker: versioned PBKDF2 (rehash-on-signin strengthening), hashed session tokens in HttpOnly cookies, Origin-gate CSRF, uniform-timing uniform-words sign-in, dual limiter keys (IP+account), fail-closed everywhere. Migration 0002; 196 worker tests.
+- avatar_key is server-set only (P4c's upload path) — clients never name storage keys.
+- **CEO doors added to ROADMAP §6:** api.luminastream.live custom domain (Safari needs first-party cookies); Google OAuth client + Apple Services ID when ready.
+- **Next:** P4b-ui (lens sign-in + load saved identity at Start) → P4c (R2 avatar, ElevenLabs clone) → P4d (history live).
+
 ## 6 August 2026 (night) — P4 OPENS; P4a foundation shipped
 
 - **P4 (identity & persistence) is the active phase.** Sign-in surface (CEO): email+password → Google → Apple (OAuth creds are her walls; Apple rides the P6 enrolment).
