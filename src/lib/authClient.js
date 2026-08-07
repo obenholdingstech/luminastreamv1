@@ -58,11 +58,17 @@ export function createAuthClient({ apiBase = API_BASE, fetchImpl } = {}) {
   };
 
   return {
-    signUp: ({ email, password, displayName }) =>
-      call('/api/auth/signup', { method: 'POST', body: { email, password, displayName } }),
+    signUp: ({ email, password, displayName, turnstileToken }) =>
+      call('/api/auth/signup', {
+        method: 'POST',
+        body: { email, password, displayName, turnstileToken },
+      }),
     signIn: ({ email, password }) =>
       call('/api/auth/signin', { method: 'POST', body: { email, password } }),
     signOut: () => call('/api/auth/signout', { method: 'POST', body: {} }),
+    /** Honest resend: ok ONLY when the server said ok — a 401/503 must never
+     * read as "sent — check your inbox" (CodeRabbit, PR 88). */
+    resendVerification: () => call('/api/auth/resend-verification', { method: 'POST', body: {} }),
     me: () => call('/api/auth/me'),
     /** Partial by design — send only what changed; the server COALESCEs.
      * @param {{ voiceId?: string, voiceName?: string, stylePrompt?: string, videoPathMs?: number }} [fields] */

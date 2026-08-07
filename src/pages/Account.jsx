@@ -10,12 +10,14 @@ import { ArrowRight, CheckCircle2, Loader2, MailWarning } from 'lucide-react';
 import { AccountPanel } from '@/components/AccountPanel';
 import { useAuth } from '@/hooks/useAuth';
 import { API_BASE } from '@/lib/apiBase';
+import { createAuthClient } from '@/lib/authClient';
 import { SURFACE_URLS } from '@/lib/surface';
 
 export default function Account() {
   const auth = useAuth();
   const [config, setConfig] = useState(null);
-  const [resendState, setResendState] = useState('idle'); // idle | busy | sent
+  const [resendState, setResendState] = useState('idle'); // idle | busy | sent | failed
+  const authClient = useMemo(() => createAuthClient(), []);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/auth/config`)
@@ -35,15 +37,11 @@ export default function Account() {
 
   const resend = async () => {
     setResendState('busy');
-    try {
-      await fetch(`${API_BASE}/api/auth/resend-verification`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-    } catch {
-      /* the banner below stays; the user can try again */
-    }
-    setResendState('sent');
+    // Honest outcome (CodeRabbit, PR 88): 'sent' only when the server SAID
+    // ok — a 503 from the mail provider must never read as "check your
+    // inbox" when no mail exists to check.
+    const res = await authClient.resendVerification();
+    setResendState(res.ok ? 'sent' : 'failed');
   };
 
   return (
@@ -76,7 +74,7 @@ export default function Account() {
             </p>
           )}
 
-          <AccountPanel auth={auth} />
+          <AccountPanel auth={auth} turnstileSiteKey={config?.turnstileSiteKey ?? null} />
 
           {auth.status === 'signedOut' && config?.googleEnabled && (
             <a
@@ -109,7 +107,11 @@ export default function Account() {
                 className="flex items-center gap-1.5 rounded-full border border-[#475569] px-4 py-1.5 text-[10px] tracking-[0.14em] uppercase text-[#94A3B8] hover:border-[#A5B4FC] hover:text-[#E2E8F0] disabled:opacity-40 transition-colors"
               >
                 {resendState === 'busy' && <Loader2 size={10} className="animate-spin" aria-hidden />}
-                {resendState === 'sent' ? 'sent — check your inbox' : 'resend verification email'}
+                {resendState === 'sent'
+                  ? 'sent — check your inbox'
+                  : resendState === 'failed'
+                    ? 'could not send — try again'
+                    : 'resend verification email'}
               </button>
               {config && !config.emailEnabled && (
                 <p className="text-[10px] text-[#64748B]">

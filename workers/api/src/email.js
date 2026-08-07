@@ -24,6 +24,7 @@ export async function sendVerificationEmail(env, { to, link }, fetchImpl) {
   try {
     const res = await doFetch(ZEPTO_ENDPOINT, {
       method: 'POST',
+      signal: AbortSignal.timeout(10_000),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Zoho-enczapikey ${env.ZEPTOMAIL_TOKEN}`,

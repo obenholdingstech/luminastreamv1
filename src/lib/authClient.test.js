@@ -44,6 +44,19 @@ test('server error tokens map to one human sentence; unknown tokens still say so
   assert.equal(authMessage('unauthenticated'), null, 'silent token — the UI shows the form, not an error');
 });
 
+test('signUp forwards the turnstile token; resend reports only server-confirmed success', async () => {
+  const { impl, calls } = fakeFetch([
+    { status: 200, body: { ok: true, user: { id: 'u1' } } },
+    { status: 503, body: { ok: false, error: 'email_send_failed' } },
+  ]);
+  const client = createAuthClient({ apiBase: '', fetchImpl: impl });
+  await client.signUp({ email: 'a@b.co', password: 'x'.repeat(12), turnstileToken: 'ts-token' });
+  assert.equal(JSON.parse(calls[0].init.body).turnstileToken, 'ts-token');
+  const resend = await client.resendVerification();
+  assert.equal(resend.ok, false, 'a 503 is NOT "sent — check your inbox"');
+  assert.equal(resend.error, 'email_send_failed');
+});
+
 test('a network failure resolves to a result, never a throw', async () => {
   const { impl } = fakeFetch([{ reject: true }]);
   const client = createAuthClient({ apiBase: '', fetchImpl: impl });

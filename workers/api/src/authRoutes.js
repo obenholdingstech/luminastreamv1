@@ -85,6 +85,7 @@ export function createAuthRoutes(kit) {
     try {
       const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
         method: 'POST',
+        signal: AbortSignal.timeout(10_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           secret: env.TURNSTILE_SECRET_KEY,
@@ -309,6 +310,7 @@ export function createAuthRoutes(kit) {
       try {
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
+          signal: AbortSignal.timeout(10_000),
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({
             code,
