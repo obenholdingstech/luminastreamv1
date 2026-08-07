@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (day) — no-avatar bug dead, Turnstile live, admin door, P4c opens
+
+- **#90**: the CEO's "voice worked, no avatar" bug — `shouldStart` still required adminToken; cookie users have none, so the video leg never armed (ops probes carry the token, hence green). Session is the authority now.
+- **Turnstile ACTIVE**: push run 31194525005 success; config serves site key; signup w/o token → 403 turnstile_required (live-probed).
+- **#91**: admin.luminastream.live (it's on Pages) → adminGate pure module: admins see the shell, everyone else location.replace to the hero, nothing renders before the verdict.
+- **P4c staged**: provision-r2 workflow (this PR) → binding + /api/me/avatars scoped structurally by session userId → voice isolation (per-user allowlist in the LiveKit grant) → clone creation fail-closed until CEO places ELEVENLABS_API_KEY (her wall).
+- **Next:** dispatch provision-r2, verify buckets, then the binding+routes PR.
+- **CEO one-click (queued):** Settings → Environments → production → Deployment branches → restrict to `main` (CodeRabbit PR 92: dispatched workflows on other branches must not see the CF token; the workflow now also self-guards with a ref check).
+
 ## 7 August 2026 (night) — verification + Google + three surfaces shipped
 
 - Secrets: 4 mirrored to GH encrypted secrets (pipes, never printed) + manual push workflow (CI token; LiveKit/admin five stay human-set). **TURNSTILE keys missing from secrets.env — CEO gap.**
