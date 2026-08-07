@@ -8,7 +8,12 @@
 // the CEO's act alone. Until then every clone call answers 503
 // voice_vendor_unconfigured, which is the wall working, not an outage.
 
-export const MAX_VOICES_PER_USER = 3;
+// CEO mandate, 8 Aug 2026: five custom voices per user, enforced by the
+// same atomic slot logic as the avatar cap — the count guard lives IN the
+// insert (db.addUserVoice), so concurrent clones cannot race past it and
+// spam the vendor's cloning endpoint. (The pre-vendor listUserVoices check
+// in clone() is only the cheap early refusal; the insert is the wall.)
+export const MAX_VOICES_PER_USER = 5;
 const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io';
 // ~10MB decoded — a voice sample is audio (the vendor wants ≥1 minute of
 // clean speech), so the ceiling is higher than the avatar wall. Base64
