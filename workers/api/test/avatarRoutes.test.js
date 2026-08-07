@@ -316,3 +316,36 @@ test('avatars: a wrong method on the select route is 405, like every other route
   assert.equal(res.status, 405);
   assert.equal((await res.json()).error, 'method_not_allowed');
 });
+
+test('avatars: bytes surviving a FAILED R2 delete are unreachable — the row is the authority', async () => {
+  // Step 1: the delete — R2 refuses, the row still dies, the selection
+  // still clears, and the caller still gets 200 (the slot is free).
+  const id = 'e'.repeat(32);
+  const key = `avatars/u1/${id}`;
+  const r2 = createFakeR2();
+  await r2.put(key, new Uint8Array([9, 9, 9]));
+  r2.delete = async () => {
+    throw new Error('r2 refused the delete');
+  };
+  const { cookie, d1 } = await userSession('u1', {
+    avatarRows: [{ id, name: 'ghost', content_type: 'image/png', size: 3, created_at: 1 }],
+  });
+  const del = await call(req(`/api/me/avatars/${id}`, { method: 'DELETE', cookie }), baseEnv(d1, r2));
+  assert.equal(del.status, 200);
+  assert.ok(d1.executed.some((e) => /DELETE FROM user_avatars/.test(e.sql)), 'the row died first');
+  assert.ok(d1.executed.some((e) => /SET avatar_key = NULL/.test(e.sql)),
+    'the selection cleared DESPITE the failed byte delete');
+  assert.ok(r2._objects.has(key), 'the bytes really did survive — the hazard is real');
+
+  // Step 2: the post-failure state — row gone, bytes present. Every read
+  // path must answer 404: D1 speaks before R2.
+  const { cookie: after, d1: d1After } = await userSession('u1', { avatarRows: [] });
+  const envAfter = baseEnv(d1After, r2);
+  const get = await call(req(`/api/me/avatars/${id}`, { cookie: after }), envAfter);
+  assert.equal(get.status, 404, 'fetch: the orphaned bytes never serve');
+  const sel = await call(
+    req(`/api/me/avatars/${id}/select`, { method: 'POST', cookie: after, body: {} }),
+    envAfter,
+  );
+  assert.equal(sel.status, 404, 'select: an orphan cannot become the identity');
+});

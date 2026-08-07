@@ -155,42 +155,50 @@ export function createAvatarRoutes(kit) {
       return json({ ok: true, id: avatarId, name, selected: true }, { origin });
     },
 
-    /** GET /api/me/avatars/:id — the bytes, for preview. Own prefix only. */
+    /** GET /api/me/avatars/:id — the bytes, for preview. The ROW is the
+     * authority (CodeRabbit, PR 96): a deleted slot whose bytes survived a
+     * failed R2 delete must read as gone, so D1 is consulted first and the
+     * object only ever serves a live row. */
     async fetchOne(request, env, origin, avatarId) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
       if (!AVATAR_ID_RE.test(avatarId)) {
         return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
       }
+      const row = await session.db.findUserAvatar(session.userId, avatarId);
+      if (!row) return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
       const obj = await env.AVATARS.get(avatarKey(session.userId, avatarId));
       if (!obj) return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
       return new Response(obj.body, {
         headers: {
-          'Content-Type': obj.httpMetadata?.contentType ?? 'image/jpeg',
+          'Content-Type': obj.httpMetadata?.contentType ?? row.content_type ?? 'image/jpeg',
           'Cache-Control': 'private, max-age=300',
           ...corsHeaders(origin),
         },
       });
     },
 
-    /** POST /api/me/avatars/:id/select — make it the session-start default. */
+    /** POST /api/me/avatars/:id/select — make it the session-start default.
+     * Same authority rule: only a live ROW is selectable. */
     async select(request, env, origin, avatarId) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
       if (!AVATAR_ID_RE.test(avatarId)) {
         return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
       }
-      const key = avatarKey(session.userId, avatarId);
-      const head = await env.AVATARS.head(key);
-      if (!head) return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
-      await session.db.upsertProfile(session.userId, { avatarKey: key });
+      const row = await session.db.findUserAvatar(session.userId, avatarId);
+      if (!row) return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
+      await session.db.upsertProfile(session.userId, { avatarKey: avatarKey(session.userId, avatarId) });
       return json({ ok: true }, { origin });
     },
 
     /** DELETE /api/me/avatars/:id — slot, bytes, and the selection if it
-     * was this one. Row first (frees the slot even if R2 hiccups; orphaned
-     * bytes in an unreachable namespace cost cents, a stuck slot costs the
-     * user their cap), then the object, then the conditional clear. */
+     * was this one. Row first (frees the slot even if R2 hiccups; with the
+     * row gone, every read path answers 404, so surviving bytes are
+     * unreachable — orphaned cents, not a stale identity). The R2 delete is
+     * best-effort with the orphan SAID, and the profile clear runs
+     * regardless, so a failed byte delete can never leave a stale
+     * selection either. */
     async remove(request, env, origin, avatarId) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
@@ -199,7 +207,11 @@ export function createAvatarRoutes(kit) {
       }
       const key = avatarKey(session.userId, avatarId);
       await session.db.removeUserAvatar(session.userId, avatarId);
-      await env.AVATARS.delete(key);
+      try {
+        await env.AVATARS.delete(key);
+      } catch (err) {
+        console.error(`AVATAR-ORPHAN ${key}: bytes survived a failed delete`, err);
+      }
       await session.db.clearProfileAvatarKeyIf(session.userId, key);
       return json({ ok: true }, { origin });
     },

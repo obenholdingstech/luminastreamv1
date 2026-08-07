@@ -818,7 +818,10 @@ async function handleVideoSession(request, env, origin) {
     if (!user) {
       return json({ ok: false, error: 'avatar_requires_account' }, { status: 403, origin });
     }
-    imageData = await loadAvatarB64(env, user.userId, body.avatarId);
+    // The ROW is the authority (PR 96): bytes that survived a failed delete
+    // must not be startable, so D1 speaks before R2 is read.
+    const avatarRow = await user.db.findUserAvatar(user.userId, body.avatarId);
+    imageData = avatarRow ? await loadAvatarB64(env, user.userId, body.avatarId) : null;
     if (!imageData) {
       return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
     }
@@ -1036,7 +1039,10 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
       if (!user) {
         return json({ ok: false, error: 'avatar_requires_account' }, { status: 403, origin });
       }
-      imageData = await loadAvatarB64(env, user.userId, body.avatarId);
+      // The ROW is the authority (PR 96): bytes that survived a failed delete
+      // must not be startable, so D1 speaks before R2 is read.
+      const avatarRow = await user.db.findUserAvatar(user.userId, body.avatarId);
+      imageData = avatarRow ? await loadAvatarB64(env, user.userId, body.avatarId) : null;
       if (!imageData) {
         return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
       }
