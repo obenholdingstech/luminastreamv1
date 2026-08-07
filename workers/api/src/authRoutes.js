@@ -96,8 +96,17 @@ export function createAuthRoutes(kit) {
       .map((e) => e.trim().toLowerCase())
       .filter(Boolean);
 
-  const bootstrapAdmin = async (env, dbi, userId, email) => {
-    if (adminEmails(env).includes(email)) await dbi.setRole(userId, 'admin');
+  // TWO-WAY sync with the allowlist (CodeRabbit, PR 87 — revocation must be
+  // definable): a listed email is promoted; an admin whose email left the
+  // list is DEMOTED at their next sign-in. Writes happen only on CHANGE (no
+  // per-sign-in write for the common case). This auto-demote exists only
+  // while the allowlist is the sole source of admin — P8's role management
+  // replaces it and must remove the demote path, or it would fight P8's own
+  // grants. Immediate revocation (before a sign-in) is user suspension.
+  const syncAdminRole = async (env, dbi, userId, email, currentRole) => {
+    const listed = adminEmails(env).includes(email);
+    if (listed && currentRole !== 'admin') await dbi.setRole(userId, 'admin');
+    if (!listed && currentRole === 'admin') await dbi.setRole(userId, 'user');
   };
 
   return {
@@ -137,7 +146,7 @@ export function createAuthRoutes(kit) {
         console.error('signup failed', err);
         return json({ ok: false, error: 'signup_failed' }, { status: 500, origin });
       }
-      await bootstrapAdmin(env, dbi, userId, email);
+      await syncAdminRole(env, dbi, userId, email, 'user');
       return startSession(dbi, userId, { ok: true, user: { id: userId, displayName } }, origin);
     },
 
@@ -181,7 +190,7 @@ export function createAuthRoutes(kit) {
         // The fleet strengthens on sign-in, never by reset.
         await dbi.updatePasswordHash('password', email, await hashPassword(body.password));
       }
-      await bootstrapAdmin(env, dbi, identity.userId, email);
+      await syncAdminRole(env, dbi, identity.userId, email, identity.role);
       return startSession(dbi, identity.userId, { ok: true, user: { id: identity.userId } }, origin);
     },
 

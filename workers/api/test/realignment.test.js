@@ -112,16 +112,61 @@ test('the ADMIN_EMAILS bootstrap promotes on sign-up; an unlisted email stays a 
   }
 });
 
-test('an EMPTY or absent ADMIN_EMAILS grants nobody', async () => {
-  const d1 = createFakeD1();
-  const env = { IDENTITY_DB: d1, AUTH_LIMITER: allowLimiter };
+test('an EMPTY or absent ADMIN_EMAILS grants nobody — both spellings of "nobody"', async () => {
+  for (const env of [
+    { IDENTITY_DB: createFakeD1(), AUTH_LIMITER: allowLimiter },
+    { IDENTITY_DB: createFakeD1(), AUTH_LIMITER: allowLimiter, ADMIN_EMAILS: '' },
+  ]) {
+    await call(
+      req('/api/auth/signup', { body: { email: 'a@b.co', password: 'a-long-enough-password' } }),
+      env,
+    );
+    assert.equal(
+      env.IDENTITY_DB.executed.find((e) => /UPDATE users SET role/.test(e.sql)),
+      undefined,
+      `granted nobody with ADMIN_EMAILS=${JSON.stringify(env.ADMIN_EMAILS)}`,
+    );
+  }
+});
+
+test('REVOCATION: an admin whose email left the allowlist is demoted at next sign-in', async () => {
+  const { hashPassword } = await import('../src/auth.js');
+  const stored = await hashPassword('a-long-enough-password', { iterations: 1000 });
+  const d1 = createFakeD1({
+    respond: (sql) =>
+      /FROM auth_identities/.test(sql)
+        ? { user_id: 'u1', password_hash: stored, verified: 1, role: 'admin' }
+        : null,
+  });
+  const env = { IDENTITY_DB: d1, AUTH_LIMITER: allowLimiter, ADMIN_EMAILS: 'someone-else@x.co' };
+  const res = await call(
+    req('/api/auth/signin', { body: { email: 'ex-admin@x.co', password: 'a-long-enough-password' } }),
+    env,
+  );
+  assert.equal(res.status, 200, 'the sign-in itself succeeds — authority changes, access does not');
+  const demotion = d1.executed.find((e) => /UPDATE users SET role/.test(e.sql));
+  assert.ok(demotion, 'the demotion write happened');
+  assert.equal(demotion.binds[1], 'user');
+});
+
+test('no role write on the COMMON case — a listed admin signing in again writes nothing', async () => {
+  const { hashPassword } = await import('../src/auth.js');
+  const stored = await hashPassword('a-long-enough-password', { iterations: 100_000 });
+  const d1 = createFakeD1({
+    respond: (sql) =>
+      /FROM auth_identities/.test(sql)
+        ? { user_id: 'u1', password_hash: stored, verified: 1, role: 'admin' }
+        : null,
+  });
+  const env = { IDENTITY_DB: d1, AUTH_LIMITER: allowLimiter, ADMIN_EMAILS: 'ceo@x.co' };
   await call(
-    req('/api/auth/signup', { body: { email: 'a@b.co', password: 'a-long-enough-password' } }),
+    req('/api/auth/signin', { body: { email: 'ceo@x.co', password: 'a-long-enough-password' } }),
     env,
   );
   assert.equal(
     d1.executed.find((e) => /UPDATE users SET role/.test(e.sql)),
     undefined,
+    'already-correct roles cost zero writes per sign-in',
   );
 });
 

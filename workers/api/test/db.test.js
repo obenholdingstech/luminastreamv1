@@ -38,7 +38,7 @@ test('findIdentity joins the suspension check in — one query, one failure path
   });
   const db = createDb(d1, fixedDeps());
   const found = await db.findIdentity('password', 'ceo@example.com');
-  assert.deepEqual(found, { userId: 'u1', passwordHash: 'h', verified: true });
+  assert.deepEqual(found, { userId: 'u1', passwordHash: 'h', verified: true, role: 'user' });
   const q = d1.executed[0];
   assert.match(q.sql, /JOIN users/i, 'the user row is consulted');
   assert.match(q.sql, /status = \?3/, 'suspension enforced as a WHERE clause');

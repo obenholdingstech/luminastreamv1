@@ -46,12 +46,17 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     async findIdentity(provider, subject) {
       const row = await d1
         .prepare(
-          'SELECT ai.user_id, ai.password_hash, ai.verified FROM auth_identities ai JOIN users u ON u.id = ai.user_id WHERE ai.provider = ?1 AND ai.subject = ?2 AND u.status = ?3',
+          'SELECT ai.user_id, ai.password_hash, ai.verified, u.role FROM auth_identities ai JOIN users u ON u.id = ai.user_id WHERE ai.provider = ?1 AND ai.subject = ?2 AND u.status = ?3',
         )
         .bind(provider, subject, 'active')
         .first();
       if (!row) return null;
-      return { userId: row.user_id, passwordHash: row.password_hash ?? null, verified: Boolean(row.verified) };
+      return {
+        userId: row.user_id,
+        passwordHash: row.password_hash ?? null,
+        verified: Boolean(row.verified),
+        role: row.role ?? 'user',
+      };
     },
 
     /** @returns {Promise<any|null>} the user's saved lens identity, or null */

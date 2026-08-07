@@ -36,7 +36,12 @@ SECRET_NAMES=(ADMIN_PASSWORD ADMIN_SESSION_SECRET LIVEKIT_API_KEY LIVEKIT_API_SE
 # not block a routine rotation).
 #   ADMIN_EMAILS         comma-separated allowlist; sign-in on a listed email
 #                        bootstraps the admin role (the retired password's
-#                        successor)
+#                        successor). REVOCATION: remove the email and re-run
+#                        this script (the account demotes at its next
+#                        sign-in), or delete the secret entirely with
+#                        `wrangler secret delete ADMIN_EMAILS [--env staging]`
+#                        (grants nobody from then on). Skipping here never
+#                        clears a previously-set value — deletion is explicit.
 #   GOOGLE_CLIENT_ID/SECRET   Google sign-in (CEO's console credentials)
 #   ZEPTOMAIL_TOKEN      email verification sender
 OPTIONAL_SECRET_NAMES=(ADMIN_EMAILS GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ZEPTOMAIL_TOKEN)
