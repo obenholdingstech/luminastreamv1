@@ -7,6 +7,8 @@ test('the routing map: apex is public, account is auth, everything else works', 
   assert.equal(surfaceForHost('luminastream.live'), 'landing');
   assert.equal(surfaceForHost('www.luminastream.live'), 'landing');
   assert.equal(surfaceForHost('account.luminastream.live'), 'account');
+  assert.equal(surfaceForHost('admin.luminastream.live'), 'admin');
+  assert.equal(surfaceForHost('ADMIN.LUMINASTREAM.LIVE'), 'admin', 'admin is case-insensitive too');
   assert.equal(surfaceForHost('studio.luminastream.live'), 'studio');
   assert.equal(surfaceForHost('LUMINASTREAM.LIVE'), 'landing', 'hostnames are case-insensitive');
   // Previews and dev keep the working surface — probes live there.
