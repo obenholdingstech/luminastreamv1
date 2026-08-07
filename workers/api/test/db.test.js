@@ -108,3 +108,25 @@ test('ids and clocks come from the injected deps — no second clock hides in SQ
   assert.equal(q.binds[4], 1_754_000_000, 'the injected clock is the stored clock');
   assert.ok(!/unixepoch|CURRENT_TIMESTAMP|datetime\(/i.test(q.sql), 'SQL mints no time of its own');
 });
+
+test('addUserVoice: the returned id is the CANONICAL row, read back after the upsert', async () => {
+  // On conflict the fresh insert id never lands (only label updates), so a
+  // second registration for the same (user, vendor voice) must hand back
+  // the FIRST row's id — a phantom id would make removeUserVoice a no-op
+  // (CodeRabbit, PR 93).
+  const d1 = createFakeD1({
+    respond: (sql, binds) => {
+      if (/SELECT id FROM user_voices/.test(sql) && binds[0] === 'u1' && binds[1] === 'v-1') {
+        return { id: 'row-original' };
+      }
+      return null;
+    },
+  });
+  const db = createDb(d1, fixedDeps());
+  const first = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Me' });
+  const second = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Renamed' });
+  assert.equal(first.id, 'row-original');
+  assert.equal(second.id, 'row-original', 'conflict returns the surviving row, not the phantom insert');
+  const selects = d1.executed.filter((e) => /SELECT id FROM user_voices/.test(e.sql));
+  assert.equal(selects.length, 2, 'every call reads back the canonical id');
+});

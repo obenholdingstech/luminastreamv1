@@ -32,7 +32,7 @@ def test_parse_own_with_ids():
 
 
 def test_parse_own_ignores_non_string_ids():
-    mode, ids = voice_policy_from_metadata(
+    _, ids = voice_policy_from_metadata(
         json.dumps({"voicePolicy": "own", "voices": ["ok", 7, None, {"x": 1}]}))
     assert ids == frozenset({"ok"})
 
@@ -45,7 +45,7 @@ def test_parse_fails_closed():
     assert voice_policy_from_metadata("not json {") == closed
     assert voice_policy_from_metadata(json.dumps(["a", "list"])) == closed
     assert voice_policy_from_metadata(json.dumps({"voicePolicy": "sudo"})) == closed
-    assert voice_policy_from_metadata(json.dumps({"voicePolicy": "own"})) == closed[0:1] + (frozenset(),)
+    assert voice_policy_from_metadata(json.dumps({"voicePolicy": "own"})) == closed
 
 
 # ── the allow decision ───────────────────────────────────────────────────
@@ -98,3 +98,19 @@ def test_room_policy_metadataless_stranger_fails_closed():
     from convert_agent import ConvertAgent
     stranger = _p("someone", None)
     assert ConvertAgent._room_voice_policy(_agent_with_room([stranger])) == ("own", frozenset())
+
+
+def test_room_policy_two_restricted_participants_intersect():
+    # Two 'own' users with disjoint clones: the shared broadcast must carry
+    # NEITHER set — returning the first policy would put user A's clone ids
+    # in a broadcast user B can read. Intersection of disjoint sets is ∅.
+    from convert_agent import ConvertAgent
+    a = _p("user-a", json.dumps({"voicePolicy": "own", "voices": ["clone-a"]}))
+    b = _p("user-b", json.dumps({"voicePolicy": "own", "voices": ["clone-b"]}))
+    agent = _agent_with_room([a, b])
+    assert ConvertAgent._room_voice_policy(agent) == ("own", frozenset())
+    # And a shared clone survives the intersection — the rule narrows, it
+    # doesn't blank.
+    c = _p("user-c", json.dumps({"voicePolicy": "own", "voices": ["clone-a", "shared"]}))
+    d = _p("user-d", json.dumps({"voicePolicy": "own", "voices": ["clone-b", "shared"]}))
+    assert ConvertAgent._room_voice_policy(_agent_with_room([c, d])) == ("own", frozenset({"shared"}))

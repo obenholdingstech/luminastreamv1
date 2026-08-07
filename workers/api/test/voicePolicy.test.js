@@ -136,3 +136,48 @@ test('/api/me/voices: the query binds the SESSION user id — there is no parame
   assert.ok(q, 'the voices query ran');
   assert.equal(q.binds[0], 'u1', 'bound to the cookie session, query string ignored');
 });
+
+// ── the revocation race (CodeRabbit, PR 93 — Critical) ────────────────────
+
+test("session create: a session that dies between the gate and the policy read is REFUSED — never minted 'all'", async () => {
+  // The gate's lookup succeeds; the policy lookup finds the session gone
+  // (revocation mid-request). The only acceptable outcomes are refusal or
+  // the user's own restricted policy — an ordinary user must never receive
+  // an unrestricted token because their session evaporated at the right
+  // moment.
+  const sessionToken = newSessionToken();
+  const tokenHash = await sessionTokenHash(sessionToken);
+  let authLookups = 0;
+  const d1 = createFakeD1({
+    respond: (sql, binds) => {
+      if (/FROM auth_sessions/.test(sql) && binds[0] === tokenHash) {
+        authLookups += 1;
+        if (authLookups > 1) return null; // revoked after the gate
+        return {
+          user_id: 'u1',
+          last_seen_at: Math.floor(Date.now() / 1000),
+          display_name: 'someone',
+          role: 'user',
+          verified: 1,
+        };
+      }
+      return null;
+    },
+  });
+  const env = {
+    IDENTITY_DB: d1,
+    SESSION_REGISTRY: grantingRegistry,
+    SESSION_LIMITER: allowLimiter,
+    ADMIN_SESSION_SECRET: 'unit-test-session-secret',
+    LIVEKIT_API_KEY: 'lk-key',
+    LIVEKIT_API_SECRET: 'lk-secret',
+  };
+  const res = await worker.fetch(
+    req('/api/session/create', { cookie: `${SESSION_COOKIE}=${sessionToken}` }),
+    env,
+  );
+  assert.equal(res.status, 401, 'refused, not admitted as ops');
+  const body = await res.json();
+  assert.equal(body.error, 'unauthenticated');
+  assert.equal(body.token, undefined, 'no token of any policy was minted');
+});

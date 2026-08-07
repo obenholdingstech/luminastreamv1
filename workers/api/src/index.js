@@ -22,6 +22,7 @@ import { SpendLedger } from './spendLedger.js';
 import { createAuthRoutes } from './authRoutes.js';
 import { createDb } from './db.js';
 import { mayStartSession, resolveUserSession } from './userSession.js';
+import { readSessionCookie } from './auth.js';
 import { createVoiceRoutes } from './voiceRoutes.js';
 
 const VERSION = '0.1.0';
@@ -310,6 +311,30 @@ async function handleSessionCreate(request, env, origin) {
   const refusal = await sessionGate(request, env, origin);
   if (refusal) return refusal;
 
+  // P4c: the voice policy rides the grant itself (CEO isolation mandate) —
+  // resolved HERE, before the registry allocates, for two reasons that are
+  // both CodeRabbit findings on #93:
+  //   * fail closed on principal loss: the gate admitted this caller, but a
+  //     session can die between two lookups (revocation, expiry-boundary).
+  //     A request that CARRIES a session cookie and no longer resolves must
+  //     be refused — never allowed to fall through to the ops-path 'all'.
+  //   * no slot leak: every read that can throw happens while there is
+  //     nothing allocated to clean up.
+  // The ops path (no cookie at all; the gate admitted via the admin token)
+  // is the only road to 'all' without an admin role.
+  const policyUser = await resolveUserSession(request, env, createDb);
+  if (!policyUser && readSessionCookie(request.headers.get('Cookie'))) {
+    return json({ ok: false, error: 'unauthenticated' }, { status: 401, origin });
+  }
+  let voicePolicy = JSON.stringify({ voicePolicy: 'all' });
+  if (policyUser && policyUser.role !== 'admin') {
+    const clones = await policyUser.db.listUserVoices(policyUser.userId);
+    voicePolicy = JSON.stringify({
+      voicePolicy: 'own',
+      voices: clones.map((v) => v.vendor_voice_id),
+    });
+  }
+
   const res = await callRegistry(env, '/create');
   if (!res) return registryUnavailable(origin);
   const created = await res.json().catch(() => null);
@@ -328,22 +353,6 @@ async function handleSessionCreate(request, env, origin) {
   // milliseconds internally and this is the only place the two units meet.
   const expiresAt = Math.floor(session.expiresAt / 1000);
   const ttlSeconds = Math.max(1, expiresAt - Math.floor(Date.now() / 1000));
-
-  // P4c: the voice policy rides the grant itself (CEO isolation mandate).
-  // The gate already admitted this caller; resolving the user AGAIN here is
-  // one D1 read that buys the token its policy claim: admins (and the
-  // ops-token path, which has no user) hear every account voice, ordinary
-  // users hear the premade set plus their OWN clones — enforced by the
-  // agent against this signed claim, not against anything the client sends.
-  const policyUser = await resolveUserSession(request, env, createDb);
-  let voicePolicy = JSON.stringify({ voicePolicy: 'all' });
-  if (policyUser && policyUser.role !== 'admin') {
-    const clones = await policyUser.db.listUserVoices(policyUser.userId);
-    voicePolicy = JSON.stringify({
-      voicePolicy: 'own',
-      voices: clones.map((v) => v.vendor_voice_id),
-    });
-  }
 
   try {
     const { token } = await mintLiveKitToken(env, {

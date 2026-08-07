@@ -722,20 +722,28 @@ class ConvertAgent:
 
     def _room_voice_policy(self):
         """The policy governing the shared broadcast (P4c). The broadcast is
-        room-wide, and the product runs one user per room — so if ANY
-        non-agent participant carries an 'own' policy, the whole broadcast
-        narrows to it (strictest present wins; an ops probe sharing the room
-        with a user must not widen the user's list). An empty room keeps
-        'all': nothing user-facing renders from it, and the connect handler
-        re-broadcasts the moment someone joins."""
+        room-wide, and the product runs one user per room — but the rule
+        must hold even when it isn't: every restricted ('own') participant
+        narrows the list, and multiple restricted participants INTERSECT
+        (CodeRabbit, PR 93 — returning the first 'own' policy would put
+        user A's clone ids in a broadcast user B can read). An ops probe
+        ('all') never widens; an empty room keeps 'all' because nothing
+        user-facing renders from it and the connect handler re-broadcasts
+        the moment someone joins."""
         participants = getattr(self.room, "remote_participants", None) or {}
+        own_sets = []
         for p in participants.values():
             if p.identity.startswith("echo-"):
                 continue
             policy = voice_policy_from_metadata(getattr(p, "metadata", None))
             if policy[0] == "own":
-                return policy
-        return ("all", None)
+                own_sets.append(policy[1])
+        if not own_sets:
+            return ("all", None)
+        ids = own_sets[0]
+        for s in own_sets[1:]:
+            ids = ids & s
+        return ("own", ids)
 
     async def _publish_config(self, adjusted=None, rejected=None):
         """Broadcast the applied config + registry metadata (defaults/ranges)
