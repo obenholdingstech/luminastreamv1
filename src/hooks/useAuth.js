@@ -19,39 +19,57 @@ export function useAuth({ client } = {}) {
   const [state, setState] = useState({ status: 'checking', user: null, profile: null });
   const mountedRef = useRef(true);
 
-  const applyMe = useCallback((res) => {
+  // Only an AUTHENTICATION answer may downgrade to signedOut — a transport
+  // failure on the probe says nothing about the session (the cookie may be
+  // perfectly valid), and discarding a just-accepted sign-in over a network
+  // blip would show the form again with no explanation (CodeRabbit, PR 86).
+  const applyProbe = useCallback((res) => {
     if (!mountedRef.current) return;
     if (res.ok) {
       setState({ status: 'signedIn', user: res.user ?? null, profile: res.profile ?? null });
-    } else {
+    } else if (res.error === 'unauthenticated') {
       setState({ status: 'signedOut', user: null, profile: null });
+    } else {
+      // Transport failure: leave signedIn alone; resolve the mount-time
+      // 'checking' to the form (the one state that must not persist).
+      setState((prev) =>
+        prev.status === 'checking' ? { status: 'signedOut', user: null, profile: null } : prev,
+      );
     }
   }, []);
 
   useEffect(() => {
     mountedRef.current = true;
-    authClient.me().then(applyMe);
+    authClient.me().then(applyProbe);
     return () => {
       mountedRef.current = false;
     };
-  }, [authClient, applyMe]);
+  }, [authClient, applyProbe]);
 
-  const signIn = useCallback(
-    async (credentials) => {
-      const res = await authClient.signIn(credentials);
-      if (res.ok) applyMe(await authClient.me());
+  // A successful sign-in IS the truth — the server accepted the credentials
+  // and set the cookie — so signedIn lands immediately from that response;
+  // the follow-up probe only ENRICHES (profile), and its failure cannot
+  // un-sign-in anyone (applyProbe above).
+  const settle = useCallback(
+    async (res) => {
+      if (!res.ok) return res;
+      if (mountedRef.current) {
+        setState({ status: 'signedIn', user: res.user ?? null, profile: null });
+      }
+      applyProbe(await authClient.me());
       return res;
     },
-    [authClient, applyMe],
+    [authClient, applyProbe],
+  );
+
+  const signIn = useCallback(
+    async (credentials) => settle(await authClient.signIn(credentials)),
+    [authClient, settle],
   );
 
   const signUp = useCallback(
-    async (fields) => {
-      const res = await authClient.signUp(fields);
-      if (res.ok) applyMe(await authClient.me());
-      return res;
-    },
-    [authClient, applyMe],
+    async (fields) => settle(await authClient.signUp(fields)),
+    [authClient, settle],
   );
 
   const signOut = useCallback(async () => {

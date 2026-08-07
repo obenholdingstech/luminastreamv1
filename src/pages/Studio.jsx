@@ -687,6 +687,10 @@ export default function Studio() {
 
   // ── the account (P4b-ui): the lens remembers who you are ─────────────
   const auth = useAuth();
+  // Destructured because it is the STABLE member (useCallback in the hook);
+  // `auth` itself is a fresh object every render and must never sit in a
+  // debounce effect's dependency array.
+  const { saveProfile } = auth;
   // The saved identity applies ONCE per sign-in: server truth lands on the
   // local knobs (voice, style, sync trim), and from then on the knobs are
   // the truth again — a re-render must never re-stomp a local change.
@@ -697,9 +701,12 @@ export default function Studio() {
       return;
     }
     if (profileAppliedRef.current) return;
-    profileAppliedRef.current = true;
     const p = auth.profile;
+    // Latch AFTER the null check: the first signedIn state can carry
+    // profile:null (the enriching probe still in flight) — latching there
+    // would block the real profile forever (CodeRabbit, PR 86).
     if (!p) return;
+    profileAppliedRef.current = true;
     if (p.voiceId) chooseVoice(p.voiceId);
     if (typeof p.stylePrompt === 'string' && p.stylePrompt) setLivePrompt(p.stylePrompt);
     const ms = clampVideoPathMs(p.videoPathMs);
@@ -728,15 +735,21 @@ export default function Studio() {
     if (lastSavedIdentityRef.current === snapshot) return undefined;
     const timer = setTimeout(() => {
       lastSavedIdentityRef.current = snapshot;
-      auth.saveProfile({
+      saveProfile({
         voiceId: validChosenVoice ?? undefined,
-        voiceName: validChosenVoice ? voiceLabels[validChosenVoice] : undefined,
+        // The same label source the <select> renders — the broadcast labels
+        // alone are empty before the agent connects, and COALESCE would then
+        // pair the NEW voiceId with the PREVIOUS voice's stored name.
+        voiceName: validChosenVoice ? effectiveVoiceLabels[validChosenVoice] : undefined,
         stylePrompt: livePrompt.trim() || undefined,
         videoPathMs,
       });
     }, 800);
     return () => clearTimeout(timer);
-  }, [auth, validChosenVoice, videoPathMs, livePrompt, voiceLabels]);
+    // Stable members only: `auth` itself is a fresh object every render, and
+    // depending on it re-arms this debounce faster than 800ms while the lens
+    // is live — the timer would be cleared before it EVER fired.
+  }, [auth.status, saveProfile, validChosenVoice, videoPathMs, livePrompt, effectiveVoiceLabels]);
   // Direct-mode audio alignment — THE LAGGARD IS THE MASTER CLOCK (doctrine
   // generalized, 4 Aug evening): in converted mode audio is slow and video
   // holds (above); in Direct mode audio returns in ~350ms while the video
