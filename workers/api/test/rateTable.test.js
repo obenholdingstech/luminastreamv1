@@ -76,3 +76,26 @@ test('the dev table is 1:1 with a vacuous floor — a second is a second until w
   assert.equal(r.creditCents, 180);
   assert.equal(refundAtSettle(r, 180, 60), 120);
 });
+
+test('money boundaries: unsafe integers, NaN, strings, and frozen meters all refuse — CodeRabbit round 1', () => {
+  const HUGE = Number.MAX_SAFE_INTEGER + 1;
+  assert.throws(() => parseRateTable({ version: 1, meters: { m: { cogsCentsPerUnit: 0, retailCentsPerUnit: HUGE } } }), RateTableError, 'unsafe rate');
+  assert.throws(() => parseRateTable({ version: HUGE, meters: { m: { cogsCentsPerUnit: 0, retailCentsPerUnit: 1 } } }), RateTableError, 'unsafe version');
+  // A debit whose product leaves the safe range refuses, never drifts.
+  const maxRate = parseRateTable({ version: 1, meters: { m: { cogsCentsPerUnit: 0, retailCentsPerUnit: Number.MAX_SAFE_INTEGER } } });
+  assert.throws(() => convertAtReserve(maxRate, 'm', 2), RateTableError, 'unsafe debit');
+  // refund boundaries: NaN and string quantities are malformed summaries.
+  const pinned = convertAtReserve(TABLE, 'decart_video_seconds', 10);
+  assert.throws(() => refundAtSettle(pinned, NaN, 1), RateTableError);
+  assert.throws(() => refundAtSettle(pinned, '10', 1), RateTableError);
+  assert.throws(() => refundAtSettle(pinned, 10, NaN), RateTableError);
+  assert.throws(() => refundAtSettle(pinned, 10, '1'), RateTableError);
+  assert.throws(() => refundAtSettle(pinned, Infinity, 1), RateTableError);
+  assert.throws(() => refundAtSettle({ rateCentsPerUnit: Number.MAX_SAFE_INTEGER }, Number.MAX_SAFE_INTEGER, 0), RateTableError, 'unsafe refund');
+  // The parsed table is deeply immutable — a mutated rate would bypass the
+  // floor validation for every future reservation.
+  assert.throws(() => {
+    'use strict';
+    TABLE.meters.decart_video_seconds.retailCentsPerUnit = 0;
+  }, TypeError);
+});

@@ -24,8 +24,11 @@ export class RateTableError extends Error {
   }
 }
 
-const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
-const isPosInt = (v) => Number.isInteger(v) && v >= 1;
+// SAFE integers only (CodeRabbit, PR 99): beyond 2^53-1 JavaScript cannot
+// represent every credit-cent exactly, and money that cannot be represented
+// exactly is money that drifts.
+const isNonNegInt = (v) => Number.isSafeInteger(v) && v >= 0;
+const isPosInt = (v) => Number.isSafeInteger(v) && v >= 1;
 
 /**
  * Strict-parse a rate table. Shape:
@@ -61,10 +64,12 @@ export function parseRateTable(raw) {
         `meter ${name}: retail ${m.retailCentsPerUnit} is below the COGS floor ${m.cogsCentsPerUnit} — selling at a loss requires changing the declared floor, deliberately`,
       );
     }
-    meters[name] = {
+    // Each meter frozen individually — freezing only the container would
+    // leave the rates writable, silently bypassing the floor validation.
+    meters[name] = Object.freeze({
       cogsCentsPerUnit: m.cogsCentsPerUnit,
       retailCentsPerUnit: m.retailCentsPerUnit,
-    };
+    });
   }
   return Object.freeze({ version: raw.version, meters: Object.freeze(meters) });
 }
@@ -77,11 +82,17 @@ export function parseRateTable(raw) {
 export function convertAtReserve(table, meterName, units) {
   const meter = table.meters[meterName];
   if (!meter) throw new RateTableError(`unknown meter: ${meterName}`);
-  if (!(Number.isFinite(units) && units >= 0)) {
+  if (typeof units !== 'number' || !Number.isFinite(units) || units < 0) {
     throw new RateTableError('units must be a non-negative finite number');
   }
+  const creditCents = Math.ceil(units * meter.retailCentsPerUnit);
+  // The product of two representable numbers can still overflow exactness;
+  // a debit that cannot be represented exactly must refuse, never round.
+  if (!Number.isSafeInteger(creditCents)) {
+    throw new RateTableError('debit exceeds the safe integer range — refuse, never drift');
+  }
   return {
-    creditCents: Math.ceil(units * meter.retailCentsPerUnit),
+    creditCents,
     rateVersion: table.version,
     rateCentsPerUnit: meter.retailCentsPerUnit,
   };
@@ -98,8 +109,20 @@ export function refundAtSettle(pinned, grantedUnits, usedUnits) {
   if (!isNonNegInt(pinned?.rateCentsPerUnit)) {
     throw new RateTableError('a settle without its pinned rate cannot refund — the reservation record is the authority');
   }
+  if (typeof grantedUnits !== 'number' || !Number.isFinite(grantedUnits) || grantedUnits < 0) {
+    throw new RateTableError('grantedUnits must be a non-negative finite number');
+  }
+  // usedUnits comes from a vendor summary — negative clamps (below), but
+  // NaN/strings are a malformed summary and must refuse, not coerce.
+  if (typeof usedUnits !== 'number' || Number.isNaN(usedUnits)) {
+    throw new RateTableError('usedUnits must be a number');
+  }
   const unused = Math.max(0, grantedUnits - Math.max(0, usedUnits));
-  return Math.floor(unused * pinned.rateCentsPerUnit);
+  const refund = Math.floor(unused * pinned.rateCentsPerUnit);
+  if (!Number.isSafeInteger(refund)) {
+    throw new RateTableError('refund exceeds the safe integer range — refuse, never drift');
+  }
+  return refund;
 }
 
 // Dev semantics until wallets exist (ROADMAP: "dev caps run at rate 1:1 — a
