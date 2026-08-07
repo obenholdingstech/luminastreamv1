@@ -33,6 +33,13 @@ permissions:
 jobs:
   provision:
     runs-on: ubuntu-latest
+    # workflow_dispatch can be pointed at ANY branch, and a non-main revision
+    # controls this file — so the job refuses to run off main at all
+    # (CodeRabbit, PR 92). Defense in depth: the production environment's
+    # deployment-branch policy should ALSO be restricted to main in repo
+    # settings (Settings → Environments → production → Deployment branches)
+    # — a one-click CEO action, queued in notes.md.
+    if: github.ref == 'refs/heads/main'
     # Same environment discipline as the deploy + secrets workflows: the
     # credentials resolve under "production", and any reviewer gate the CEO
     # adds there covers infrastructure acts too.

@@ -9,6 +9,7 @@ Running summary of every working session, **newest entry first**. Each entry: wh
 - **#91**: admin.luminastream.live (it's on Pages) → adminGate pure module: admins see the shell, everyone else location.replace to the hero, nothing renders before the verdict.
 - **P4c staged**: provision-r2 workflow (this PR) → binding + /api/me/avatars scoped structurally by session userId → voice isolation (per-user allowlist in the LiveKit grant) → clone creation fail-closed until CEO places ELEVENLABS_API_KEY (her wall).
 - **Next:** dispatch provision-r2, verify buckets, then the binding+routes PR.
+- **CEO one-click (queued):** Settings → Environments → production → Deployment branches → restrict to `main` (CodeRabbit PR 92: dispatched workflows on other branches must not see the CF token; the workflow now also self-guards with a ref check).
 
 ## 7 August 2026 (night) — verification + Google + three surfaces shipped
 
