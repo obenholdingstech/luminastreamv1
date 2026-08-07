@@ -29,7 +29,11 @@
     { "name": "VIDEO_LIMITER", "namespace_id": "1004", "simple": { "limit": 20, "period": 60 } },
     // P4b: sign-up/sign-in. Strict — these are credential oracles; sign-in
     // additionally burns a per-account key from the same budget.
-    { "name": "AUTH_LIMITER", "namespace_id": "1005", "simple": { "limit": 10, "period": 60 } }
+    { "name": "AUTH_LIMITER", "namespace_id": "1005", "simple": { "limit": 10, "period": 60 } },
+    // P4c: the avatar library. Uploads carry up to ~5MB bodies, so this is
+    // deliberately tighter than TOKEN_LIMITER; runs BEFORE auth so an
+    // anonymous flood cannot buy D1 reads.
+    { "name": "MEDIA_LIMITER", "namespace_id": "1006", "simple": { "limit": 20, "period": 60 } }
   ],
   // Non-secret configuration, deliberately visible in a public repo: these are
   // operational limits, not credentials. Both are parsed STRICTLY — a
@@ -87,6 +91,17 @@
       "database_id": "e1ff8f00-0e53-44b2-8ec1-ca29d647a0c3"
     }
   ],
+  // P4c — the avatar library (CEO isolation mandate, 7 Aug 2026). Buckets
+  // created by the provision-r2 workflow BEFORE this binding was committed
+  // (the D1 rule: a deploy never references a binding before the thing
+  // behind it exists). Every key is `avatars/<userId>/<id>` with userId
+  // taken from the resolved cookie session — isolation by construction.
+  "r2_buckets": [
+    {
+      "binding": "AVATARS",
+      "bucket_name": "luminastream-avatars"
+    }
+  ],
   "env": {
     "staging": {
       "name": "luminastream-api-staging",
@@ -96,7 +111,8 @@
         { "name": "TOKEN_LIMITER", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } },
         { "name": "SESSION_LIMITER", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } },
         { "name": "VIDEO_LIMITER", "namespace_id": "2004", "simple": { "limit": 20, "period": 60 } },
-        { "name": "AUTH_LIMITER", "namespace_id": "2005", "simple": { "limit": 10, "period": 60 } }
+        { "name": "AUTH_LIMITER", "namespace_id": "2005", "simple": { "limit": 10, "period": 60 } },
+        { "name": "MEDIA_LIMITER", "namespace_id": "2006", "simple": { "limit": 20, "period": 60 } }
       ],
       "vars": {
         // NO AGENT RUNS FOR STAGING, so staging hands out no sessions.
@@ -142,6 +158,13 @@
           "binding": "IDENTITY_DB",
           "database_name": "luminastream-identity-staging",
           "database_id": "102a88e7-c24c-4160-a038-5a25142489b2"
+        }
+      ],
+      // Staging's OWN bucket — same isolation rule as the DOs and D1.
+      "r2_buckets": [
+        {
+          "binding": "AVATARS",
+          "bucket_name": "luminastream-avatars-staging"
         }
       ]
     }

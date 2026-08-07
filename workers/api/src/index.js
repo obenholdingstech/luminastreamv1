@@ -24,6 +24,7 @@ import { createDb } from './db.js';
 import { mayStartSession, resolveUserSession } from './userSession.js';
 import { readSessionCookie } from './auth.js';
 import { createVoiceRoutes } from './voiceRoutes.js';
+import { createAvatarRoutes, loadAvatarB64 } from './avatarRoutes.js';
 
 const VERSION = '0.1.0';
 
@@ -139,6 +140,21 @@ const voiceRoutes = createVoiceRoutes({
   createDb,
   resolveUserSession,
   mayStartSession,
+});
+
+// P4c: the avatar library — same injection discipline; additionally gets
+// resolveUserSession (isolation key source), the image wall shared with the
+// live video path, and corsHeaders for the one non-JSON response (bytes).
+const avatarRoutes = createAvatarRoutes({
+  json,
+  readJson,
+  clientIp,
+  checkRateLimit,
+  rateLimitRefusal,
+  createDb,
+  resolveUserSession,
+  normalizeReferenceImage,
+  corsHeaders,
 });
 
 async function handleVerify(request, env, origin) {
@@ -789,9 +805,26 @@ async function handleVideoSession(request, env, origin) {
   const body = await readJson(request);
   const sdpOffer = typeof body?.sdpOffer === 'string' ? body.sdpOffer : '';
   if (!sdpOffer) return json({ ok: false, error: 'sdp_offer_required' }, { status: 400, origin });
-  const imageData = normalizeReferenceImage(body?.imageData);
+  let imageData = normalizeReferenceImage(body?.imageData);
   if (body?.imageData && !imageData) {
     return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
+  }
+  // P4c: a stored avatar rides by reference. The id resolves ONLY inside the
+  // caller's own namespace (avatars/<their userId>/…), so another user's id
+  // is indistinguishable from a nonexistent one — 404, never bytes. Inline
+  // imageData wins when both are sent (it is the more explicit intent).
+  if (!imageData && typeof body?.avatarId === 'string' && body.avatarId) {
+    const user = await resolveUserSession(request, env, createDb);
+    if (!user) {
+      return json({ ok: false, error: 'avatar_requires_account' }, { status: 403, origin });
+    }
+    // The ROW is the authority (PR 96): bytes that survived a failed delete
+    // must not be startable, so D1 speaks before R2 is read.
+    const avatarRow = await user.db.findUserAvatar(user.userId, body.avatarId);
+    imageData = avatarRow ? await loadAvatarB64(env, user.userId, body.avatarId) : null;
+    if (!imageData) {
+      return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
+    }
   }
 
   // 1. The durable intent: the reservation exists before Decart hears a word
@@ -994,8 +1027,26 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
   if (action === 'image') {
     // Mid-session identity swap — Decart allows changing the reference image
     // without reconnecting. Same normalization as create: a bad image is a
-    // 400 here, never a byte to the vendor.
-    const imageData = normalizeReferenceImage(body?.imageData);
+    // 400 here, never a byte to the vendor — and an INVALID inline image
+    // refuses even when a valid avatarId rides beside it (same rule as
+    // session create; a silently ignored bad upload would surprise later).
+    let imageData = normalizeReferenceImage(body?.imageData);
+    if (body?.imageData && !imageData) {
+      return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
+    }
+    if (!imageData && typeof body?.avatarId === 'string' && body.avatarId) {
+      const user = await resolveUserSession(request, env, createDb);
+      if (!user) {
+        return json({ ok: false, error: 'avatar_requires_account' }, { status: 403, origin });
+      }
+      // The ROW is the authority (PR 96): bytes that survived a failed delete
+      // must not be startable, so D1 speaks before R2 is read.
+      const avatarRow = await user.db.findUserAvatar(user.userId, body.avatarId);
+      imageData = avatarRow ? await loadAvatarB64(env, user.userId, body.avatarId) : null;
+      if (!imageData) {
+        return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
+      }
+    }
     if (!imageData) return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
     const res = await decartFetch(env, `/v1/realtime/sessions/${sid}/image`, {
       method: 'POST',
@@ -1146,6 +1197,29 @@ export default {
       const vm = pathname.match(/^\/api\/me\/voices\/([0-9a-fA-F-]{1,64})$/);
       if (vm) {
         if (method === 'DELETE') return voiceRoutes.remove(request, env, origin, vm[1]);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return json({ ok: false, error: 'not_found' }, { status: 404, origin });
+    }
+
+    // ── P4c: the avatar library. Cookie-only; every key derives from the
+    //    resolved session's userId, so isolation is structural. ──
+    if (pathname === '/api/me/avatars' || pathname.startsWith('/api/me/avatars/')) {
+      const method = request.method;
+      if (pathname === '/api/me/avatars') {
+        if (method === 'GET') return avatarRoutes.list(request, env, origin);
+        if (method === 'POST') return avatarRoutes.upload(request, env, origin);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      const one = pathname.match(/^\/api\/me\/avatars\/([0-9a-f]{32})$/);
+      if (one) {
+        if (method === 'GET') return avatarRoutes.fetchOne(request, env, origin, one[1]);
+        if (method === 'DELETE') return avatarRoutes.remove(request, env, origin, one[1]);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      const sel = pathname.match(/^\/api\/me\/avatars\/([0-9a-f]{32})\/select$/);
+      if (sel) {
+        if (method === 'POST') return avatarRoutes.select(request, env, origin, sel[1]);
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       return json({ ok: false, error: 'not_found' }, { status: 404, origin });

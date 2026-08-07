@@ -86,6 +86,21 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
         .run();
     },
 
+    /**
+     * Clear the selected avatar ONLY if it is still this key — deleting an
+     * avatar must never unselect a different one the user picked meanwhile.
+     * (upsertProfile can't do this: its COALESCE semantics keep old values,
+     * which is right for partial saves and wrong for deliberate clearing.)
+     */
+    async clearProfileAvatarKeyIf(userId, avatarKey) {
+      await d1
+        .prepare(
+          'UPDATE lens_profiles SET avatar_key = NULL, updated_at = ?3 WHERE user_id = ?1 AND avatar_key = ?2',
+        )
+        .bind(userId, avatarKey, now())
+        .run();
+    },
+
     // ── user voices (P4c) — one row = one vendor voice owned by one user ──
 
     /** The caller's clones, nothing else's — the ONE product query. */
@@ -142,6 +157,55 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
       await d1
         .prepare('DELETE FROM user_voices WHERE id = ?1 AND user_id = ?2')
         .bind(id, userId)
+        .run();
+    },
+
+    // ── user avatars (P4c) — the row is the slot, the bytes live in R2 ──
+
+    /**
+     * Reserve an avatar slot UNDER the cap, atomically — the count guard
+     * lives IN the insert (the user_voices pattern, PR 94/96). Returns true
+     * when the row landed; false means the cap refused and nothing was
+     * written anywhere.
+     */
+    async addUserAvatar(userId, { avatarId, name, contentType, size, cap }) {
+      const res = await d1
+        .prepare(
+          `INSERT INTO user_avatars (id, user_id, name, content_type, size, created_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6
+           WHERE (SELECT COUNT(*) FROM user_avatars WHERE user_id = ?2) < ?7`,
+        )
+        .bind(avatarId, userId, name, contentType, size, now(), cap)
+        .run();
+      const changes = res?.meta?.changes ?? res?.changes ?? 0;
+      return changes >= 1;
+    },
+
+    /** The caller's avatars, nothing else's. */
+    async listUserAvatars(userId) {
+      const { results } = await d1
+        .prepare(
+          'SELECT id, name, content_type, size, created_at FROM user_avatars WHERE user_id = ?1 ORDER BY created_at',
+        )
+        .bind(userId)
+        .all();
+      return results ?? [];
+    },
+
+    /** One row, scoped by BOTH id and user_id — the no-oracle rule. */
+    async findUserAvatar(userId, avatarId) {
+      const row = await d1
+        .prepare('SELECT id, name, content_type, size FROM user_avatars WHERE id = ?1 AND user_id = ?2')
+        .bind(avatarId, userId)
+        .first();
+      return row ?? null;
+    },
+
+    /** Remove the slot — scoped by BOTH id and user_id. */
+    async removeUserAvatar(userId, avatarId) {
+      await d1
+        .prepare('DELETE FROM user_avatars WHERE id = ?1 AND user_id = ?2')
+        .bind(avatarId, userId)
         .run();
     },
 
