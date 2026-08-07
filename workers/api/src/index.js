@@ -128,14 +128,17 @@ const authRoutes = createAuthRoutes({
 });
 
 // P4c: per-user voices — same injection discipline, plus the one resolver
-// that turns a cookie into a userId (the isolation key).
+// that turns a cookie into a userId (the isolation key) and the verification
+// wall (cloning spends vendor quota, same rule as starting a session).
 const voiceRoutes = createVoiceRoutes({
   json,
+  readJson,
   clientIp,
   checkRateLimit,
   rateLimitRefusal,
   createDb,
   resolveUserSession,
+  mayStartSession,
 });
 
 async function handleVerify(request, env, origin) {
@@ -1133,11 +1136,19 @@ export default {
     }
 
     // ── P4c: the caller's voices. Cookie-only, scoped by the session. ──
-    if (pathname === '/api/me/voices') {
-      if (request.method !== 'GET') {
+    if (pathname === '/api/me/voices' || pathname.startsWith('/api/me/voices/')) {
+      const method = request.method;
+      if (pathname === '/api/me/voices') {
+        if (method === 'GET') return voiceRoutes.list(request, env, origin);
+        if (method === 'POST') return voiceRoutes.clone(request, env, origin);
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
-      return voiceRoutes.list(request, env, origin);
+      const vm = pathname.match(/^\/api\/me\/voices\/([0-9a-fA-F-]{1,64})$/);
+      if (vm) {
+        if (method === 'DELETE') return voiceRoutes.remove(request, env, origin, vm[1]);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return json({ ok: false, error: 'not_found' }, { status: 404, origin });
     }
 
     if (pathname === '/api/livekit/token') {

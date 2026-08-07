@@ -118,6 +118,16 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
       return { id: row?.id ?? null };
     },
 
+    /** One row, scoped by BOTH id and user_id — someone else's row id
+     * resolves to null, same no-oracle rule as everywhere. */
+    async findUserVoice(userId, id) {
+      const row = await d1
+        .prepare('SELECT id, vendor_voice_id, label FROM user_voices WHERE id = ?1 AND user_id = ?2')
+        .bind(id, userId)
+        .first();
+      return row ?? null;
+    },
+
     /**
      * Remove a clone registration — scoped by BOTH id and user_id, so a
      * leaked row id from another account deletes nothing.

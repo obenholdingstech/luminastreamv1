@@ -44,7 +44,14 @@ SECRET_NAMES=(ADMIN_PASSWORD ADMIN_SESSION_SECRET LIVEKIT_API_KEY LIVEKIT_API_SE
 #                        clears a previously-set value — deletion is explicit.
 #   GOOGLE_CLIENT_ID/SECRET   Google sign-in (CEO's console credentials)
 #   ZEPTOMAIL_TOKEN      email verification sender
-OPTIONAL_SECRET_NAMES=(ADMIN_EMAILS GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ZEPTOMAIL_TOKEN)
+#   ELEVENLABS_API_KEY   voice cloning (P4c-3). SPEND-AUTHORITY KEY — one of
+#                        the three human walls: only the CEO adds it to
+#                        secrets.env and only at her direction is this script
+#                        run with it present. Absent, every clone endpoint
+#                        answers 503 voice_vendor_unconfigured (fail-closed
+#                        by design, not an outage). NEVER mirror this name
+#                        into CI secrets — CI holds auth-era secrets only.
+OPTIONAL_SECRET_NAMES=(ADMIN_EMAILS GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ZEPTOMAIL_TOKEN ELEVENLABS_API_KEY)
 
 # staging → --env staging ; production → top-level (no --env). The `+` guard
 # keeps the empty-array expansion safe under `set -u` on bash 3.2 (macOS).
