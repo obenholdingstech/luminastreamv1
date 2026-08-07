@@ -6,7 +6,9 @@
 # the D1 rule, applied to its second storage). Runs on workflow_dispatch
 # because bucket CREATION is an infrastructure act, not a deploy.
 #
-# Safe to re-run: create is skipped when the bucket already exists.
+# Safe to re-run: create is skipped when the bucket already exists, and
+# concurrent runs are serialized (CodeRabbit, PR 92) so two runs cannot both
+# miss the existence check and race the create.
 #
 # Uses the same CLOUDFLARE_API_TOKEN as the deploy workflow. If that token
 # lacks R2 permissions this job fails with a 403 — the fix is a one-time
@@ -19,15 +21,25 @@ name: Provision R2 (avatars)
 on:
   workflow_dispatch:
 
+# Serialize manual runs; never cancel one mid-create.
+concurrency:
+  group: provision-r2
+  cancel-in-progress: false
+
+# The Cloudflare token does the work; keep the GITHUB_TOKEN read-only.
+permissions:
+  contents: read
+
 jobs:
   provision:
     runs-on: ubuntu-latest
+    # Same environment discipline as the deploy + secrets workflows: the
+    # credentials resolve under "production", and any reviewer gate the CEO
+    # adds there covers infrastructure acts too.
+    environment: production
     defaults:
       run:
         working-directory: workers/api
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,15 +49,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # No Cloudflare credentials in scope here — dependency lifecycle
+      # scripts must have nothing to find (CodeRabbit, PR 92; the same
+      # step-scoping push-auth-secrets.yml got at PR 88).
       - run: npm ci || npm install
       - name: Create buckets (skip when they exist)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          existing=$(npx wrangler r2 bucket list)
           for name in luminastream-avatars luminastream-avatars-staging; do
-            if npx wrangler r2 bucket list | grep -qx "name: *$name"; then
+            if printf '%s\n' "$existing" | grep -Eq "^name:[[:space:]]*$name$"; then
               echo "$name already exists — skipping create"
             else
               npx wrangler r2 bucket create "$name"
             fi
           done
       - name: List buckets (names are NOT secrets)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler r2 bucket list
