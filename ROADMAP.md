@@ -561,6 +561,18 @@ The build, four PRs:
   rate-limited before auth and fail-closed like every other endpoint;
   suspended users resolve like missing ones (no suspension oracle). Replaces
   the admin-password gate for users; the admin gate stays ours.
+- **The realignment (CEO, 7 Aug 2026)** — identity carries authority:
+  `users.role` with the env-only `ADMIN_EMAILS` bootstrap (the admin
+  password's successor); the session gate takes a signed-in user (admin, or
+  any verified identity) FIRST, with the admin token surviving for ops
+  tooling only (probes, drills — non-browser clients that hold no cookies);
+  **every user must verify their email** — one-shot hashed tokens
+  (migration 0003), sent via ZeptoMail the moment the CEO's token lands;
+  unverified users get `verification_required`, never a bare 401. Routing:
+  apex = public hero, `account.` = auth, `studio.` = signed-in only —
+  hostname-routed in the one Pages app; the visual pass on those
+  transitions belongs to **P7**, which now owns domain remapping and
+  public→studio flow polish explicitly.
 - **P4c — the identity vault**: reference image → R2; voice sample →
   ElevenLabs instant clone → `voice_id` on the profile. (CEO check at this
   door: the ElevenLabs plan tier must include instant voice cloning.)
@@ -1061,8 +1073,14 @@ pasted output.
 |---|---|
 | Confirm Decart's billing basis | Specifically: what "per second of active generation" meters — reconciles our ledger against their invoice. |
 | Agree the **P8 admin scope** | Not yet — at the door. Listed there as a starting point, not a decision. |
-| **`api.luminastream.live` custom domain** on the Worker (DNS — a human wall) | P4b's auth cookies are cross-site until the API shares the site with the studio; Chrome tolerates that, Safari does not. One CNAME + one Worker custom-domain attach makes every browser first-party. |
-| **Google OAuth client** (Google Cloud console) and **Apple Services ID** (after enrolment) | The Google/Apple sign-in halves of the CEO's P4 decision — credential minting stays in her hands. |
+| **Google credentials → `secrets.env` + `scripts/put-worker-secrets.sh production`** | She has the console set up (7 Aug). Add `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` to secrets.env, add the redirect URI `https://api.luminastream.live/api/auth/google/callback` in the Google console, run the script — the wiring code activates on the secrets' presence. |
+| **`ZEPTOMAIL_TOKEN` → secrets.env + the same script** | Email verification's sender (she has a ZeptoMail account). Every user must verify (CEO, 7 Aug); the flow ships as soon as the token lands. |
+| **`ADMIN_EMAILS` → secrets.env + the same script** | The retired admin password's successor: sign-in on a listed email bootstraps the admin role. Env-only — the public repo never names an admin. |
+| **DNS: apex `luminastream.live` + `account.luminastream.live` → the Pages project** | The routing realignment (public hero at the apex, auth on account., studio locked to signed-in users). Two custom-domain attaches on the Pages project. |
+| **Apple Services ID** (after enrolment completes) | The Apple sign-in half — converges with the P6 enrolment already running. |
+
+Done since v2.5: `api.luminastream.live` attached (7 Aug) — first-party auth
+cookies, Safari sign-in works.
 
 Done since v2.4: `DECART_API_KEY` placed (3 Aug — after the wall merged, as
 required); Decart account topped up with auto-top-up enabled (4 Aug).

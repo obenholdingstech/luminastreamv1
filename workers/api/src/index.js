@@ -21,6 +21,7 @@ import { SessionRegistry } from './sessionRegistry.js';
 import { SpendLedger } from './spendLedger.js';
 import { createAuthRoutes } from './authRoutes.js';
 import { createDb } from './db.js';
+import { mayStartSession, resolveUserSession } from './userSession.js';
 
 const VERSION = '0.1.0';
 
@@ -234,6 +235,25 @@ async function sessionGate(request, env, origin) {
 
   if (!env.ADMIN_SESSION_SECRET) {
     return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
+  }
+  // REALIGNMENT (CEO, 7 Aug 2026): identity carries authority. Two ways in:
+  //
+  //   1. A signed-in USER whose account may start sessions — admin role, or
+  //      any verified identity (mayStartSession). This is the product path;
+  //      the retired admin password's job now lives on real accounts via
+  //      the env-only ADMIN_EMAILS bootstrap.
+  //   2. The admin token — kept for OPS TOOLING ONLY (probes, drills, the
+  //      console): non-browser clients that hold no cookies. It is no
+  //      longer the way a person enters the studio.
+  //
+  // Order matters: the cookie is checked first so a signed-in browser never
+  // depends on the ops path.
+  const user = await resolveUserSession(request, env, createDb);
+  if (user) {
+    if (mayStartSession(user)) return null;
+    // Signed in but not yet allowed: a DIFFERENT refusal from 401 — the UI
+    // must say "verify your email", not "sign in".
+    return json({ ok: false, error: 'verification_required' }, { status: 403, origin });
   }
   const session = await verifySession(env.ADMIN_SESSION_SECRET, request.headers.get('X-Admin-Token'));
   if (!session.valid) return json({ ok: false, error: 'unauthorized' }, { status: 401, origin });

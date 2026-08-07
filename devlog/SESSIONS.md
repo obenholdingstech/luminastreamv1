@@ -4,6 +4,26 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 August 2026 (later) — THE REALIGNMENT: identity carries authority
+
+**Task (CEO, verbatim key parts):** "studio.luminastream.live ... must not be open to unauthenticated users ... luminastream.live should be our public hero/marketing page, authentication/login should live on ... account.luminastream.live ... we are officially retiring and removing the old dev admin-password gate, that way i create an account as admin and that particular account gets admin priviledges. ... I will drop the required [Google] credentials into our secrets file ... Every user must verify their email. ... Confirm that our IP/pair-key rate limiters strictly protect account creation ... a dedicated phase (aligning with our P7 design scope) [for] UI/UX flow polishing, domain remapping ..."
+
+### Server core shipped this arc (branch `feat/realignment-roles-user-sessions`)
+- **Migration 0003**: `users.role` ('user'|'admin', CHECK-constrained) + `email_verifications` (one-shot tokens, HASHED at rest — a leaked table must never yield a clickable link; the subject column pins verification to the email it was SENT to).
+- **`ADMIN_EMAILS` bootstrap**: sign-in/sign-up on a listed email promotes to admin. Env-only — the public repo never names an admin; empty/absent grants nobody (tested both ways, case-insensitive).
+- **ONE user-session resolver** (`userSession.js`) shared by the auth routes and the session gate — two resolvers would eventually disagree about expiry or suspension, and an auth disagreement is a security bug wearing a race's clothes.
+- **The session gate's two doors**: a signed-in user who may start (admin role OR any verified identity) passes FIRST; the admin token survives for OPS TOOLING ONLY (probes, drills — non-browser clients that hold no cookies). Signed-in-but-unverified gets its own refusal (`verification_required`, 403) so the UI says "verify your email", never "sign in". During the dev window (no mail sender yet) exactly the ADMIN_EMAILS accounts pass — the same wall the retired password provided, now attached to real identity.
+- **`put-worker-secrets.sh`** learns the optional names (`ADMIN_EMAILS`, `GOOGLE_CLIENT_ID/SECRET`, `ZEPTOMAIL_TOKEN`) — present ⇒ set, absent ⇒ skipped loudly, and the required five stay all-or-nothing.
+- 7 new tests (203 worker total): both doors, the verification wall, bootstrap promote/deny/empty, me() exposing role+verified.
+
+### Scheduling answers given to the CEO
+- **Email verification**: NOT tail-of-P4 — it ships in this arc, via ZeptoMail (her account; one `ZEPTOMAIL_TOKEN` in secrets.env + the script). Schema is already live; sender + verify endpoints + the sign-up email go in behind the token's presence. Cloudflare could send too, but her existing ZeptoMail account is one secret away.
+- **Google OAuth**: code lands env-gated; activates the moment `GOOGLE_CLIENT_ID/SECRET` arrive via her script run + the redirect URI added in her console.
+- **Sign-up limits confirmed and honest**: signup is per-IP (10/60, fail-closed) — the pair-key applies to sign-IN. Against DISTRIBUTED signup bots the real walls are email verification (this arc) + Turnstile at signup (recommended; a widget mint is her dashboard action) — noted, not yet wired.
+- **Routing**: apex hero / account. auth / studio. locked — hostname-routed in the one Pages app; visual polish of those transitions is P7's now-explicit scope. DNS attaches (apex + account.) are her two clicks.
+
+---
+
 ## 7 August 2026 — P4b-ui: the lens learns who you are; the custom domain lands
 
 **Task (CEO, verbatim key parts):** "lets go ahead and build the p4b-ui, but before that i wanted to play you a video of a guy whos an elite developer ... from his video we can pick up more tips to optimixe our apps performance ... explain to me what we need or what you have decided" — plus screenshots showing `api.luminastream.live` attached to the Worker (her DNS wall, done).

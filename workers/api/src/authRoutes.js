@@ -40,6 +40,7 @@ import {
 } from './auth.js';
 import { isTrustedForCredentials } from './cors.js';
 import { base64UrlEncode, sha256 } from './crypto.js';
+import { resolveUserSession } from './userSession.js';
 
 /**
  * @param {{
@@ -80,20 +81,32 @@ export function createAuthRoutes(kit) {
     return json(body, { origin, headers: { 'Set-Cookie': sessionCookie(token) } });
   };
 
-  /** Resolve the cookie to a live session, or null. Touches last_seen at
-   * most once an hour — activity is coarse by design. */
-  const resolveSession = async (request, env) => {
-    const token = readSessionCookie(request.headers.get('Cookie'));
-    if (!token) return null;
-    const dbi = db(env);
-    const tokenHash = await sessionTokenHash(token);
-    const session = await dbi.findAuthSession(tokenHash);
-    if (!session) return null;
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (nowSec - session.lastSeenAt >= LAST_SEEN_THROTTLE_SECONDS) {
-      await dbi.touchAuthSession(tokenHash);
-    }
-    return { ...session, tokenHash, db: dbi };
+  // ONE resolver for the whole Worker (userSession.js) — the auth routes
+  // and the session gate must never disagree about who a request is.
+  const resolveSession = (request, env) => resolveUserSession(request, env, createDb);
+
+  // The ADMIN_EMAILS bootstrap (realignment, 7 Aug 2026): authority comes
+  // from the env-only allowlist, granted at sign-in/sign-up on a REAL
+  // account — the retired admin password's successor. Env-only means the
+  // public repo never names an admin; an empty/absent variable grants
+  // nobody.
+  const adminEmails = (env) =>
+    String(env.ADMIN_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+
+  // TWO-WAY sync with the allowlist (CodeRabbit, PR 87 — revocation must be
+  // definable): a listed email is promoted; an admin whose email left the
+  // list is DEMOTED at their next sign-in. Writes happen only on CHANGE (no
+  // per-sign-in write for the common case). This auto-demote exists only
+  // while the allowlist is the sole source of admin — P8's role management
+  // replaces it and must remove the demote path, or it would fight P8's own
+  // grants. Immediate revocation (before a sign-in) is user suspension.
+  const syncAdminRole = async (env, dbi, userId, email, currentRole) => {
+    const listed = adminEmails(env).includes(email);
+    if (listed && currentRole !== 'admin') await dbi.setRole(userId, 'admin');
+    if (!listed && currentRole === 'admin') await dbi.setRole(userId, 'user');
   };
 
   return {
@@ -133,6 +146,7 @@ export function createAuthRoutes(kit) {
         console.error('signup failed', err);
         return json({ ok: false, error: 'signup_failed' }, { status: 500, origin });
       }
+      await syncAdminRole(env, dbi, userId, email, 'user');
       return startSession(dbi, userId, { ok: true, user: { id: userId, displayName } }, origin);
     },
 
@@ -176,6 +190,7 @@ export function createAuthRoutes(kit) {
         // The fleet strengthens on sign-in, never by reset.
         await dbi.updatePasswordHash('password', email, await hashPassword(body.password));
       }
+      await syncAdminRole(env, dbi, identity.userId, email, identity.role);
       return startSession(dbi, identity.userId, { ok: true, user: { id: identity.userId } }, origin);
     },
 
@@ -196,7 +211,12 @@ export function createAuthRoutes(kit) {
       return json(
         {
           ok: true,
-          user: { id: session.userId, displayName: session.displayName },
+          user: {
+            id: session.userId,
+            displayName: session.displayName,
+            role: session.role,
+            verified: session.verified,
+          },
           profile: profile
             ? {
                 voiceId: profile.voice_id,

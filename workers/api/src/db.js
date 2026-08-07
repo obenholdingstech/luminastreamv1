@@ -46,12 +46,17 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     async findIdentity(provider, subject) {
       const row = await d1
         .prepare(
-          'SELECT ai.user_id, ai.password_hash, ai.verified FROM auth_identities ai JOIN users u ON u.id = ai.user_id WHERE ai.provider = ?1 AND ai.subject = ?2 AND u.status = ?3',
+          'SELECT ai.user_id, ai.password_hash, ai.verified, u.role FROM auth_identities ai JOIN users u ON u.id = ai.user_id WHERE ai.provider = ?1 AND ai.subject = ?2 AND u.status = ?3',
         )
         .bind(provider, subject, 'active')
         .first();
       if (!row) return null;
-      return { userId: row.user_id, passwordHash: row.password_hash ?? null, verified: Boolean(row.verified) };
+      return {
+        userId: row.user_id,
+        passwordHash: row.password_hash ?? null,
+        verified: Boolean(row.verified),
+        role: row.role ?? 'user',
+      };
     },
 
     /** @returns {Promise<any|null>} the user's saved lens identity, or null */
@@ -112,12 +117,18 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     async findAuthSession(tokenHash) {
       const row = await d1
         .prepare(
-          'SELECT s.user_id, s.last_seen_at, u.display_name FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.status = ?3',
+          'SELECT s.user_id, s.last_seen_at, u.display_name, u.role, EXISTS(SELECT 1 FROM auth_identities ai WHERE ai.user_id = u.id AND ai.verified = 1) AS verified FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.status = ?3',
         )
         .bind(tokenHash, now(), 'active')
         .first();
       if (!row) return null;
-      return { userId: row.user_id, lastSeenAt: row.last_seen_at, displayName: row.display_name ?? null };
+      return {
+        userId: row.user_id,
+        lastSeenAt: row.last_seen_at,
+        displayName: row.display_name ?? null,
+        role: row.role ?? 'user',
+        verified: Boolean(row.verified),
+      };
     },
 
     /** Coarse activity, throttled by the CALLER — this just writes. */
@@ -136,6 +147,14 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     /** Opportunistic hygiene — called from sign-in, bounded by predicate. */
     async deleteExpiredAuthSessions() {
       await d1.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?1').bind(now()).run();
+    },
+
+    /** The ADMIN_EMAILS bootstrap writes roles; nothing client-facing does. */
+    async setRole(userId, role) {
+      await d1
+        .prepare('UPDATE users SET role = ?2, updated_at = ?3 WHERE id = ?1')
+        .bind(userId, role, now())
+        .run();
     },
 
     /** Rehash-on-signin: the fleet strengthens without a password reset. */

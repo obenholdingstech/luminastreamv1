@@ -31,6 +31,21 @@ SECRETS_FILE="$REPO_ROOT/secrets.env"
 # Worker (session signing + the LiveKit URL kept out of the public repo).
 SECRET_NAMES=(ADMIN_PASSWORD ADMIN_SESSION_SECRET LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_URL)
 
+# Realignment additions — OPTIONAL: set when present in secrets.env, skipped
+# quietly when absent (unlike the required five, a missing optional name must
+# not block a routine rotation).
+#   ADMIN_EMAILS         comma-separated allowlist; sign-in on a listed email
+#                        bootstraps the admin role (the retired password's
+#                        successor). REVOCATION: remove the email and re-run
+#                        this script (the account demotes at its next
+#                        sign-in), or delete the secret entirely with
+#                        `wrangler secret delete ADMIN_EMAILS [--env staging]`
+#                        (grants nobody from then on). Skipping here never
+#                        clears a previously-set value — deletion is explicit.
+#   GOOGLE_CLIENT_ID/SECRET   Google sign-in (CEO's console credentials)
+#   ZEPTOMAIL_TOKEN      email verification sender
+OPTIONAL_SECRET_NAMES=(ADMIN_EMAILS GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ZEPTOMAIL_TOKEN)
+
 # staging → --env staging ; production → top-level (no --env). The `+` guard
 # keeps the empty-array expansion safe under `set -u` on bash 3.2 (macOS).
 ENV_FLAG=()
@@ -56,6 +71,14 @@ if [ "${#missing[@]}" -gt 0 ]; then
   echo "       set all ${#SECRET_NAMES[@]} first — nothing was changed." >&2
   exit 1
 fi
+
+for name in "${OPTIONAL_SECRET_NAMES[@]}"; do
+  if [ -n "$(read_value "$name")" ]; then
+    SECRET_NAMES+=("$name")
+  else
+    echo "note: optional secret $name not in secrets.env — skipped"
+  fi
+done
 
 cd "$REPO_ROOT/workers/api"
 
