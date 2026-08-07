@@ -504,7 +504,6 @@ export default function Studio() {
       autoLatch.shouldStart({
         sessionId: allocation?.identity ?? null,
         connected: isConnected,
-        adminToken,
         videoPhase: video.phase,
       })
     ) {
@@ -513,7 +512,7 @@ export default function Studio() {
         ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
       });
     }
-  }, [allocation, isConnected, adminToken, video, autoLatch, avatar, livePrompt, avatarReading]);
+  }, [allocation, isConnected, video, autoLatch, avatar, livePrompt, avatarReading]);
 
   const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
   // Which backdrop layer owns the stage — the ordering policy lives in

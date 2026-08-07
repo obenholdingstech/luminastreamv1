@@ -6,7 +6,6 @@ import { createAutoStartLatch } from './unifiedLens.js';
 const ready = (over = {}) => ({
   sessionId: 'sess-1',
   connected: true,
-  adminToken: 'tok',
   videoPhase: 'off',
   ...over,
 });
@@ -29,9 +28,20 @@ test('nothing fires before the session is real', () => {
   const latch = createAutoStartLatch();
   assert.equal(latch.shouldStart(ready({ sessionId: null })), false, 'no session');
   assert.equal(latch.shouldStart(ready({ connected: false })), false, 'not connected');
-  assert.equal(latch.shouldStart(ready({ adminToken: null })), false, 'no token');
   // And none of those refusals consumed the latch:
   assert.equal(latch.shouldStart(ready()), true, 'the real moment still fires');
+});
+
+test("the SESSION is the authority — no token requirement (the CEO's no-avatar bug)", () => {
+  // Cookie-signed-in users carry no admin token; requiring one here silently
+  // disarmed the video leg for every real account while the ops-token probes
+  // stayed green. A server-allocated sessionId cannot exist unauthorized.
+  const latch = createAutoStartLatch();
+  assert.equal(
+    latch.shouldStart({ sessionId: 'sess-1', connected: true, videoPhase: 'off' }),
+    true,
+    'a live session with no token anywhere still starts the video leg',
+  );
 });
 
 test('a NEW session fires again — being new is the only re-arm', () => {
