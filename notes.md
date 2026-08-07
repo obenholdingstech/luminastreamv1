@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (later) — REALIGNMENT server core: roles, verification schema, dual-door gate
+
+- Migration 0003 (users.role + hashed email_verifications); ADMIN_EMAILS env bootstrap (admin password's successor — empty grants nobody); ONE shared user-session resolver; session gate: signed-in (admin|verified) first, admin token = ops tooling only; unverified → 403 verification_required. 203 worker tests.
+- Schedules told to CEO: verification ships THIS arc on her ZEPTOMAIL_TOKEN; Google OAuth code env-gated on her GOOGLE_* + redirect URI; signup limits = per-IP (pair-key is sign-in) — verification+Turnstile are the bot walls; routing apex/account./studio. hostname-based, polish in P7 (now explicit).
+- Her actions queued in ROADMAP §6: 3 secrets + script run; 2 DNS attaches; Apple SID later.
+- **Next:** verification+OAuth endpoints (env-gated) → studio lockdown + hero/account pages → P4c.
+
 ## 7 August 2026 — P4b-ui shipped; custom domain live; perf transcript answered
 
 - **#85 epilogue:** merged after ~4h GitHub MAJOR outage (empty checks list ≠ green — doctrine 27 caught a false pass). Migration 0002 applied; four auth walls smoke-tested live.
