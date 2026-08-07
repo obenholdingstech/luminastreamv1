@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 — P4b-ui shipped; custom domain live; perf transcript answered
+
+- **#85 epilogue:** merged after ~4h GitHub MAJOR outage (empty checks list ≠ green — doctrine 27 caught a false pass). Migration 0002 applied; four auth walls smoke-tested live.
+- **P4b-ui:** authClient lib (+tests; caught a null-coalescing prose bug) → useAuth machine → AccountPanel on the access screen → Studio applies saved identity once per sign-in + debounced autosave (baseline-guarded). Admin key stays as dev gate.
+- **api.luminastream.live** (her DNS wall — done): VITE_API_BASE repo var flipped → first-party cookies, Safari works. Health 200.
+- **Perf transcript verdict:** pooling N/A (no connections on D1/DO — our analogue is the O(1) oracle, already enforced); caching planned where it pays (vendor metadata TTLs — standing directive; never auth answers); load testing = the PL gate, already named. First real wall at 50 users is agent capacity, by design.
+- **Next:** P4c (R2 avatar + ElevenLabs clone), P4d (session history live).
+
 ## 6 August 2026 (late night) — P4b auth shipped (enterprise walls)
 
 - Email+password auth live on the Worker: versioned PBKDF2 (rehash-on-signin strengthening), hashed session tokens in HttpOnly cookies, Origin-gate CSRF, uniform-timing uniform-words sign-in, dual limiter keys (IP+account), fail-closed everywhere. Migration 0002; 196 worker tests.

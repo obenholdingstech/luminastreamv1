@@ -4,7 +4,9 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ConnectionState, RoomEvent, Track } from 'livekit-client';
 import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
 
+import { AccountPanel } from '@/components/AccountPanel';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
+import { useAuth } from '@/hooks/useAuth';
 import { useMicLevel } from '@/hooks/useMicLevel';
 import { useSyncMeter } from '@/hooks/useSyncMeter';
 import { useFpsMeter } from '@/hooks/useFpsMeter';
@@ -222,7 +224,9 @@ export default function Studio() {
   const confirmedVoice = agentConfig?.config?.voice ?? null;
   const voiceMeta = agentConfig?.metadata?.voice ?? null;
   const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
-  const voiceLabels = voiceMeta?.choice_labels ?? {};
+  // useMemo so the object is referentially stable for the autosave effect's
+  // dependency array (exhaustive-deps: a fresh {} per render re-arms it).
+  const voiceLabels = useMemo(() => voiceMeta?.choice_labels ?? {}, [voiceMeta]);
 
   // Pre-start identity (CEO directive, 3 Aug evening): the voice is chosen
   // BEFORE the lens starts. The selector is populated from the agent's live
@@ -680,6 +684,59 @@ export default function Studio() {
   useEffect(() => {
     video.pipeline.stages.align.setVideoPathMs?.(videoPathMs);
   }, [videoPathMs, video.pipeline]);
+
+  // ── the account (P4b-ui): the lens remembers who you are ─────────────
+  const auth = useAuth();
+  // The saved identity applies ONCE per sign-in: server truth lands on the
+  // local knobs (voice, style, sync trim), and from then on the knobs are
+  // the truth again — a re-render must never re-stomp a local change.
+  const profileAppliedRef = useRef(false);
+  useEffect(() => {
+    if (auth.status !== 'signedIn') {
+      profileAppliedRef.current = false;
+      return;
+    }
+    if (profileAppliedRef.current) return;
+    profileAppliedRef.current = true;
+    const p = auth.profile;
+    if (!p) return;
+    if (p.voiceId) chooseVoice(p.voiceId);
+    if (typeof p.stylePrompt === 'string' && p.stylePrompt) setLivePrompt(p.stylePrompt);
+    const ms = clampVideoPathMs(p.videoPathMs);
+    if (ms != null) setVideoPathMsState(ms);
+  }, [auth.status, auth.profile, chooseVoice]);
+
+  // Autosave, debounced, signed-in only. The FIRST observation after the
+  // profile applies is the baseline (never echoed back to the server); every
+  // later change ships the whole current identity — the server COALESCEs,
+  // so unnamed fields survive regardless.
+  const lastSavedIdentityRef = useRef(null);
+  useEffect(() => {
+    if (auth.status !== 'signedIn' || !profileAppliedRef.current) {
+      lastSavedIdentityRef.current = null;
+      return undefined;
+    }
+    const snapshot = JSON.stringify({
+      voiceId: validChosenVoice,
+      videoPathMs,
+      stylePrompt: livePrompt.trim(),
+    });
+    if (lastSavedIdentityRef.current === null) {
+      lastSavedIdentityRef.current = snapshot;
+      return undefined;
+    }
+    if (lastSavedIdentityRef.current === snapshot) return undefined;
+    const timer = setTimeout(() => {
+      lastSavedIdentityRef.current = snapshot;
+      auth.saveProfile({
+        voiceId: validChosenVoice ?? undefined,
+        voiceName: validChosenVoice ? voiceLabels[validChosenVoice] : undefined,
+        stylePrompt: livePrompt.trim() || undefined,
+        videoPathMs,
+      });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [auth, validChosenVoice, videoPathMs, livePrompt, voiceLabels]);
   // Direct-mode audio alignment — THE LAGGARD IS THE MASTER CLOCK (doctrine
   // generalized, 4 Aug evening): in converted mode audio is slow and video
   // holds (above); in Direct mode audio returns in ~350ms while the video
@@ -1457,6 +1514,16 @@ export default function Studio() {
               </Link>{' '}
               accepts a hand-pasted token.
             </p>
+          )}
+
+          {/* The account surface (P4b-ui). Sits WITH the access form, not
+              instead of it: the admin key still gates the lens during the
+              dev period; the account is what makes the lens REMEMBER you —
+              voice, style, sync trim — across sessions and devices. */}
+          {apiConfigured && (
+            <div className="mt-5 pt-4 border-t border-[#14141F]">
+              <AccountPanel auth={auth} />
+            </div>
           )}
         </div>
 
