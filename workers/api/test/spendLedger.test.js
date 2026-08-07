@@ -289,3 +289,54 @@ test('EVERY wrangler environment binds SpendLedger and migrates it', async () =>
     );
   }
 });
+
+// ─── P5: the pin at reserve, the refund at the pin ─────────────────────────
+
+test('P5: the reservation pins {version, rate, debit} at reserve, and the settlement refunds at the PIN', async () => {
+  const h = harness();
+  const r = (await reserve(h, { requestedSeconds: 100 })).body;
+  const record = await h.storage.get(`reservation:${r.reservationId}`);
+  assert.equal(record.rateVersion, 1, 'the dev table version rides the record');
+  assert.equal(record.rateCentsPerUnit, 1, '1:1 — a second is a credit-cent in dev');
+  assert.equal(record.debitCents, 100, 'the ONE conversion happened at reserve');
+
+  await settle(h, { reservationId: r.reservationId, settleToken: r.settleToken, usedSeconds: 40 });
+  const s = await h.storage.get(`settlement:${r.reservationId}`);
+  assert.equal(s.refundCents, 60, 'refund at the pinned rate');
+  assert.equal(s.deductedCents, 40, 'deducted = debit − refund');
+  assert.equal(s.rateVersion, 1, 'the pin travels into the audit row');
+});
+
+test('P5: the refund uses the RECORD pin, not any current table — a rate change cannot touch an open hold', async () => {
+  const h = harness();
+  const r = (await reserve(h, { requestedSeconds: 100 })).body;
+  // Simulate a rate change landing mid-session: rewrite the record's pin to
+  // an older, different rate (as a reservation made under table v1 would
+  // look after a v2 deploy). The settle must honour the record.
+  const record = await h.storage.get(`reservation:${r.reservationId}`);
+  record.rateCentsPerUnit = 7;
+  record.rateVersion = 99;
+  record.debitCents = 700;
+  await h.storage.put(`reservation:${r.reservationId}`, record);
+
+  await settle(h, { reservationId: r.reservationId, settleToken: r.settleToken, usedSeconds: 40 });
+  const s = await h.storage.get(`settlement:${r.reservationId}`);
+  assert.equal(s.refundCents, 420, '60 unused × the PINNED 7 — never the current table');
+  assert.equal(s.rateVersion, 99, 'the pin is the audit truth');
+});
+
+test('P5: a legacy record without a pin settles cleanly with no credit fields — rollout safety', async () => {
+  const h = harness();
+  const r = (await reserve(h, { requestedSeconds: 50 })).body;
+  const record = await h.storage.get(`reservation:${r.reservationId}`);
+  delete record.rateVersion;
+  delete record.rateCentsPerUnit;
+  delete record.debitCents;
+  await h.storage.put(`reservation:${r.reservationId}`, record);
+
+  const out = await settle(h, { reservationId: r.reservationId, settleToken: r.settleToken, usedSeconds: 10 });
+  assert.equal(out.body.ok, true, 'an in-flight pre-P5 hold settles, never 500s');
+  const s = await h.storage.get(`settlement:${r.reservationId}`);
+  assert.equal(s.refundCents, undefined, 'no pin, no credit fields — seconds accounting stands alone');
+  assert.equal(s.usedSeconds, 10, 'the seconds trail is untouched');
+});

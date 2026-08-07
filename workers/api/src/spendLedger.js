@@ -39,6 +39,7 @@
 //     make increases what it is allowed to burn.
 
 import { base64UrlEncode, base64UrlDecode, sha256, timingSafeEqual } from './crypto.js';
+import { DEV_RATE_TABLE, convertAtReserve, refundAtSettle } from './rateTable.js';
 
 const KEY_PREFIX = 'reservation:';
 const SPENT_KEY = 'spentSeconds';
@@ -225,12 +226,31 @@ export class SpendLedger {
   }
 
   async #writeSettlement(record, { source, usedSeconds, vendorSummary = null, vendorKilled = null, orphanFlag = false }) {
+    // P5: the refund is computed against the reservation's PINNED rate —
+    // never a current table, which is deliberately not in scope here. A
+    // legacy record without a pin (reserved before this deploy) settles
+    // with no credit fields rather than throwing: seconds accounting is
+    // still the budget authority in dev, so nothing is lost but the pin.
+    const credit =
+      record.rateCentsPerUnit != null
+        ? (() => {
+            const refundCents = refundAtSettle(record, record.grantedSeconds, usedSeconds);
+            return {
+              rateVersion: record.rateVersion,
+              rateCentsPerUnit: record.rateCentsPerUnit,
+              debitCents: record.debitCents,
+              refundCents,
+              deductedCents: record.debitCents - refundCents,
+            };
+          })()
+        : {};
     // The audit trail (ROADMAP §P5): raw vendor summaries verbatim, distinct
     // from the deduction, read by reconciliation (P8) — never by the wallet.
     await this.storage.put(`settlement:${record.id}`, {
       reservationId: record.id,
       grantedSeconds: record.grantedSeconds,
       usedSeconds,
+      ...credit,
       overageSeconds: Math.max(
         0,
         (Number.isFinite(vendorSummary?.billed_seconds) ? Math.ceil(vendorSummary.billed_seconds) : usedSeconds) -
@@ -361,9 +381,18 @@ export class SpendLedger {
 
     const id = crypto.randomUUID();
     const settleToken = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+    // P5: the ONE conversion, at reserve — the reservation pins the rate it
+    // converted under, and settle refunds against the pin alone. At the dev
+    // 1:1 table debitCents equals grantedSeconds; the seconds-based budget
+    // math below is unchanged until wallets replace it (ROADMAP: "a
+    // rate-table change, not a refactor").
+    const pin = convertAtReserve(DEV_RATE_TABLE, 'decart_video_seconds', granted);
     const record = {
       id,
       grantedSeconds: granted,
+      rateVersion: pin.rateVersion,
+      rateCentsPerUnit: pin.rateCentsPerUnit,
+      debitCents: pin.creditCents,
       settleTokenHash: base64UrlEncode(await sha256(settleToken)),
       createdAt: now,
       // The hold may wait its own duration plus slack for the settle; after
