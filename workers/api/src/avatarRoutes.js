@@ -90,45 +90,65 @@ export function createAvatarRoutes(kit) {
   }
 
   return {
-    /** GET /api/me/avatars — the caller's library, nothing else's. */
+    /** GET /api/me/avatars — the caller's rows, nothing else's. The list
+     * reads D1 (the slot table IS the library); R2 holds only bytes. */
     async list(request, env, origin) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
-      const prefix = avatarPrefix(session.userId);
-      const listed = await env.AVATARS.list({ prefix });
+      const rows = await session.db.listUserAvatars(session.userId);
       const profile = await session.db.getProfile(session.userId);
       const selectedKey = profile?.avatar_key ?? null;
-      const avatars = listed.objects.map((o) => ({
-        id: o.key.slice(prefix.length),
-        name: o.customMetadata?.name ?? 'avatar',
-        size: o.size,
-        uploaded: o.uploaded instanceof Date ? o.uploaded.toISOString() : String(o.uploaded ?? ''),
-        selected: o.key === selectedKey,
+      const avatars = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        size: r.size,
+        selected: avatarKey(session.userId, r.id) === selectedKey,
       }));
       return json({ ok: true, avatars, max: MAX_AVATARS_PER_USER }, { origin });
     },
 
-    /** POST /api/me/avatars — store one under the caller's prefix, select it. */
+    /**
+     * POST /api/me/avatars — reserve the slot, then store the bytes.
+     * The cap is ATOMIC: a conditional D1 insert guarded by COUNT(*) in the
+     * same statement (CodeRabbit, PR 96 — an R2 prefix-count was a
+     * read-then-write pair two concurrent uploads could both pass). The row
+     * is the reservation; if the R2 write then fails, the row is reconciled
+     * away so a slot is never held by bytes that don't exist.
+     */
     async upload(request, env, origin) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
       const body = await readJson(request);
       const b64 = normalizeReferenceImage(body?.imageData);
       if (!b64) return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
-      const existing = await env.AVATARS.list({ prefix: avatarPrefix(session.userId) });
-      if (existing.objects.length >= MAX_AVATARS_PER_USER) {
-        return json({ ok: false, error: 'avatar_limit_reached' }, { status: 409, origin });
-      }
       const bytes = decodeB64(b64);
       if (!bytes) return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
       const avatarId = crypto.randomUUID().replaceAll('-', '');
       const name =
         typeof body?.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 80) : 'avatar';
-      const key = avatarKey(session.userId, avatarId);
-      await env.AVATARS.put(key, bytes, {
-        customMetadata: { name },
-        httpMetadata: { contentType: imageContentType(body?.imageData) },
+      const contentType = imageContentType(body?.imageData);
+      const reserved = await session.db.addUserAvatar(session.userId, {
+        avatarId,
+        name,
+        contentType,
+        size: bytes.length,
+        cap: MAX_AVATARS_PER_USER,
       });
+      if (!reserved) {
+        return json({ ok: false, error: 'avatar_limit_reached' }, { status: 409, origin });
+      }
+      const key = avatarKey(session.userId, avatarId);
+      try {
+        await env.AVATARS.put(key, bytes, {
+          customMetadata: { name },
+          httpMetadata: { contentType },
+        });
+      } catch (err) {
+        // Reconcile: the reservation must not outlive a failed byte write.
+        console.error('avatar bytes failed to land, releasing the slot:', err);
+        await session.db.removeUserAvatar(session.userId, avatarId);
+        return json({ ok: false, error: 'storage_unavailable' }, { status: 502, origin });
+      }
       // Uploading selects: the newest identity is the one the user means.
       // (upsertProfile COALESCEs, so nothing else in the profile is touched.)
       await session.db.upsertProfile(session.userId, { avatarKey: key });
@@ -167,7 +187,10 @@ export function createAvatarRoutes(kit) {
       return json({ ok: true }, { origin });
     },
 
-    /** DELETE /api/me/avatars/:id — and clear the selection if it was this. */
+    /** DELETE /api/me/avatars/:id — slot, bytes, and the selection if it
+     * was this one. Row first (frees the slot even if R2 hiccups; orphaned
+     * bytes in an unreachable namespace cost cents, a stuck slot costs the
+     * user their cap), then the object, then the conditional clear. */
     async remove(request, env, origin, avatarId) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
@@ -175,6 +198,7 @@ export function createAvatarRoutes(kit) {
         return json({ ok: false, error: 'avatar_not_found' }, { status: 404, origin });
       }
       const key = avatarKey(session.userId, avatarId);
+      await session.db.removeUserAvatar(session.userId, avatarId);
       await env.AVATARS.delete(key);
       await session.db.clearProfileAvatarKeyIf(session.userId, key);
       return json({ ok: true }, { origin });

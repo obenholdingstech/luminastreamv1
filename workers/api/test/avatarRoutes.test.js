@@ -36,10 +36,11 @@ const call = (request, env) => worker.fetch(request, env);
  * A signed-in user with a real session cookie against a respond-based fake
  * D1. `profileAvatarKey` feeds getProfile so `selected` flags are testable.
  */
-async function userSession(userId, { profileAvatarKey = null } = {}) {
+async function userSession(userId, { profileAvatarKey = null, avatarRows = [], runMeta } = {}) {
   const sessionToken = newSessionToken();
   const tokenHash = await sessionTokenHash(sessionToken);
   const d1 = createFakeD1({
+    runMeta,
     respond: (sql, binds) => {
       if (/FROM auth_sessions/.test(sql) && binds[0] === tokenHash) {
         return {
@@ -52,6 +53,14 @@ async function userSession(userId, { profileAvatarKey = null } = {}) {
       }
       if (/FROM lens_profiles/.test(sql) && binds[0] === userId) {
         return profileAvatarKey ? { user_id: userId, avatar_key: profileAvatarKey } : null;
+      }
+      // the slot table: list is scoped by user_id; find by (id, user_id)
+      if (/FROM user_avatars WHERE user_id/.test(sql) && binds[0] === userId) {
+        return avatarRows;
+      }
+      if (/FROM user_avatars WHERE id/.test(sql)) {
+        const [id, uid] = binds;
+        return uid === userId ? (avatarRows.find((r) => r.id === id) ?? null) : null;
       }
       return null;
     },
@@ -127,7 +136,15 @@ test('avatars: upload stores under the caller prefix, selects it, and lists back
   assert.ok(upsert, 'the profile recorded the selection');
   assert.equal(upsert.binds[3], key, 'avatar_key is the SERVER-built key, never client input');
 
-  const { cookie: cookie2, d1: d1b } = await userSession('u1', { profileAvatarKey: key });
+  const reserve = d1.executed.find((e) => /INSERT INTO user_avatars/.test(e.sql));
+  assert.ok(reserve, 'the slot was reserved in D1');
+  assert.match(reserve.sql, /SELECT COUNT\(\*\) FROM user_avatars WHERE user_id/,
+    'the cap guard lives IN the insert — atomic, not read-then-write');
+
+  const { cookie: cookie2, d1: d1b } = await userSession('u1', {
+    profileAvatarKey: key,
+    avatarRows: [{ id: created.id, name: 'My Face', size: 68, created_at: 1 }],
+  });
   const list = await call(req('/api/me/avatars', { cookie: cookie2 }), baseEnv(d1b, r2));
   const body = await list.json();
   assert.equal(body.avatars.length, 1);
@@ -148,18 +165,40 @@ test('avatars: garbage refuses with image_invalid before any storage', async () 
   assert.equal(r2._objects.size, 0);
 });
 
-test('avatars: the per-user cap refuses the ninth', async () => {
-  const { cookie, d1 } = await userSession('u1');
+test('avatars: the cap is ATOMIC — a lost slot race is a 409 with NO bytes written', async () => {
+  // The conditional insert refuses (as it would when a concurrent upload
+  // takes the last slot between nothing and nothing — there is no separate
+  // read to win). The route must answer 409 and R2 must stay untouched;
+  // this test fails against any read-then-write reintroduction because the
+  // fixture holds ZERO existing rows, so only the ATOMIC guard can refuse.
+  const { cookie, d1 } = await userSession('u1', {
+    runMeta: (sql) => (/SELECT COUNT\(\*\) FROM user_avatars/.test(sql) ? { changes: 0 } : null),
+  });
   const r2 = createFakeR2();
-  for (let i = 0; i < 8; i += 1) {
-    await r2.put(`avatars/u1/${String(i).repeat(32).slice(0, 32)}`, new Uint8Array([1]));
-  }
   const res = await call(
     req('/api/me/avatars', { method: 'POST', cookie, body: { imageData: PNG_B64 } }),
     baseEnv(d1, r2),
   );
   assert.equal(res.status, 409);
   assert.equal((await res.json()).error, 'avatar_limit_reached');
+  assert.equal(r2._objects.size, 0, 'a refused slot never reaches storage');
+});
+
+test('avatars: a failed byte write releases the slot — the reservation never outlives the bytes', async () => {
+  const { cookie, d1 } = await userSession('u1');
+  const r2 = createFakeR2();
+  r2.put = async () => {
+    throw new Error('r2 exploded');
+  };
+  const res = await call(
+    req('/api/me/avatars', { method: 'POST', cookie, body: { imageData: PNG_B64 } }),
+    baseEnv(d1, r2),
+  );
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, 'storage_unavailable');
+  const release = d1.executed.find((e) => /DELETE FROM user_avatars/.test(e.sql));
+  assert.ok(release, 'the reconcile delete ran');
+  assert.equal(release.binds[1], 'u1');
 });
 
 test('avatars: delete clears the selection only when it was the selected one', async () => {
@@ -175,7 +214,11 @@ test('avatars: delete clears the selection only when it was the selected one', a
   assert.equal(r2._objects.size, 0);
   const clear = d1.executed.find((e) => /SET avatar_key = NULL/.test(e.sql));
   assert.ok(clear, 'the conditional clear ran');
+  assert.match(clear.sql, /AND avatar_key = \?2/,
+    'the clear is CONDITIONAL in SQL — deleting one avatar must never unselect another');
   assert.deepEqual(clear.binds.slice(0, 2), ['u1', `avatars/u1/${id}`]);
+  const rowGone = d1.executed.find((e) => /DELETE FROM user_avatars/.test(e.sql));
+  assert.ok(rowGone, 'the slot row died with the bytes');
 });
 
 // ── THE ISOLATION PROOFS — the mandate itself ─────────────────────────────
@@ -262,4 +305,14 @@ test('loadAvatarB64: round-trips bytes for the owner, null for everyone and ever
   assert.equal(await loadAvatarB64(env, 'uA', 'nope'), null, 'malformed id: null');
   assert.equal(await loadAvatarB64(env, '', id), null, 'no user: null');
   assert.equal(await loadAvatarB64({}, 'uA', id), null, 'no binding: null');
+});
+
+test('avatars: a wrong method on the select route is 405, like every other route shape', async () => {
+  const { cookie, d1 } = await userSession('u1');
+  const res = await call(
+    req(`/api/me/avatars/${'a'.repeat(32)}/select`, { cookie }),
+    baseEnv(d1, createFakeR2()),
+  );
+  assert.equal(res.status, 405);
+  assert.equal((await res.json()).error, 'method_not_allowed');
 });

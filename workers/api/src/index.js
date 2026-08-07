@@ -1024,9 +1024,13 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
   if (action === 'image') {
     // Mid-session identity swap — Decart allows changing the reference image
     // without reconnecting. Same normalization as create: a bad image is a
-    // 400 here, never a byte to the vendor. A stored avatar rides by
-    // reference under the same structural rule as session create.
+    // 400 here, never a byte to the vendor — and an INVALID inline image
+    // refuses even when a valid avatarId rides beside it (same rule as
+    // session create; a silently ignored bad upload would surprise later).
     let imageData = normalizeReferenceImage(body?.imageData);
+    if (body?.imageData && !imageData) {
+      return json({ ok: false, error: 'image_invalid' }, { status: 400, origin });
+    }
     if (!imageData && typeof body?.avatarId === 'string' && body.avatarId) {
       const user = await resolveUserSession(request, env, createDb);
       if (!user) {
@@ -1208,7 +1212,10 @@ export default {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       const sel = pathname.match(/^\/api\/me\/avatars\/([0-9a-f]{32})\/select$/);
-      if (sel && method === 'POST') return avatarRoutes.select(request, env, origin, sel[1]);
+      if (sel) {
+        if (method === 'POST') return avatarRoutes.select(request, env, origin, sel[1]);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
       return json({ ok: false, error: 'not_found' }, { status: 404, origin });
     }
 

@@ -407,6 +407,21 @@ test('the image action swaps identity mid-session with the CREATING token, zero 
     env,
   );
   assert.equal(bad.status, 400, 'a bad image is refused before a byte reaches the vendor');
+
+  // P4c regression (CodeRabbit, PR 96): an INVALID inline image refuses even
+  // when a valid-shaped avatarId rides beside it — the inline value is the
+  // more explicit intent, and silently ignoring a bad upload in favor of a
+  // stored avatar would surprise later. 400 specifically (not the 404 the
+  // avatarId branch would give) proves the refusal order.
+  const mixed = await worker.fetch(
+    req(`/api/video/session/${out.sessionId}/image`, {
+      token,
+      body: { controlToken: out.controlToken, imageData: '!!', avatarId: 'a'.repeat(32) },
+    }),
+    env,
+  );
+  assert.equal(mixed.status, 400, 'invalid inline wins over a valid avatarId');
+  assert.equal((await mixed.json()).error, 'image_invalid');
 });
 
 test('control ops verify the token statelessly and cost ZERO ledger requests', async (t) => {
