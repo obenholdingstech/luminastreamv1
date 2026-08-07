@@ -60,6 +60,10 @@ export async function postJson(url, { body, adminToken, signal, keepalive } = {}
   const res = await fetch(url, {
     method: 'POST',
     headers,
+    // The user session is an HttpOnly cookie (realignment): every API call
+    // carries credentials so a signed-in browser is authorized without any
+    // header. Endpoints that never look at cookies are unaffected.
+    credentials: 'include',
     body: JSON.stringify(body ?? {}),
     ...(signal ? { signal } : {}),
     // keepalive lets a request outlive the page that started it — the only way

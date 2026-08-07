@@ -76,7 +76,7 @@ test.afterAll(async () => {
 // ─── the drill ─────────────────────────────────────────────────────────────
 
 async function unlockAndStart(page) {
-  await page.goto('/');
+  await page.goto('/?ops'); // the lockdown walks signed-out browsers to account.; ops keeps the drill's key flow
   await expect(page.getByText('Lens off')).toBeVisible();
   await page.getByLabel('Early access key').fill(PASSWORD);
   await page.getByRole('button', { name: 'Start', exact: true }).click();

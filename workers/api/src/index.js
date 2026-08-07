@@ -470,6 +470,15 @@ async function videoGate(request, env, origin) {
   if (!env.ADMIN_SESSION_SECRET) {
     return json({ ok: false, error: 'server_misconfigured' }, { status: 500, origin });
   }
+  // Same two doors as the session gate (realignment): the video leg belongs
+  // to the same person the audio leg does — a signed-in user who may start,
+  // or the ops token. Split gates with different doors would strand a
+  // signed-in user with voice but no face.
+  const user = await resolveUserSession(request, env, createDb);
+  if (user) {
+    if (mayStartSession(user)) return null;
+    return json({ ok: false, error: 'verification_required' }, { status: 403, origin });
+  }
   const session = await verifySession(env.ADMIN_SESSION_SECRET, request.headers.get('X-Admin-Token'));
   if (!session.valid) return json({ ok: false, error: 'unauthorized' }, { status: 401, origin });
   return null;
@@ -1057,6 +1066,21 @@ export default {
       }
       if (pathname === '/api/auth/me' && method === 'GET') {
         return authRoutes.me(request, env, origin);
+      }
+      if (pathname === '/api/auth/config' && method === 'GET') {
+        return authRoutes.config(request, env, origin);
+      }
+      if (pathname === '/api/auth/verify' && method === 'GET') {
+        return authRoutes.verifyEmail(request, env, origin);
+      }
+      if (pathname === '/api/auth/resend-verification' && method === 'POST') {
+        return authRoutes.resendVerification(request, env, origin);
+      }
+      if (pathname === '/api/auth/google' && method === 'GET') {
+        return authRoutes.googleStart(request, env, origin);
+      }
+      if (pathname === '/api/auth/google/callback' && method === 'GET') {
+        return authRoutes.googleCallback(request, env, origin);
       }
       if (pathname === '/api/me/profile' && method === 'PUT') {
         return authRoutes.putProfile(request, env, origin);

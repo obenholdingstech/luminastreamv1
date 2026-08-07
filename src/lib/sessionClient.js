@@ -180,6 +180,13 @@ export async function openSession(
 ) {
   const signal = deadline(timeoutMs);
   let session = adminToken;
+  // No password and no admin token = the SIGNED-IN path (realignment): the
+  // HttpOnly session cookie rides the request (apiFetch sends credentials)
+  // and the Worker's gate authorizes the user directly. The admin exchange
+  // below remains the ops path.
+  if (!session && !password) {
+    return { ...(await createSession('', base, signal)), adminToken: '' };
+  }
   if (!session) session = await verifyAdmin(password, base, signal);
 
   try {

@@ -1,25 +1,34 @@
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 
 import ScrollToTop from './components/ScrollToTop';
+import Account from './pages/Account';
+import Landing from './pages/Landing';
 import LiveKitTest from './pages/LiveKitTest';
 import PageNotFound from './pages/PageNotFound';
 import Studio from './pages/Studio';
+import { surfaceForHost } from './lib/surface';
 
-// Two surfaces, one engine.
+// One deploy, three surfaces, routed by HOSTNAME (the realignment, CEO
+// 7 Aug 2026):
 //
-//   /              the lens — what the product is
-//   /livekit-test  the console — the instrument the lens is tuned with
+//   luminastream.live            the public hero — the only page a stranger
+//                                should ever meet
+//   account.luminastream.live    sign-in / sign-up / verification
+//   studio.luminastream.live     the workspace, signed-in only (the studio
+//                                itself bounces the signed-out to account)
 //
-// Both drive the same agent through the same hook. The console is not a
-// staging area for the product; it is permanently valuable and permanently
-// dev-only, which is why it keeps its own route rather than hiding behind a
-// flag on this one.
+// Previews and localhost resolve to the studio surface, because dev and the
+// probes live there. The console stays a route on the working surface.
 //
-// There is no auth provider here any more. The one that used to wrap this tree
-// authenticated against a backend that no longer exists — it resolved to a
-// fail-soft error on every load and gated nothing. Session authority now lives
-// server-side in workers/api.
+// There is no auth provider wrapping this tree. Session authority lives
+// server-side (an HttpOnly cookie the Worker resolves); pages that care ask
+// via useAuth.
 function App() {
+  const surface = surfaceForHost(globalThis.location?.hostname);
+
+  if (surface === 'landing') return <Landing />;
+  if (surface === 'account') return <Account />;
+
   return (
     <Router>
       <ScrollToTop />
