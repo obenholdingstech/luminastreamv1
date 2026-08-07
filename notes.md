@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (late) — P4c closed, P5 opens with the rate table
+
+- **#98 merged + deployed:** voice cap 5, pinned by test; /api/auth/config gained voiceCloningEnabled.
+- **Live check found a gap:** voiceCloningEnabled=false — the CEO's key push predates #94's script (the script didn't know the key's name). **CEO: git pull, re-run put-worker-secrets.sh production; config flips true when it lands.**
+- **P5 opens (CEO green light):** rateTable.js — credit-cents integers, margin floor refuses to parse, CEIL at debit / FLOOR at refund, refunds only at the reservation's pinned rate. Ledger wiring is the next PR; then wallets.
+
 ## 7 August 2026 (late) — voice cap to five, cloning live, P4c closes
 
 - **CEO cleared both walls:** production env locked to main; ELEVENLABS_API_KEY pushed via her script run.
