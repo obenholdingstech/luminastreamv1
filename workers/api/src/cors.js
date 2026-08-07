@@ -17,7 +17,7 @@ const STATIC_ALLOWED = new Set([
   'http://localhost:5173',
 ]);
 
-const ALLOW_METHODS = 'GET, POST, OPTIONS';
+const ALLOW_METHODS = 'GET, POST, PUT, OPTIONS';
 const ALLOW_HEADERS = 'Content-Type, X-Admin-Token';
 const MAX_AGE = '86400';
 
@@ -37,27 +37,46 @@ export function isAllowedOrigin(origin) {
   );
 }
 
-// Response CORS headers for an allowed origin, empty object otherwise (so a
-// disallowed cross-origin caller can't read the body — the browser blocks it).
-export function corsHeaders(origin) {
-  if (!isAllowedOrigin(origin)) return {};
-  return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
+// Two tiers of trust (CodeRabbit, PR 85):
+//
+//   allowed    may READ unauthenticated responses (CORS as it always was)
+//   trusted    may additionally carry the session COOKIE — allowed AND
+//              https. That excludes http://localhost:5173, on purpose: the
+//              localhost entry ships in production, and with credentials it
+//              would let any local process that grabs port 5173 on a
+//              signed-in user's machine read and mutate their account. Dev
+//              of cookie-auth flows uses a Pages preview URL (https, in the
+//              allowlist) instead of raw localhost.
+export function isTrustedForCredentials(origin) {
+  return isAllowedOrigin(origin) && origin.startsWith('https://');
 }
 
-// Preflight: 204 + CORS for an allowed origin, 403 otherwise. We intentionally
-// do NOT send Access-Control-Allow-Credentials — the session travels in the
-// X-Admin-Token header, not a cookie, so no credentialed-CORS surface.
+// Response CORS headers for an allowed origin, empty object otherwise (so a
+// disallowed cross-origin caller can't read the body — the browser blocks it).
+//
+// Allow-Credentials arrived with P4b: auth sessions travel in an HttpOnly
+// cookie, and a credentialed response REQUIRES the exact origin echo this
+// module has always done (a wildcard would be rejected by the browser — and
+// is forbidden here anyway). It is granted only to the TRUSTED tier; the
+// CSRF gate for the cookie-authed routes (authRoutes.js) uses the same tier.
+export function corsHeaders(origin) {
+  if (!isAllowedOrigin(origin)) return {};
+  const headers = { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
+  if (isTrustedForCredentials(origin)) headers['Access-Control-Allow-Credentials'] = 'true';
+  return headers;
+}
+
+// Preflight: 204 + CORS for an allowed origin, 403 otherwise.
 export function handlePreflight(request) {
   const origin = request.headers.get('Origin');
   if (!isAllowedOrigin(origin)) return new Response(null, { status: 403 });
-  return new Response(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': origin,
-      'Access-Control-Allow-Methods': ALLOW_METHODS,
-      'Access-Control-Allow-Headers': ALLOW_HEADERS,
-      'Access-Control-Max-Age': MAX_AGE,
-      Vary: 'Origin',
-    },
-  });
+  const headers = {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': ALLOW_METHODS,
+    'Access-Control-Allow-Headers': ALLOW_HEADERS,
+    'Access-Control-Max-Age': MAX_AGE,
+    Vary: 'Origin',
+  };
+  if (isTrustedForCredentials(origin)) headers['Access-Control-Allow-Credentials'] = 'true';
+  return new Response(null, { status: 204, headers });
 }

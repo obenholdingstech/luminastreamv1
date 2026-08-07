@@ -91,6 +91,61 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
       return { historyId: id };
     },
 
+    // ── auth sessions (P4b) — the row is the session; DELETE is revocation ──
+
+    /** Store a session by its HASH — the raw token never touches a row. */
+    async createAuthSession({ tokenHash, userId, ttlSeconds }) {
+      const t = now();
+      await d1
+        .prepare(
+          'INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?3)',
+        )
+        .bind(tokenHash, userId, t, t + ttlSeconds)
+        .run();
+    },
+
+    /**
+     * Resolve a session: unexpired, user still active — one query, one
+     * failure path (an expired session, a deleted one, and a suspended user
+     * all resolve to null).
+     */
+    async findAuthSession(tokenHash) {
+      const row = await d1
+        .prepare(
+          'SELECT s.user_id, s.last_seen_at, u.display_name FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.status = ?3',
+        )
+        .bind(tokenHash, now(), 'active')
+        .first();
+      if (!row) return null;
+      return { userId: row.user_id, lastSeenAt: row.last_seen_at, displayName: row.display_name ?? null };
+    },
+
+    /** Coarse activity, throttled by the CALLER — this just writes. */
+    async touchAuthSession(tokenHash) {
+      await d1
+        .prepare('UPDATE auth_sessions SET last_seen_at = ?2 WHERE token_hash = ?1')
+        .bind(tokenHash, now())
+        .run();
+    },
+
+    /** Sign-out: revocation is deletion. Idempotent by nature. */
+    async deleteAuthSession(tokenHash) {
+      await d1.prepare('DELETE FROM auth_sessions WHERE token_hash = ?1').bind(tokenHash).run();
+    },
+
+    /** Opportunistic hygiene — called from sign-in, bounded by predicate. */
+    async deleteExpiredAuthSessions() {
+      await d1.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?1').bind(now()).run();
+    },
+
+    /** Rehash-on-signin: the fleet strengthens without a password reset. */
+    async updatePasswordHash(provider, subject, passwordHash) {
+      await d1
+        .prepare('UPDATE auth_identities SET password_hash = ?3 WHERE provider = ?1 AND subject = ?2')
+        .bind(provider, subject, passwordHash)
+        .run();
+    },
+
     /**
      * The session's end and its COGS record (vendor summary VERBATIM).
      * Idempotent by predicate: a retry can never overwrite a finalized
