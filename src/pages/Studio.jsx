@@ -5,6 +5,7 @@ import { ConnectionState, RoomEvent, Track } from 'livekit-client';
 import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
 
 import { AccountPanel } from '@/components/AccountPanel';
+import VoiceLibrary from '@/components/VoiceLibrary';
 import { SURFACE_URLS } from '@/lib/surface';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useAuth } from '@/hooks/useAuth';
@@ -182,6 +183,7 @@ export default function Studio() {
     requestAgentMode,
     agentConfig,
     requestAgentConfig,
+    refreshVoices,
   } = useLiveKitVoice(url, token);
 
   // ── access ────────────────────────────────────────────────────────────
@@ -1246,6 +1248,16 @@ export default function Studio() {
                 {voiceSel.rejection.reason}
               </span>
             )}
+          </div>
+        )}
+
+        {/* P4c-3: the signed-in user's clone library. Lives beside the voice
+            selector because a fresh clone lands IN that selector: on change
+            the agent re-lists its account voices and re-broadcasts, and the
+            policy signed into this user's grant admits the new clone. */}
+        {auth.status === 'signedIn' && (
+          <div className="w-full max-w-sm">
+            <VoiceLibrary onLibraryChanged={refreshVoices} />
           </div>
         )}
 
