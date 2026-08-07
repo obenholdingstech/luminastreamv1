@@ -16,10 +16,16 @@ export function createAutoStartLatch() {
   return {
     /**
      * Should the video leg start NOW? Latches on yes.
-     * @param {{ sessionId: string|null|undefined, connected: boolean, adminToken: string|null|undefined, videoPhase: string }} state
+     *
+     * Authority is the SESSION, not a token (fixed 7 Aug 2026 — the CEO's
+     * "voice worked, no avatar" bug): a server-allocated sessionId cannot
+     * exist unauthorized, and requiring adminToken here silently disarmed
+     * the video leg for every cookie-signed-in user while the ops-token
+     * probes stayed green.
+     * @param {{ sessionId: string|null|undefined, connected: boolean, videoPhase: string }} state
      */
-    shouldStart({ sessionId, connected, adminToken, videoPhase }) {
-      if (!sessionId || !connected || !adminToken) return false;
+    shouldStart({ sessionId, connected, videoPhase }) {
+      if (!sessionId || !connected) return false;
       if (firedFor === sessionId) return false; // once per session, ever
       if (videoPhase !== 'off') return false; // starting/live/stopping/error — leave it be
       firedFor = sessionId;

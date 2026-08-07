@@ -208,7 +208,11 @@ export async function readVideoBudget(adminToken, base = API_BASE) {
   if (!base) return null;
   try {
     const res = await fetch(`${base}/api/video/budget`, {
-      headers: { 'X-Admin-Token': adminToken },
+      // Header only when a token exists; the cookie (credentials) is the
+      // signed-in path's authority — an empty X-Admin-Token would neither
+      // authenticate nor fall through cleanly.
+      headers: adminToken ? { 'X-Admin-Token': adminToken } : {},
+      credentials: 'include',
       signal: deadline(),
     });
     const data = await res.json().catch(() => null);
