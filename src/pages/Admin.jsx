@@ -3,29 +3,27 @@
 // admin sees anything; a signed-out visitor, a signed-in ordinary user, or
 // any stranger typing the URL is walked back to the public web with nothing
 // learned — the page renders NOTHING until the verdict is in, so there is
-// no flash of admin chrome to screenshot.
-//
-// Security note, honest: this gate is UX. The real walls are server-side —
-// every admin-worthy endpoint checks the session's role at the Worker; this
-// page just declines to show a locked door to people without the key.
+// no flash of admin chrome to screenshot. The decision itself lives in
+// src/lib/adminGate.js (pure, tested); this component only renders and
+// navigates on its verdict.
 
 import { LogOut, ShieldCheck } from 'lucide-react';
 
 import { useAuth } from '@/hooks/useAuth';
+import { adminGate } from '@/lib/adminGate';
 import { SURFACE_URLS } from '@/lib/surface';
 import { useEffect } from 'react';
 
 export default function Admin() {
   const auth = useAuth();
-  const isAdmin = auth.status === 'signedIn' && auth.user?.role === 'admin';
+  const gate = adminGate(auth);
 
   useEffect(() => {
-    if (auth.status === 'checking') return;
-    if (!isAdmin) globalThis.location?.replace(SURFACE_URLS.landing);
-  }, [auth.status, isAdmin]);
+    if (gate.verdict === 'redirect') globalThis.location?.replace(gate.to);
+  }, [gate.verdict, gate.to]);
 
   // Nothing renders until the verdict — a non-admin never sees this surface.
-  if (!isAdmin) return null;
+  if (gate.verdict !== 'allow') return null;
 
   return (
     <div className="min-h-screen bg-[#08080F] text-white flex flex-col">
