@@ -8,7 +8,7 @@
 // the CEO's act alone. Until then every clone call answers 503
 // voice_vendor_unconfigured, which is the wall working, not an outage.
 
-// CEO mandate, 8 Aug 2026: five custom voices per user, enforced by the
+// CEO mandate, 7 Aug 2026, late: five custom voices per user, enforced by the
 // same atomic slot logic as the avatar cap — the count guard lives IN the
 // insert (db.addUserVoice), so concurrent clones cannot race past it and
 // spam the vendor's cloning endpoint. (The pre-vendor listUserVoices check

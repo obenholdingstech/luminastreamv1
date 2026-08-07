@@ -135,7 +135,7 @@ test('clone: success registers the vendor voice under the SESSION user', async (
   }
 });
 
-test('clone: the cap refuses the SIXTH before any vendor call — five custom voices per user (CEO, 8 Aug 2026)', async () => {
+test('clone: the cap refuses the SIXTH before any vendor call — five custom voices per user (CEO, 7 Aug 2026, late)', async () => {
   const vendor = stubVendor();
   try {
     const { cookie, env } = await userEnv({
@@ -304,7 +304,7 @@ test('clone: a compensation that FAILS over HTTP is logged as VOICE-ORPHAN — r
 
 test('the cap IS five — the CEO mandate is a pinned number, not a drifting constant', async () => {
   const { MAX_VOICES_PER_USER } = await import('../src/voiceRoutes.js');
-  assert.equal(MAX_VOICES_PER_USER, 5, 'five custom voices per user (CEO, 8 Aug 2026)');
+  assert.equal(MAX_VOICES_PER_USER, 5, 'five custom voices per user (CEO, 7 Aug 2026, late)');
 });
 
 test('config: voiceCloningEnabled reports key PRESENCE, never the key', async () => {

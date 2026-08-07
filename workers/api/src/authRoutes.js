@@ -256,7 +256,7 @@ export function createAuthRoutes(kit) {
           turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
           // Presence only, never the key: lets the studio say "cloning is
           // live" honestly, and lets ops verify a secret push landed
-          // without a signed-in session (P4c-3 went live 8 Aug 2026).
+          // without a signed-in session (P4c-3 went live 7 Aug 2026, late).
           voiceCloningEnabled: Boolean(env.ELEVENLABS_API_KEY),
         },
         { origin },
