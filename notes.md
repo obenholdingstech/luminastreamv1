@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (night) — voice library UI + P4c server arc complete
+
+- **#94 merged + deployed:** clone endpoints live behind the fail-closed wall — anonymous POST /api/me/voices answers 401 live (session wall first), and the 503 vendor wall awaits ELEVENLABS_API_KEY (hers).
+- **Voice library UI (this PR):** "my voices" panel beside the studio voice selector — upload sample → clone, list, delete; refusals shown in the server's terms ("not switched on yet" while the key is absent); a fresh clone triggers refresh_voices so it lands in the selector under the user's own signed policy.
+- **P4c state:** voices DONE end to end (pending only her key); avatars parked on the R2 token permission.
+
 ## 7 August 2026 (evening) — P4c-3: clone endpoints ship fail-closed
 
 - **#93 merged** (voice isolation; CodeRabbit's Critical revocation-race fixed: policy resolves before allocation, cookie-present-but-dead-session refuses — never 'all').
