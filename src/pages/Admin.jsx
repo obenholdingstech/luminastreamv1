@@ -12,11 +12,24 @@ import { LogOut, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { adminGate } from '@/lib/adminGate';
 import { SURFACE_URLS } from '@/lib/surface';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 export default function Admin() {
   const auth = useAuth();
   const gate = adminGate(auth);
+  // A rejected sign-out must be SAID: the session is still active, and a
+  // silent failure on an admin surface reads as signed out while the cookie
+  // lives on.
+  const [signOutError, setSignOutError] = useState('');
+
+  const onSignOut = async () => {
+    setSignOutError('');
+    try {
+      await auth.signOut();
+    } catch {
+      setSignOutError('sign-out failed — the session is still active; try again');
+    }
+  };
   // Narrowed once so the effect deps carry a plain string|null — `to` only
   // exists on the redirect verdict.
   const redirectTo = gate.verdict === 'redirect' ? gate.to : null;
@@ -36,13 +49,20 @@ export default function Admin() {
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/35">Stream</span>
           <span className="ml-2 text-[10px] tracking-[0.3em] uppercase text-[#F59E0B]">admin</span>
         </div>
-        <button
-          type="button"
-          onClick={auth.signOut}
-          className="flex items-center gap-1.5 rounded-full border border-[#475569] px-4 py-1.5 text-[10px] tracking-[0.14em] uppercase text-[#94A3B8] hover:border-[#A5B4FC] hover:text-[#E2E8F0] transition-colors"
-        >
-          <LogOut size={10} aria-hidden /> sign out
-        </button>
+        <div className="flex items-center gap-3">
+          {signOutError ? (
+            <span role="alert" className="text-[10px] text-[#FCA5A5]">
+              {signOutError}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="flex items-center gap-1.5 rounded-full border border-[#475569] px-4 py-1.5 text-[10px] tracking-[0.14em] uppercase text-[#94A3B8] hover:border-[#A5B4FC] hover:text-[#E2E8F0] transition-colors"
+          >
+            <LogOut size={10} aria-hidden /> sign out
+          </button>
+        </div>
       </header>
 
       <main className="flex-1 flex flex-col items-center justify-center px-6 text-center">
