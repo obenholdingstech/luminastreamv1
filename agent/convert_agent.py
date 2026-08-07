@@ -159,6 +159,52 @@ def load_credentials():
     return url, key, secret
 
 
+def voice_policy_from_metadata(metadata):
+    """Parse a participant's token-carried voice policy (P4c, 7 Aug 2026).
+
+    The Worker stamps every join token it mints: {"voicePolicy": "all"} for
+    admins and the ops path, {"voicePolicy": "own", "voices": [ids...]} for
+    ordinary users. The claim rides the token's signature, so the client can
+    no more edit it than extend its own expiry.
+
+    Absent or malformed metadata fails CLOSED to ("own", frozenset()) — a
+    token without a policy hears the premade set, never the account's clone
+    list. (Agent-to-agent identities never call this; they don't switch
+    voices.)
+
+    Returns ("all", None) or ("own", frozenset of vendor voice ids).
+    """
+    if metadata:
+        try:
+            data = json.loads(metadata)
+        except (TypeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            mode = data.get("voicePolicy")
+            if mode == "all":
+                return ("all", None)
+            if mode == "own":
+                voices = data.get("voices")
+                ids = (frozenset(v for v in voices if isinstance(v, str))
+                       if isinstance(voices, list) else frozenset())
+                return ("own", ids)
+    return ("own", frozenset())
+
+
+def voice_allowed(policy, voice):
+    """May this policy use this account voice (a dict from list_voices)?
+
+    'all' hears everything; 'own' hears the vendor's premade furniture plus
+    exactly the clone ids the Worker signed into the token. The category
+    check is deliberately == "premade": an unknown/missing category is a
+    clone-shaped stranger and stays hidden.
+    """
+    mode, ids = policy
+    if mode == "all":
+        return True
+    return voice.get("category") == "premade" or voice.get("voice_id") in ids
+
+
 def mint_token(key, secret, room, identity):
     return (
         api.AccessToken(key, secret)
@@ -342,9 +388,14 @@ class ConvertAgent:
             return
         if msg.get("type") == "set_config":
             log.info("set_config from %s: %s", who, msg.get("params"))
+            # P4c: the sender's token-carried policy travels WITH the request —
+            # enforcement keys on the signed claim of whoever asked, never on
+            # room-global state that another participant could have set.
+            policy = voice_policy_from_metadata(
+                packet.participant.metadata if packet.participant else None)
             # _spawn keeps every in-flight application alive — rapid successive
             # set_config messages must not drop a running task's only reference
-            self._spawn(self._apply_config(msg.get("params"), who))
+            self._spawn(self._apply_config(msg.get("params"), who, policy))
             return
         if msg.get("type") == "refresh_voices":
             log.info("refresh_voices from %s", who)
@@ -520,11 +571,16 @@ class ConvertAgent:
             snap["vad_hangover_ms"] = self.vad.hangover_ms
         return snap
 
-    async def _apply_config(self, params, who):
+    async def _apply_config(self, params, who, policy=("all", None)):
         """Clamp → apply (agent knobs in-process, RVC knobs mid-stream) →
         capture snapshot → broadcast applied truth. Never raises upward.
         The whole body holds _config_lock so overlapping applies stay FIFO
-        and every broadcast reflects the true final state of its apply."""
+        and every broadcast reflects the true final state of its apply.
+
+        `policy` is the requester's token-carried voice policy (P4c). The
+        wire path (_handle_data) ALWAYS passes it explicitly; the permissive
+        default exists only for direct internal/test callers, which carry no
+        user token to enforce against."""
         async with self._config_lock:
             applied, adjusted, rejected = knobs.clamp_params(params)
 
@@ -558,7 +614,7 @@ class ConvertAgent:
                         # model change → fresh continuity chain (v3 has no stitching)
                         self.tts.reset_continuity()
                     elif name == "voice":
-                        await self._switch_voice(value, reject)
+                        await self._switch_voice(value, reject, policy)
                     elif name == "request_continuity":
                         # stitching is unsupported on some models — same
                         # disable-with-reason contract as the voice settings
@@ -632,14 +688,18 @@ class ConvertAgent:
                                    adjusted=adjusted or None, rejected=rejected or None)
             await self._publish_config(adjusted=adjusted, rejected=rejected)
 
-    async def _switch_voice(self, voice_id, reject):
+    async def _switch_voice(self, voice_id, reject, policy=("all", None)):
         """Apply a voice selection (ticket 6). Validates against the account
-        list, loads the NEW voice's own default settings so the applied-truth
-        broadcast shows what is in effect for it (never stale sliders), and
-        resets request continuity so delivery doesn't stitch across voices."""
+        list AND the requester's token-carried policy (P4c), loads the NEW
+        voice's own default settings so the applied-truth broadcast shows
+        what is in effect for it (never stale sliders), and resets request
+        continuity so delivery doesn't stitch across voices."""
         match = next((v for v in self.tts.voices if v["voice_id"] == voice_id), None)
-        if match is None:
-            reject("voice", "unknown voice_id (not on this account)")
+        if match is None or not voice_allowed(policy, match):
+            # ONE message for both unknown and disallowed: a rejection that
+            # distinguished them would be an existence oracle for other
+            # users' clones.
+            reject("voice", "unknown voice_id (not available for this session)")
             return
         new_settings = None
         try:
@@ -660,6 +720,23 @@ class ConvertAgent:
                  len(self.tts.voices), who)
         await self._publish_config()
 
+    def _room_voice_policy(self):
+        """The policy governing the shared broadcast (P4c). The broadcast is
+        room-wide, and the product runs one user per room — so if ANY
+        non-agent participant carries an 'own' policy, the whole broadcast
+        narrows to it (strictest present wins; an ops probe sharing the room
+        with a user must not widen the user's list). An empty room keeps
+        'all': nothing user-facing renders from it, and the connect handler
+        re-broadcasts the moment someone joins."""
+        participants = getattr(self.room, "remote_participants", None) or {}
+        for p in participants.values():
+            if p.identity.startswith("echo-"):
+                continue
+            policy = voice_policy_from_metadata(getattr(p, "metadata", None))
+            if policy[0] == "own":
+                return policy
+        return ("all", None)
+
     async def _publish_config(self, adjusted=None, rejected=None):
         """Broadcast the applied config + registry metadata (defaults/ranges)
         so the UI renders entirely from agent truth."""
@@ -669,11 +746,16 @@ class ConvertAgent:
         # old set. The console renders entirely from this — no hardcoded engine
         # assumptions in the frontend. `metadata` carries per-knob kind, group,
         # timing and per-model support so the UI needs nothing baked in. The
-        # voice knob's choices are the account's live voices, injected here.
+        # voice knob's choices are the account's live voices, injected here —
+        # filtered to the room's voice policy (P4c): the dropdown a user sees
+        # IS this list, so isolation must hold here, not just at the switch.
         voice_choices = None
         if self.tts is not None:
+            room_policy = self._room_voice_policy()
             voice_choices = [{"id": v["voice_id"], "name": v["name"],
-                              "category": v.get("category")} for v in self.tts.voices]
+                              "category": v.get("category")}
+                             for v in self.tts.voices
+                             if voice_allowed(room_policy, v)]
         spend = self.tts.governor.snapshot() if self.tts is not None else None
         payload = {
             "type": "agent_config",

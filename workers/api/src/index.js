@@ -22,6 +22,7 @@ import { SpendLedger } from './spendLedger.js';
 import { createAuthRoutes } from './authRoutes.js';
 import { createDb } from './db.js';
 import { mayStartSession, resolveUserSession } from './userSession.js';
+import { createVoiceRoutes } from './voiceRoutes.js';
 
 const VERSION = '0.1.0';
 
@@ -125,6 +126,17 @@ const authRoutes = createAuthRoutes({
   createDb,
 });
 
+// P4c: per-user voices — same injection discipline, plus the one resolver
+// that turns a cookie into a userId (the isolation key).
+const voiceRoutes = createVoiceRoutes({
+  json,
+  clientIp,
+  checkRateLimit,
+  rateLimitRefusal,
+  createDb,
+  resolveUserSession,
+});
+
 async function handleVerify(request, env, origin) {
   // Rate-limit BEFORE touching the password path — this endpoint is a password
   // oracle, so throttle by source IP hard (5 / 60s per colo, see wrangler.jsonc).
@@ -177,7 +189,13 @@ async function handleToken(request, env, origin) {
   }
 
   try {
-    const { token, exp } = await mintLiveKitToken(env, { room, identity });
+    // Admin-token gated: the ops/drill path hears everything, and says so in
+    // the same signed claim the agent enforces for everyone (P4c).
+    const { token, exp } = await mintLiveKitToken(env, {
+      room,
+      identity,
+      metadata: JSON.stringify({ voicePolicy: 'all' }),
+    });
     return json(
       { ok: true, token, url: env.LIVEKIT_URL ?? null, room, identity, expiresAt: exp },
       { origin },
@@ -311,10 +329,27 @@ async function handleSessionCreate(request, env, origin) {
   const expiresAt = Math.floor(session.expiresAt / 1000);
   const ttlSeconds = Math.max(1, expiresAt - Math.floor(Date.now() / 1000));
 
+  // P4c: the voice policy rides the grant itself (CEO isolation mandate).
+  // The gate already admitted this caller; resolving the user AGAIN here is
+  // one D1 read that buys the token its policy claim: admins (and the
+  // ops-token path, which has no user) hear every account voice, ordinary
+  // users hear the premade set plus their OWN clones — enforced by the
+  // agent against this signed claim, not against anything the client sends.
+  const policyUser = await resolveUserSession(request, env, createDb);
+  let voicePolicy = JSON.stringify({ voicePolicy: 'all' });
+  if (policyUser && policyUser.role !== 'admin') {
+    const clones = await policyUser.db.listUserVoices(policyUser.userId);
+    voicePolicy = JSON.stringify({
+      voicePolicy: 'own',
+      voices: clones.map((v) => v.vendor_voice_id),
+    });
+  }
+
   try {
     const { token } = await mintLiveKitToken(env, {
       room: session.room,
       identity: session.identity,
+      metadata: voicePolicy,
       ttlSeconds,
     });
     return json(
@@ -1086,6 +1121,14 @@ export default {
         return authRoutes.putProfile(request, env, origin);
       }
       return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+    }
+
+    // ── P4c: the caller's voices. Cookie-only, scoped by the session. ──
+    if (pathname === '/api/me/voices') {
+      if (request.method !== 'GET') {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return voiceRoutes.list(request, env, origin);
     }
 
     if (pathname === '/api/livekit/token') {

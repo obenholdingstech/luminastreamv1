@@ -24,6 +24,13 @@ export function createFakeD1({ respond = () => null } = {}) {
         executed.push({ sql, binds, via: 'run' });
         return { success: true };
       },
+      // D1's multi-row read. The responder may return an array (the rows),
+      // a single row (wrapped), or null (no rows) — same contract as first().
+      async all() {
+        executed.push({ sql, binds, via: 'all' });
+        const rows = respond(sql, binds);
+        return { results: Array.isArray(rows) ? rows : rows ? [rows] : [] };
+      },
       // batch() collects the statement without executing; the fake's batch
       // marks them so atomicity expectations are assertable.
       _take(via) {
