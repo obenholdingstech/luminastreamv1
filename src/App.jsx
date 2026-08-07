@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 
 import ScrollToTop from './components/ScrollToTop';
 import Account from './pages/Account';
+import Admin from './pages/Admin';
 import Landing from './pages/Landing';
 import LiveKitTest from './pages/LiveKitTest';
 import PageNotFound from './pages/PageNotFound';
@@ -28,6 +29,7 @@ function App() {
 
   if (surface === 'landing') return <Landing />;
   if (surface === 'account') return <Account />;
+  if (surface === 'admin') return <Admin />;
 
   return (
     <Router>
