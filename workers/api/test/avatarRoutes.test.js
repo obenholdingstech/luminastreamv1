@@ -318,34 +318,45 @@ test('avatars: a wrong method on the select route is 405, like every other route
 });
 
 test('avatars: bytes surviving a FAILED R2 delete are unreachable — the row is the authority', async () => {
-  // Step 1: the delete — R2 refuses, the row still dies, the selection
-  // still clears, and the caller still gets 200 (the slot is free).
+  // ONE stateful fixture carries delete → fetch → select, so these
+  // assertions can only pass if remove() actually removed the row
+  // (CodeRabbit round 3: a hand-built empty fixture would pass even if the
+  // row delete were a no-op). The rows array is LIVE: the respond closure
+  // serves it, and the runMeta hook mutates it when the DELETE executes.
   const id = 'e'.repeat(32);
   const key = `avatars/u1/${id}`;
+  const rows = [{ id, name: 'ghost', content_type: 'image/png', size: 3, created_at: 1 }];
   const r2 = createFakeR2();
   await r2.put(key, new Uint8Array([9, 9, 9]));
   r2.delete = async () => {
     throw new Error('r2 refused the delete');
   };
   const { cookie, d1 } = await userSession('u1', {
-    avatarRows: [{ id, name: 'ghost', content_type: 'image/png', size: 3, created_at: 1 }],
+    avatarRows: rows,
+    runMeta: (sql, binds) => {
+      if (/DELETE FROM user_avatars/.test(sql) && binds[1] === 'u1') {
+        const i = rows.findIndex((r) => r.id === binds[0]);
+        if (i >= 0) rows.splice(i, 1);
+      }
+      return null;
+    },
   });
-  const del = await call(req(`/api/me/avatars/${id}`, { method: 'DELETE', cookie }), baseEnv(d1, r2));
+  const env = baseEnv(d1, r2);
+
+  const del = await call(req(`/api/me/avatars/${id}`, { method: 'DELETE', cookie }), env);
   assert.equal(del.status, 200);
-  assert.ok(d1.executed.some((e) => /DELETE FROM user_avatars/.test(e.sql)), 'the row died first');
+  assert.equal(rows.length, 0, 'the row really died — not just a statement in a log');
   assert.ok(d1.executed.some((e) => /SET avatar_key = NULL/.test(e.sql)),
     'the selection cleared DESPITE the failed byte delete');
   assert.ok(r2._objects.has(key), 'the bytes really did survive — the hazard is real');
 
-  // Step 2: the post-failure state — row gone, bytes present. Every read
-  // path must answer 404: D1 speaks before R2.
-  const { cookie: after, d1: d1After } = await userSession('u1', { avatarRows: [] });
-  const envAfter = baseEnv(d1After, r2);
-  const get = await call(req(`/api/me/avatars/${id}`, { cookie: after }), envAfter);
+  // Same fixture, post-failure state: row gone, bytes present. Every read
+  // path must answer 404 — D1 speaks before R2.
+  const get = await call(req(`/api/me/avatars/${id}`, { cookie }), env);
   assert.equal(get.status, 404, 'fetch: the orphaned bytes never serve');
   const sel = await call(
-    req(`/api/me/avatars/${id}/select`, { method: 'POST', cookie: after, body: {} }),
-    envAfter,
+    req(`/api/me/avatars/${id}/select`, { method: 'POST', cookie, body: {} }),
+    env,
   );
   assert.equal(sel.status, 404, 'select: an orphan cannot become the identity');
 });
