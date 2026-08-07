@@ -241,8 +241,8 @@ export function createVideoNegotiator({
     },
 
     async start(
-      /** @type {{prompt?: string, requestedSeconds?: number, constraints?: any, imageData?: string}} */
-      { prompt, requestedSeconds, constraints, imageData } = {},
+      /** @type {{prompt?: string, requestedSeconds?: number, constraints?: any, imageData?: string, avatarId?: string}} */
+      { prompt, requestedSeconds, constraints, imageData, avatarId } = {},
     ) {
       if (phase !== NEGOTIATION.idle && phase !== NEGOTIATION.stopped) return null;
       const mine = ++generation;
@@ -330,6 +330,7 @@ export function createVideoNegotiator({
           requestedSeconds,
           prompt,
           imageData,
+          avatarId,
         });
         // Recorded BEFORE the abort check: a session that exists must be
         // releasable even if the user gave up while it was being created.

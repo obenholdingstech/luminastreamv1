@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ConnectionState, RoomEvent, Track } from 'livekit-client';
 import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
 
 import { AccountPanel } from '@/components/AccountPanel';
+import AvatarLibrary from '@/components/AvatarLibrary';
 import VoiceLibrary from '@/components/VoiceLibrary';
+import { uploadAvatar } from '@/lib/avatarClient';
+import { createAvatarSelection } from '@/lib/avatarSelection';
 import { SURFACE_URLS } from '@/lib/surface';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useAuth } from '@/hooks/useAuth';
@@ -367,6 +370,19 @@ export default function Studio() {
   // reconnecting, so neither costs a new reservation.
   const [avatar, setAvatar] = useState(null); // { dataUrl, name } | null
   const [avatarError, setAvatarError] = useState('');
+  // P4c: the stored library's selected identity, by id. Rides the start as
+  // `avatarId` when no fresh local pick outranks it; the server resolves it
+  // inside this user's own namespace.
+  const [storedAvatarId, setStoredAvatarId] = useState(null);
+  const [avatarLibRevision, setAvatarLibRevision] = useState(0);
+  // Sequences every act of avatar INTENT (pick, stored selection, clear) so
+  // an upload that finishes late can never win the selection back from a
+  // newer choice — the pure module carries the rule and its test.
+  const [avatarSelSeq] = useState(() => createAvatarSelection());
+  // A ref, because onAvatarPicked's FileReader callback closes over one
+  // render — the persistence decision must read auth as it IS when the file
+  // load settles. Synced where `auth` is declared (below); starts closed.
+  const authStatusRef = useRef('checking');
   // FileReader is asynchronous: between the pick and onload there is a
   // window where the UI promises an avatar it does not yet hold. The video
   // auto-start waits for this flag — without it, a Start pressed inside
@@ -392,6 +408,7 @@ export default function Studio() {
         setAvatarError('keep the image under 3.5 MB');
         return;
       }
+      const pickRev = avatarSelSeq.begin();
       const reader = new FileReader();
       reader.onload = async () => {
         const dataUrl = String(reader.result ?? '');
@@ -409,6 +426,25 @@ export default function Studio() {
             );
           }
         }
+        // P4c: a signed-in pick also lands in the library (persist + select
+        // server-side). The session flow above never waits on this — a
+        // library that does not answer costs persistence, not the stream —
+        // but the failure is SAID, not swallowed.
+        if (authStatusRef.current === 'signedIn') {
+          const saved = await uploadAvatar({
+            imageData: dataUrl,
+            name: file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'avatar',
+          });
+          if (saved.ok) {
+            // The upload persisted either way; the SELECTION applies only if
+            // no newer intent (another pick, a stored selection, a clear)
+            // superseded this one while the bytes were in flight.
+            if (avatarSelSeq.isCurrent(pickRev)) setStoredAvatarId(saved.id ?? null);
+            setAvatarLibRevision((n) => n + 1);
+          } else {
+            setAvatarError(`saved for this session only — ${saved.message}`);
+          }
+        }
       };
       // A failed read MUST clear the flag, or the video leg waits forever
       // for an identity that is never coming.
@@ -419,11 +455,13 @@ export default function Studio() {
       setAvatarReading(true);
       reader.readAsDataURL(file);
     },
-    [video],
+    [video, avatarSelSeq],
   );
 
   const clearAvatar = useCallback(() => {
+    avatarSelSeq.begin();
     setAvatar(null);
+    setStoredAvatarId(null);
     // There is no vendor call to REMOVE a reference mid-session, so during a
     // live stream "clear" can only be true of the next session. Say so.
     setAvatarError(
@@ -431,7 +469,29 @@ export default function Studio() {
         ? 'cleared for the next session — the live stream keeps its current identity'
         : '',
     );
-  }, [video.phase]);
+  }, [video.phase, avatarSelSeq]);
+
+  // P4c: a library selection replaces any fresh local pick (the most recent
+  // action wins), applies live BY REFERENCE when the lens runs — the server
+  // resolves the id inside this user's namespace, no bytes re-cross the
+  // wire — and rides the next start otherwise. A refused live swap is SAID.
+  const onStoredAvatarSelected = useCallback(
+    async (id) => {
+      avatarSelSeq.begin();
+      setStoredAvatarId(id);
+      setAvatar(null);
+      setAvatarError('');
+      if (video.phase === VIDEO_PHASE.live) {
+        const ok = await video.updateImage({ avatarId: id });
+        if (!ok) {
+          setAvatarError(
+            'the live stream kept its previous look — this avatar will apply at the next start',
+          );
+        }
+      }
+    },
+    [video, avatarSelSeq],
+  );
 
   const applyPrompt = useCallback(async () => {
     const prompt = livePrompt.trim();
@@ -510,11 +570,18 @@ export default function Studio() {
       })
     ) {
       video.start({
-        ...(avatar ? { imageData: avatar.dataUrl } : {}),
+        // A fresh local pick is the most explicit intent and wins; a stored
+        // library selection rides by REFERENCE (P4c — the Worker resolves
+        // the id inside this user's own namespace, no bytes re-uploaded).
+        ...(avatar
+          ? { imageData: avatar.dataUrl }
+          : storedAvatarId
+            ? { avatarId: storedAvatarId }
+            : {}),
         ...(livePrompt.trim() ? { prompt: livePrompt.trim() } : {}),
       });
     }
-  }, [allocation, isConnected, video, autoLatch, avatar, livePrompt, avatarReading]);
+  }, [allocation, isConnected, video, autoLatch, avatar, storedAvatarId, livePrompt, avatarReading]);
 
   const cinematic = video.phase === VIDEO_PHASE.live && Boolean(video.stream);
   // Which backdrop layer owns the stage — the ordering policy lives in
@@ -689,6 +756,11 @@ export default function Studio() {
 
   // ── the account (P4b-ui): the lens remembers who you are ─────────────
   const auth = useAuth();
+  // Layout effect, not a render-phase write: the ref must be committed
+  // before any FileReader.onload can observe it (CodeRabbit, PR 97).
+  useLayoutEffect(() => {
+    authStatusRef.current = auth.status;
+  }, [auth.status]);
 
   // STUDIO LOCKDOWN (realignment, CEO 7 Aug 2026): on the canonical studio
   // hostname, a signed-out visitor is walked to the account surface — the
@@ -1374,7 +1446,7 @@ export default function Studio() {
                 )}
                 {avatar ? 'Avatar set' : 'Avatar'}
               </button>
-              {avatar && (
+              {(avatar || storedAvatarId) && (
                 <button
                   type="button"
                   onClick={clearAvatar}
@@ -1426,6 +1498,16 @@ export default function Studio() {
               <p role="alert" className="text-[10px] text-[#F59E0B]">
                 {avatarError}
               </p>
+            )}
+
+            {/* P4c: the signed-in user's stored identities. Uploads above
+                persist here automatically; clicking one selects it
+                server-side, applies it live when the lens runs, and rides
+                the next start by reference otherwise. */}
+            {auth.status === 'signedIn' && (
+              <div className="w-full">
+                <AvatarLibrary revision={avatarLibRevision} onSelected={onStoredAvatarSelected} />
+              </div>
             )}
 
             {video.budget && (

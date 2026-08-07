@@ -67,7 +67,7 @@ function describeRefusal(status, data) {
  * session already has a server-side owner that can kill it.
  *
  * @param {string} adminToken
- * @param {{ sdpOffer: string, requestedSeconds?: number, prompt?: string, imageData?: string }} args
+ * @param {{ sdpOffer: string, requestedSeconds?: number, prompt?: string, imageData?: string, avatarId?: string }} args
  * @param {string} [base]
  * @param {AbortSignal|null} [signal]
  */
@@ -85,6 +85,11 @@ export async function createVideoSession(adminToken, args, base = API_BASE, sign
         ...(args.requestedSeconds ? { requestedSeconds: args.requestedSeconds } : {}),
         ...(args.prompt ? { prompt: args.prompt } : {}),
         ...(args.imageData ? { imageData: args.imageData } : {}),
+        // P4c: a stored avatar rides by REFERENCE — the Worker resolves the
+        // id inside the caller's own namespace, so no bytes cross the wire
+        // twice and no other user's id can resolve at all. Inline imageData
+        // wins server-side when both are present.
+        ...(args.avatarId ? { avatarId: args.avatarId } : {}),
       },
     }));
   } catch (err) {
@@ -148,12 +153,21 @@ export async function setVideoPrompt(adminToken, session, prompt, base = API_BAS
 
 /**
  * Swap the reference avatar mid-session — Decart animates the new identity
- * without reconnecting. `imageData` is a data URL or bare base64 (JPEG/PNG/
- * WebP); the Worker normalizes and refuses anything oversized. Returns false
- * on refusal, like the prompt — losing an identity swap is not a teardown.
+ * without reconnecting. `image` is a data URL / bare base64 string (the
+ * Worker normalizes and refuses anything oversized) OR `{ avatarId }` for a
+ * stored avatar, resolved server-side inside the caller's own namespace
+ * (P4c). Returns false on refusal, like the prompt — losing an identity
+ * swap is not a teardown.
  */
-export async function setVideoImage(adminToken, session, imageData, prompt, base = API_BASE) {
+export async function setVideoImage(adminToken, session, image, prompt, base = API_BASE) {
   if (!base || !session?.sessionId) return false;
+  const ref =
+    typeof image === 'string' && image
+      ? { imageData: image }
+      : image?.avatarId
+        ? { avatarId: image.avatarId }
+        : null;
+  if (!ref) return false;
   try {
     const { status } = await postJson(
       `${base}/api/video/session/${encodeURIComponent(session.sessionId)}/image`,
@@ -162,7 +176,7 @@ export async function setVideoImage(adminToken, session, imageData, prompt, base
         signal: deadline(),
         body: {
           controlToken: session.controlToken,
-          imageData,
+          ...ref,
           ...(prompt ? { prompt } : {}),
         },
       },
