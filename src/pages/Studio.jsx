@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ConnectionState, RoomEvent, Track } from 'livekit-client';
@@ -8,6 +8,7 @@ import { AccountPanel } from '@/components/AccountPanel';
 import AvatarLibrary from '@/components/AvatarLibrary';
 import VoiceLibrary from '@/components/VoiceLibrary';
 import { uploadAvatar } from '@/lib/avatarClient';
+import { createAvatarSelection } from '@/lib/avatarSelection';
 import { SURFACE_URLS } from '@/lib/surface';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useAuth } from '@/hooks/useAuth';
@@ -374,6 +375,10 @@ export default function Studio() {
   // inside this user's own namespace.
   const [storedAvatarId, setStoredAvatarId] = useState(null);
   const [avatarLibRevision, setAvatarLibRevision] = useState(0);
+  // Sequences every act of avatar INTENT (pick, stored selection, clear) so
+  // an upload that finishes late can never win the selection back from a
+  // newer choice — the pure module carries the rule and its test.
+  const [avatarSelSeq] = useState(() => createAvatarSelection());
   // A ref, because onAvatarPicked's FileReader callback closes over one
   // render — the persistence decision must read auth as it IS when the file
   // load settles. Synced where `auth` is declared (below); starts closed.
@@ -403,6 +408,7 @@ export default function Studio() {
         setAvatarError('keep the image under 3.5 MB');
         return;
       }
+      const pickRev = avatarSelSeq.begin();
       const reader = new FileReader();
       reader.onload = async () => {
         const dataUrl = String(reader.result ?? '');
@@ -430,7 +436,10 @@ export default function Studio() {
             name: file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'avatar',
           });
           if (saved.ok) {
-            setStoredAvatarId(saved.id ?? null);
+            // The upload persisted either way; the SELECTION applies only if
+            // no newer intent (another pick, a stored selection, a clear)
+            // superseded this one while the bytes were in flight.
+            if (avatarSelSeq.isCurrent(pickRev)) setStoredAvatarId(saved.id ?? null);
             setAvatarLibRevision((n) => n + 1);
           } else {
             setAvatarError(`saved for this session only — ${saved.message}`);
@@ -446,11 +455,13 @@ export default function Studio() {
       setAvatarReading(true);
       reader.readAsDataURL(file);
     },
-    [video],
+    [video, avatarSelSeq],
   );
 
   const clearAvatar = useCallback(() => {
+    avatarSelSeq.begin();
     setAvatar(null);
+    setStoredAvatarId(null);
     // There is no vendor call to REMOVE a reference mid-session, so during a
     // live stream "clear" can only be true of the next session. Say so.
     setAvatarError(
@@ -458,7 +469,7 @@ export default function Studio() {
         ? 'cleared for the next session — the live stream keeps its current identity'
         : '',
     );
-  }, [video.phase]);
+  }, [video.phase, avatarSelSeq]);
 
   // P4c: a library selection replaces any fresh local pick (the most recent
   // action wins), applies live BY REFERENCE when the lens runs — the server
@@ -466,6 +477,7 @@ export default function Studio() {
   // wire — and rides the next start otherwise. A refused live swap is SAID.
   const onStoredAvatarSelected = useCallback(
     async (id) => {
+      avatarSelSeq.begin();
       setStoredAvatarId(id);
       setAvatar(null);
       setAvatarError('');
@@ -478,7 +490,7 @@ export default function Studio() {
         }
       }
     },
-    [video],
+    [video, avatarSelSeq],
   );
 
   const applyPrompt = useCallback(async () => {
@@ -744,7 +756,11 @@ export default function Studio() {
 
   // ── the account (P4b-ui): the lens remembers who you are ─────────────
   const auth = useAuth();
-  authStatusRef.current = auth.status;
+  // Layout effect, not a render-phase write: the ref must be committed
+  // before any FileReader.onload can observe it (CodeRabbit, PR 97).
+  useLayoutEffect(() => {
+    authStatusRef.current = auth.status;
+  }, [auth.status]);
 
   // STUDIO LOCKDOWN (realignment, CEO 7 Aug 2026): on the canonical studio
   // hostname, a signed-out visitor is walked to the account surface — the

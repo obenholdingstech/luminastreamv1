@@ -38,8 +38,18 @@ test('every call is credentialed — the cookie IS the identity', async () => {
   }
 });
 
-test('a malformed ok list (avatars not an array) is a FAILED list, never a crash', async () => {
-  for (const avatars of [undefined, null, 'nope', { 0: 'x' }]) {
+test('a malformed ok list (avatars not an array, or records that are not records) is a FAILED list, never a crash', async () => {
+  for (const avatars of [
+    undefined,
+    null,
+    'nope',
+    { 0: 'x' },
+    [null],
+    [{ name: 'no id', selected: true }],
+    [{ id: 42, name: 'numeric id', selected: true }],
+    [{ id: '', name: 'empty id', selected: true }],
+    [{ id: 'ok-1', name: 'x', selected: true }, null],
+  ]) {
     const s = stub(200, { ok: true, avatars });
     try {
       assert.equal(await listAvatars(BASE), null, JSON.stringify(avatars));
@@ -59,6 +69,18 @@ test('an empty base is same-origin; only a MISSING base refuses', async () => {
     s.restore();
   }
   assert.equal(await listAvatars(null), null);
+});
+
+test('upload success requires a REAL id — a truthy non-string never becomes the selection', async () => {
+  for (const id of [undefined, null, 42, '', {}]) {
+    const s = stub(200, { ok: true, id });
+    try {
+      const res = await uploadAvatar({ imageData: 'AAAA' }, BASE);
+      assert.equal(res.ok, false, JSON.stringify(id));
+    } finally {
+      s.restore();
+    }
+  }
 });
 
 test('refusals map to prose; unknown codes stay generic; the fail-closed wall says WALL', async () => {

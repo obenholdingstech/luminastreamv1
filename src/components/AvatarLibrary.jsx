@@ -149,7 +149,10 @@ export default function AvatarLibrary({ onSelected, revision = 0 }) {
                 disabled={busy}
                 onClick={() => onDelete(a.id)}
                 title={`delete ${a.name}`}
-                className="absolute -right-1.5 -top-1.5 hidden rounded-full bg-[#0B0B14] p-0.5 text-[#64748B] hover:text-[#FCA5A5] group-hover:block disabled:opacity-50"
+                // Always rendered and focusable — touch users cannot hover
+                // and keyboard users cannot focus a hidden control
+                // (CodeRabbit, PR 97); hover/focus only raises emphasis.
+                className="absolute -right-1.5 -top-1.5 rounded-full bg-[#0B0B14] p-0.5 text-[#3E4A5F] hover:text-[#FCA5A5] focus-visible:text-[#FCA5A5] group-hover:text-[#64748B] disabled:opacity-50"
               >
                 <Trash2 size={10} aria-hidden />
               </button>

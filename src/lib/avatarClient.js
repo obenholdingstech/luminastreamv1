@@ -47,10 +47,24 @@ function refusal(res) {
   return MESSAGES[res?.data?.error] ?? 'that did not work — try again';
 }
 
+/** Every record the panel renders must actually be one — a 200 carrying
+ * `[null]` or an id-less object is a FAILED list, never a render crash. */
+function isAvatarRecord(a) {
+  return (
+    a !== null &&
+    typeof a === 'object' &&
+    typeof a.id === 'string' &&
+    a.id.length > 0 &&
+    typeof a.name === 'string' &&
+    typeof a.selected === 'boolean'
+  );
+}
+
 /** @returns {Promise<Array<{id:string, name:string, size:number, selected:boolean}>|null>} null = FAILED list */
 export async function listAvatars(base = API_BASE) {
   const res = await jsonFetch('/api/me/avatars', {}, base);
   if (res?.status !== 200 || !res.data?.ok || !Array.isArray(res.data.avatars)) return null;
+  if (!res.data.avatars.every(isAvatarRecord)) return null;
   return res.data.avatars;
 }
 
@@ -60,7 +74,11 @@ export async function listAvatars(base = API_BASE) {
  */
 export async function uploadAvatar(args, base = API_BASE) {
   const res = await jsonFetch('/api/me/avatars', { method: 'POST', body: args }, base);
-  if (res?.status === 200 && res.data?.ok) return { ok: true, id: res.data.id };
+  // Success requires a REAL id — a truthy non-string must not become the
+  // selected identifier a session later starts with.
+  if (res?.status === 200 && res.data?.ok && typeof res.data.id === 'string' && res.data.id) {
+    return { ok: true, id: res.data.id };
+  }
   return { ok: false, message: refusal(res) };
 }
 
