@@ -113,9 +113,10 @@ export function refundAtSettle(pinned, grantedUnits, usedUnits) {
     throw new RateTableError('grantedUnits must be a non-negative finite number');
   }
   // usedUnits comes from a vendor summary — negative clamps (below), but
-  // NaN/strings are a malformed summary and must refuse, not coerce.
-  if (typeof usedUnits !== 'number' || Number.isNaN(usedUnits)) {
-    throw new RateTableError('usedUnits must be a number');
+  // NaN, ±Infinity, and strings are a malformed summary and must refuse,
+  // not coerce: -Infinity would grant a FULL refund through the clamp.
+  if (typeof usedUnits !== 'number' || !Number.isFinite(usedUnits)) {
+    throw new RateTableError('usedUnits must be a finite number');
   }
   const unused = Math.max(0, grantedUnits - Math.max(0, usedUnits));
   const refund = Math.floor(unused * pinned.rateCentsPerUnit);

@@ -90,6 +90,8 @@ test('money boundaries: unsafe integers, NaN, strings, and frozen meters all ref
   assert.throws(() => refundAtSettle(pinned, '10', 1), RateTableError);
   assert.throws(() => refundAtSettle(pinned, 10, NaN), RateTableError);
   assert.throws(() => refundAtSettle(pinned, 10, '1'), RateTableError);
+  assert.throws(() => refundAtSettle(pinned, 10, Infinity), RateTableError, 'Infinity usage is malformed, not zero-refund');
+  assert.throws(() => refundAtSettle(pinned, 10, -Infinity), RateTableError, '-Infinity must not grant a full refund');
   assert.throws(() => refundAtSettle(pinned, Infinity, 1), RateTableError);
   assert.throws(() => refundAtSettle({ rateCentsPerUnit: Number.MAX_SAFE_INTEGER }, Number.MAX_SAFE_INTEGER, 0), RateTableError, 'unsafe refund');
   // The parsed table is deeply immutable — a mutated rate would bypass the
