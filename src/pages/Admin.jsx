@@ -17,10 +17,13 @@ import { useEffect } from 'react';
 export default function Admin() {
   const auth = useAuth();
   const gate = adminGate(auth);
+  // Narrowed once so the effect deps carry a plain string|null — `to` only
+  // exists on the redirect verdict.
+  const redirectTo = gate.verdict === 'redirect' ? gate.to : null;
 
   useEffect(() => {
-    if (gate.verdict === 'redirect') globalThis.location?.replace(gate.to);
-  }, [gate.verdict, gate.to]);
+    if (redirectTo) globalThis.location?.replace(redirectTo);
+  }, [redirectTo]);
 
   // Nothing renders until the verdict — a non-admin never sees this surface.
   if (gate.verdict !== 'allow') return null;
