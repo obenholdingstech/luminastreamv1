@@ -1446,7 +1446,7 @@ export default function Studio() {
                 )}
                 {avatar ? 'Avatar set' : 'Avatar'}
               </button>
-              {avatar && (
+              {(avatar || storedAvatarId) && (
                 <button
                   type="button"
                   onClick={clearAvatar}
