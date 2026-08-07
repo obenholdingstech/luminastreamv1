@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (night) — P5 stones 1+2 merged
+
+- **#98:** voice cap 5 (was already atomic — the pattern's birthplace), value pinned by test; config voiceCloningEnabled added — **reads FALSE live: CEO must pull + re-run put-worker-secrets.sh production.**
+- **#99 + #100:** rate table (margin floor unrepresentable, safe-integer money, pin semantics) wired into the ledger — reserve pins, settle refunds at the pin, deductedCents in every audit row. 1:1 dev table = zero behavior change; 249 tests.
+- **Next:** wallets (P4-keyed balances) → tiers → purchase flow (CEO onboarding).
+
 ## 7 August 2026 (late) — P4c closed, P5 opens with the rate table
 
 - **#98 merged + deployed:** voice cap 5, pinned by test; /api/auth/config gained voiceCloningEnabled.
