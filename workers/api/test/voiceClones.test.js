@@ -252,3 +252,50 @@ test('clone: a cap race lost at the DATABASE deletes the vendor voice before the
     vendor.restore();
   }
 });
+
+test('clone: the DATABASE throwing after vendor create still compensates — no orphan, a 502', async () => {
+  // addUserVoice rejecting (D1 outage, or the UNIQUE constraint's loud
+  // throw) is not the cap path — before the round-2 fix it escaped the
+  // handler with the vendor voice orphaned.
+  const vendor = stubVendor();
+  try {
+    const { cookie, env } = await userEnv({
+      runMeta: (sql) => {
+        if (/SELECT COUNT\(\*\) FROM user_voices/.test(sql)) throw new Error('d1 exploded');
+        return null;
+      },
+    });
+    const res = await worker.fetch(
+      req('/api/me/voices', { method: 'POST', cookie, body: { sampleData: SAMPLE_B64 } }),
+      env,
+    );
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).error, 'voice_clone_rejected');
+    const del = vendor.calls.find((c) => c.method === 'DELETE' && c.url.includes('v-created'));
+    assert.ok(del, 'the vendor voice was compensated despite the database throwing');
+  } finally {
+    vendor.restore();
+  }
+});
+
+test('clone: a compensation that FAILS over HTTP is logged as VOICE-ORPHAN — resolved 500s are not silent successes', async () => {
+  const vendor = stubVendor({ deleteStatus: 500 });
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.map(String).join(' '));
+  try {
+    const { cookie, env } = await userEnv({
+      runMeta: (sql) => (/SELECT COUNT\(\*\) FROM user_voices/.test(sql) ? { changes: 0 } : null),
+    });
+    const res = await worker.fetch(
+      req('/api/me/voices', { method: 'POST', cookie, body: { sampleData: SAMPLE_B64 } }),
+      env,
+    );
+    assert.equal(res.status, 409, 'the refusal stands either way');
+    const orphanLine = errors.find((l) => l.includes('VOICE-ORPHAN') && l.includes('v-created'));
+    assert.ok(orphanLine, 'the orphan is SAID, greppably, with the vendor id — a human can reap it');
+  } finally {
+    console.error = originalError;
+    vendor.restore();
+  }
+});

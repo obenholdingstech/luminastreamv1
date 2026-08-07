@@ -34,6 +34,34 @@ function decodeSample(raw) {
 }
 
 /**
+ * Compensating delete for a vendor voice that must not survive (its
+ * registration failed). Never throws; returns whether the vendor no longer
+ * has it. Every failure path emits ONE structured, greppable line —
+ * `VOICE-ORPHAN <id>` — because an unregistered clone spends quota and
+ * belongs to no one, and the vendor dashboard shows the attributable
+ * `lumina-<user>` name for a human to reap. (A durable retry queue is the
+ * ledger-executioner pattern; it arrives if orphan lines ever actually
+ * appear — the alert comes first, the machinery only with evidence.)
+ */
+async function compensateVendorVoice(env, base, vendorVoiceId) {
+  try {
+    const res = await fetch(`${base}/v1/voices/${encodeURIComponent(vendorVoiceId)}`, {
+      method: 'DELETE',
+      headers: { 'xi-api-key': env.ELEVENLABS_API_KEY },
+      signal: AbortSignal.timeout(15_000),
+    });
+    // An HTTP failure RESOLVES (ok === false) — it must count as a failed
+    // compensation, not a success (CodeRabbit, PR 94). 404 = already gone.
+    if (res.ok || res.status === 404) return true;
+    console.error(`VOICE-ORPHAN ${vendorVoiceId}: vendor delete answered ${res.status}`);
+    return false;
+  } catch (err) {
+    console.error(`VOICE-ORPHAN ${vendorVoiceId}: vendor delete unreachable`, err);
+    return false;
+  }
+}
+
+/**
  * @param {object} kit — { json, readJson, clientIp, checkRateLimit,
  *   rateLimitRefusal, createDb, resolveUserSession, mayStartSession }
  */
@@ -133,30 +161,26 @@ export function createVoiceRoutes(kit) {
       }
       // The atomic cap: count-and-insert in one statement, because the
       // listUserVoices check above is only the CHEAP early refusal — two
-      // concurrent clones can both pass it (CodeRabbit, PR 94). When the
-      // database refuses, the vendor voice already exists, so it is
-      // deleted before the 409 — an unregistered clone would spend quota
-      // and belong to no one.
-      const registered = await session.db.addUserVoice(session.userId, {
-        vendorVoiceId: data.voice_id,
-        label,
-        cap: MAX_VOICES_PER_USER,
-      });
+      // concurrent clones can both pass it (CodeRabbit, PR 94). From here
+      // on the vendor voice EXISTS, so every failure — the cap refusing,
+      // or the database throwing outright — must compensate at the vendor
+      // before answering: an unregistered clone spends quota and belongs
+      // to no one.
+      const vendorBase = env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE;
+      let registered;
+      try {
+        registered = await session.db.addUserVoice(session.userId, {
+          vendorVoiceId: data.voice_id,
+          label,
+          cap: MAX_VOICES_PER_USER,
+        });
+      } catch (err) {
+        console.error('clone registration failed after vendor create:', err);
+        await compensateVendorVoice(env, vendorBase, data.voice_id);
+        return json({ ok: false, error: 'voice_clone_rejected' }, { status: 502, origin });
+      }
       if (!registered) {
-        try {
-          await fetch(
-            `${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/${encodeURIComponent(data.voice_id)}`,
-            {
-              method: 'DELETE',
-              headers: { 'xi-api-key': env.ELEVENLABS_API_KEY },
-              signal: AbortSignal.timeout(15_000),
-            },
-          );
-        } catch (err) {
-          // Best-effort: the refusal stands either way, but an orphaned
-          // vendor voice is worth a log line someone can act on.
-          console.error('cap-refused clone could not be deleted at vendor:', data.voice_id, err);
-        }
+        await compensateVendorVoice(env, vendorBase, data.voice_id);
         return json({ ok: false, error: 'voice_limit_reached' }, { status: 409, origin });
       }
       return json({ ok: true, id: registered.id, voiceId: data.voice_id, label }, { origin });
