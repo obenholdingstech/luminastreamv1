@@ -1,0 +1,51 @@
+# P4c — one-time R2 provisioning (manual trigger only).
+#
+# Creates the avatar buckets for production and staging — NOTHING more; the
+# binding arrives when the follow-up PR commits it into wrangler.jsonc (a
+# deploy must never reference a binding before the thing behind it exists —
+# the D1 rule, applied to its second storage). Runs on workflow_dispatch
+# because bucket CREATION is an infrastructure act, not a deploy.
+#
+# Safe to re-run: create is skipped when the bucket already exists.
+#
+# Uses the same CLOUDFLARE_API_TOKEN as the deploy workflow. If that token
+# lacks R2 permissions this job fails with a 403 — the fix is a one-time
+# token-permission edit in the Cloudflare dashboard (CEO's hands: credential
+# scoping is a human wall). Bucket names are not secrets; they grant nothing
+# without account auth.
+
+name: Provision R2 (avatars)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/api
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job never pushes; a persisted GitHub token in .git/config
+          # would only be something for a dependency script to find.
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+      - name: Create buckets (skip when they exist)
+        run: |
+          for name in luminastream-avatars luminastream-avatars-staging; do
+            if npx wrangler r2 bucket list | grep -qx "name: *$name"; then
+              echo "$name already exists — skipping create"
+            else
+              npx wrangler r2 bucket create "$name"
+            fi
+          done
+      - name: List buckets (names are NOT secrets)
+        run: npx wrangler r2 bucket list

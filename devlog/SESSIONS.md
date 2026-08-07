@@ -4,6 +4,78 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 Aug 2026 — the no-avatar bug, Turnstile live, the admin door, P4c opens
+
+**Task (CEO, verbatim):** "cloned voice worked perfectly, but the video
+output completely failed to render (no avatar appeared)... Please attempt
+to go live on your end to recreate this error and debug" · "the Turnstile
+keys (TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY) are now confirmed and
+saved in secrets.env. You can run your push to activate them" · "for the
+admin side i have added the subdomain to the worker page... If an outsider
+or standard user visits it, it must automatically redirect them back to
+the public web. Only authenticated Admins should have access" · "database
+isolation is non-negotiable. An ordinary user must only be able to query
+and use the R2 avatars and ElevenLabs voice clones attached to their
+specific user_id... execute P4c with these strict isolation rules in
+place. i will be out for 5 hours so keep working"
+
+**What happened:**
+
+1. **The video bug (#90, merged).** Root-caused statically before any
+   spend: `shouldStart` in src/lib/unifiedLens.js required `adminToken` —
+   a leftover from the ops era. Cookie-signed-in users carry no token, so
+   the video leg silently never armed for them, while the ops-token
+   probes (which DO carry it) stayed green — exactly why the regression
+   was invisible to CI. Voice rode LiveKit and worked; video never asked
+   to start. Fix: the SESSION is the authority — a server-allocated
+   sessionId cannot exist unauthorized. `readVideoBudget` also gained
+   `credentials: 'include'` with the header sent only when a token
+   exists. Pinning test added; CodeRabbit's only flag was docstring
+   coverage (answered with rationale — the intent comments at the
+   decision points say WHY, which a signature docstring wouldn't).
+
+2. **Turnstile ACTIVE.** Keys verified present in secrets.env (grep -c,
+   values never printed), mirrored to GitHub secrets via pipes,
+   push-auth-secrets run 31194525005 → success. Live-verified both
+   halves: /api/auth/config now serves the site key, and a signup
+   without a token from a trusted origin gets 403 `turnstile_required` —
+   the wall is server-side and fail-closed, not a client decoration.
+
+3. **The admin door (#91).** admin.luminastream.live turned out to be
+   attached to the Pages project (the SPA answers on it), so hostname
+   routing handles it: `surfaceForHost` gained 'admin', and
+   src/pages/Admin.jsx renders NOTHING until the auth probe resolves —
+   then either the console shell (signed-in admin) or
+   `location.replace` to the public hero (everyone else; no flash of
+   admin chrome, nothing learned by typing the URL). CodeRabbit round 1:
+   the access decision extracted to src/lib/adminGate.js (pure, tested —
+   the voiceSelection lesson) and an uppercase-hostname assertion. The
+   gate is UX by declaration; the real walls stay server-side where
+   every admin-worthy endpoint checks the session's role.
+
+4. **P4c surveyed, staged.** Current truth: avatars are ephemeral client
+   dataURLs (nothing persisted); the voice dropdown renders the agent's
+   ACCOUNT-WIDE ElevenLabs list broadcast to every console — the exact
+   isolation gap the CEO observed. Plan, staged behind the D1 precedent
+   (infrastructure exists before the binding that references it):
+   provision-r2 workflow (this PR) → R2 binding + /api/me/avatars CRUD
+   scoped by the session's userId (key prefix `avatars/<userId>/` derived
+   from the cookie, never from input — cross-user reads structurally
+   impossible) → session start by avatarId → user_voices table with the
+   per-user allowlist riding the LiveKit grant so the agent can enforce
+   it → clone creation fail-closed until the CEO places
+   ELEVENLABS_API_KEY (spend key, her hands alone).
+
+**Surprises:** the first CodeRabbit-round push masked a real typecheck
+failure behind `| tail -1` (pipe exit codes) — caught one commit later,
+ritual line fixed to fail loudly. Logged so the next session doesn't
+re-learn it.
+
+**Verification:** 306 lib tests green; #90 and #91 each five rendered
+checks, all pass; Turnstile 403 probed live; admin redirect verified by
+adminGate unit tests (live check rides the next deploy).
+
+---
 ## 7 August 2026 (night) — VERIFICATION + GOOGLE + THE THREE SURFACES
 
 **Task (CEO, verbatim key parts):** "secrets.env is fully populated ... I hit a local terminal path error ... Please execute scripts/put-worker-secrets.sh production on your end ... push a basic visual flow: luminastream.live: A clean, basic 'Coming Soon' hero card with a 'Get Started' button. account.luminastream.live: ... the auth UI. studio.luminastream.live: Successfully signing in routes the user into the locked studio. ... ensure that no one can just type in accounts.lumina...., without passing through the arranged order ... the domain for zeptomail api is obenholding.org"
