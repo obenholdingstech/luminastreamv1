@@ -4,6 +4,30 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 August 2026 — P4b-ui: the lens learns who you are; the custom domain lands
+
+**Task (CEO, verbatim key parts):** "lets go ahead and build the p4b-ui, but before that i wanted to play you a video of a guy whos an elite developer ... from his video we can pick up more tips to optimixe our apps performance ... explain to me what we need or what you have decided" — plus screenshots showing `api.luminastream.live` attached to the Worker (her DNS wall, done).
+
+### The outage epilogue (from 6 Aug, for the record)
+PR #85's merge waited out a ~4-hour GitHub MAJOR platform outage (runners failed at `Failed to resolve action download info: Service Unavailable` — before any repo code ran; 196 worker tests green locally throughout). One trap caught mid-outage: the checks API briefly rendered an EMPTY list, which a naive grep read as "all passing" — doctrine 27's shape (a check that didn't render has not passed); the merge waited for five real passes on a fresh run. Post-recovery: merged, migration `0002_auth_sessions ✅` applied, live smoke on production verified all four walls (401 bare /me; 400 password policy; 403 foreign origin; uniform 401 unknown-account).
+
+### The performance transcript, mapped honestly onto THIS stack
+1. **Connection pooling** — not applicable by architecture: D1 and Durable Objects have no client-managed connections to pool. Our version of the same failure class ("per-request cost that scales with load") is the DO O(1) invariant — already doctrine, already mutation-tested (§P1's oracle).
+2. **Caching layer** — planned exactly where it pays: the hot paths are VENDOR-bound (ElevenLabs, Decart), not DB-bound; the standing scale directive already says cache static vendor metadata with explicit TTLs. No cache added for auth/session paths — 3–5 indexed D1 reads per session need no cache, and caching auth answers is how stale sessions outlive revocation.
+3. **Load testing** — genuinely applicable, and already a NAMED launch gate (PL: "a load test at several multiples of expected launch concurrency"), plus the concurrent-CPU drill that holds the pool ≤6. The honest bottleneck story: 50 signups cannot lock this database — the first wall they'd hit is agent capacity (an honest refusal), which is precisely what the PL elasticity gate exists to remove.
+
+### What shipped (branch `feat/p4b-ui-accounts`)
+- **`src/lib/authClient.js`** (+4 tests): credentialed fetch client — every call `credentials:'include'` (the session is an HttpOnly cookie the page never sees), ONE machine-token→prose table (tests caught a real bug: `null ?? fallback` gave the deliberately-silent `unauthenticated` token words — replaced with key-presence lookup), network failures resolve to results, never throws.
+- **`src/hooks/useAuth.js`**: checking → signedOut → signedIn machine; no wrong-state flashes; fire-and-forget profile saves (identity autosave must never block the lens).
+- **`src/components/AccountPanel.jsx`**: sign-in / create-account card on the access screen (admin key stays as the dev gate; the account is what makes the lens REMEMBER), signed-in chip with sign-out.
+- **Studio**: saved identity applies ONCE per sign-in (voice, style prompt, sync trim — server truth lands on the local knobs, then the knobs are the truth again); debounced autosave with a baseline guard so the applied profile is never echoed straight back.
+- **`VITE_API_BASE` → `https://api.luminastream.live`** (repo variable): first-party cookies — Safari sign-in works. Health-checked live.
+
+### Verification
+300 lib tests green; lint/typecheck/build clean; account panel screenshot-verified on the local build; api.luminastream.live `/api/health` 200 live.
+
+---
+
 ## 6 August 2026 (late night) — P4b: AUTH — enterprise walls, one PR
 
 **Task (CEO, verbatim key parts):** "okay lets go ahead with the p4b and so on, you have the road map lets keep working and having in my this is enterprice grade and use the best secure systems and build a solid saas"
