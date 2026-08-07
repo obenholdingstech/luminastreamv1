@@ -5,6 +5,7 @@
 // disagreement is a security bug wearing a race's clothes.
 
 import { LAST_SEEN_THROTTLE_SECONDS, readSessionCookie, sessionTokenHash } from './auth.js';
+import { isTrustedForCredentials } from './cors.js';
 
 /**
  * Resolve the request's cookie to a live user session, or null.
@@ -16,6 +17,13 @@ import { LAST_SEEN_THROTTLE_SECONDS, readSessionCookie, sessionTokenHash } from 
  * }>}
  */
 export async function resolveUserSession(request, env, createDb) {
+  // CSRF wall (CodeRabbit, PR 88): a PRESENT Origin outside the trusted
+  // tier means a cross-site browser auto-attached this cookie — the request
+  // resolves as ANONYMOUS (falls through to the ops-token check, which the
+  // attacker cannot satisfy). Absent Origin (curl, native) is fine: those
+  // clients never carry a victim's cookie. Same rule the auth routes apply.
+  const originHeader = request.headers.get('Origin');
+  if (originHeader && !isTrustedForCredentials(originHeader)) return null;
   const token = readSessionCookie(request.headers.get('Cookie'));
   if (!token || !env.IDENTITY_DB) return null;
   const db = createDb(env.IDENTITY_DB);

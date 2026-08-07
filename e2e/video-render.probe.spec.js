@@ -76,7 +76,9 @@ async function runDrill(page, token, before) {
   // The real drill, exactly as the CEO performs it since the unified lens:
   // identity is on the access-key screen, ONE button starts everything, and
   // the video leg auto-starts the moment the session connects.
-  await page.goto('/');
+  // ?ops: the studio lockdown walks signed-out browsers to the account
+  // surface; the ops flag preserves the admin-key flow this probe drives.
+  await page.goto('/?ops');
   await page.getByLabel('Early access key').fill(PASSWORD);
   await page.getByRole('button', { name: 'Start the lens' }).click();
   await expect(page.locator('footer')).toContainText(/Session\s+speaker-/, { timeout: 20_000 });

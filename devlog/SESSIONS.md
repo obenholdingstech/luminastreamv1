@@ -4,6 +4,27 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 August 2026 (night) — VERIFICATION + GOOGLE + THE THREE SURFACES
+
+**Task (CEO, verbatim key parts):** "secrets.env is fully populated ... I hit a local terminal path error ... Please execute scripts/put-worker-secrets.sh production on your end ... push a basic visual flow: luminastream.live: A clean, basic 'Coming Soon' hero card with a 'Get Started' button. account.luminastream.live: ... the auth UI. studio.luminastream.live: Successfully signing in routes the user into the locked studio. ... ensure that no one can just type in accounts.lumina...., without passing through the arranged order ... the domain for zeptomail api is obenholding.org"
+
+### The secrets handoff (and one gap)
+Local wrangler cannot authenticate to her Cloudflare account (10000), so the four present secrets (ADMIN_EMAILS, GOOGLE_CLIENT_ID/SECRET, ZEPTOMAIL_TOKEN) were mirrored into GitHub encrypted secrets through pipes — values never printed — and a manual `push-auth-secrets` workflow puts them on the production Worker with the CI deploy token. Scope deliberately narrow: the five human-set secrets (LiveKit/admin) are NOT in CI, per the standing rule. **Gap for the CEO: TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY are NOT in secrets.env** despite the message — the Turnstile wall is built env-gated and switches on when they arrive.
+
+### Server (env-gated, all dormant until the workflow runs)
+- **Email verification**: ZeptoMail sender as `noreply@obenholding.org`; sign-up mints a one-shot 24h token (hashed at rest) and mails the link; `GET /api/auth/verify` is read-and-burn (the row deletes whether or not valid — no replay) and lands on `account./?verify=ok|expired|invalid`; `POST /api/auth/resend-verification` rate-limited. Mail failure never kills sign-up.
+- **Turnstile at sign-up**: server-side siteverify, enforced only when the secret exists, FAIL-CLOSED when the challenge cannot be verified (a broken bot wall is not an open door).
+- **Google OAuth**: `GET /api/auth/google` (state cookie, SameSite=Lax, 10min) → `callback`: confidential-client code exchange directly with Google over TLS (which is what makes payload iss/aud/exp/email_verified checks sufficient without JWKS), identity keyed on Google's stable `sub` never the email, **no auto-link to password accounts** (silent merges are how takeovers hide inside conveniences — linking is an explicit P8 operation), session cookie → 302 studio.
+- `GET /api/auth/config` serves only by-design-public values (googleEnabled, emailEnabled, turnstileSiteKey). `videoGate` gains the same two doors as the session gate — a signed-in user must not have voice but no face.
+
+### The three surfaces (one deploy, hostname-routed)
+`surfaceForHost` (pure, tested): apex/www → **Landing** (coming-soon hero, Get Started → account.), account. → **Account** (AccountPanel + Google button + verification status/resend), everything else → **Studio**. The studio LOCKDOWN: on the canonical studio hostname a signed-out visitor is `location.replace`d to account. — the arranged order holds even for a typed URL — while previews/localhost keep the working surface and `?ops` preserves the probes' key flow (both e2e specs updated). Signed-in Start: one button, no password — the cookie is the authority (`openSession` grew the cookie path; `postJson` now sends credentials on every call).
+
+### Verification
+301 lib tests + 205 worker tests green; lint/typecheck/build clean. Post-merge: dispatch the secrets workflow, then live-verify the arranged order end-to-end on the real domains.
+
+---
+
 ## 7 August 2026 (later) — THE REALIGNMENT: identity carries authority
 
 **Task (CEO, verbatim key parts):** "studio.luminastream.live ... must not be open to unauthenticated users ... luminastream.live should be our public hero/marketing page, authentication/login should live on ... account.luminastream.live ... we are officially retiring and removing the old dev admin-password gate, that way i create an account as admin and that particular account gets admin priviledges. ... I will drop the required [Google] credentials into our secrets file ... Every user must verify their email. ... Confirm that our IP/pair-key rate limiters strictly protect account creation ... a dedicated phase (aligning with our P7 design scope) [for] UI/UX flow polishing, domain remapping ..."

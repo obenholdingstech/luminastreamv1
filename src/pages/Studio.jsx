@@ -5,6 +5,7 @@ import { ConnectionState, RoomEvent, Track } from 'livekit-client';
 import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
 
 import { AccountPanel } from '@/components/AccountPanel';
+import { SURFACE_URLS } from '@/lib/surface';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
 import { useAuth } from '@/hooks/useAuth';
 import { useMicLevel } from '@/hooks/useMicLevel';
@@ -687,6 +688,25 @@ export default function Studio() {
 
   // ── the account (P4b-ui): the lens remembers who you are ─────────────
   const auth = useAuth();
+
+  // STUDIO LOCKDOWN (realignment, CEO 7 Aug 2026): on the canonical studio
+  // hostname, a signed-out visitor is walked to the account surface — the
+  // arranged order (hero → account → studio) holds even for someone typing
+  // the studio URL directly. Previews/localhost keep working (dev), and
+  // `?ops` preserves the non-browser ops flow the probes drive. Security
+  // does not live here — every server gate checks identity regardless; this
+  // is the ORDER of the experience.
+  const opsMode = useMemo(
+    () => new URLSearchParams(globalThis.location?.search ?? '').has('ops'),
+    [],
+  );
+  const lockedSurface = globalThis.location?.hostname === 'studio.luminastream.live';
+  useEffect(() => {
+    if (!lockedSurface || opsMode) return;
+    if (auth.status === 'signedOut') {
+      globalThis.location?.replace(SURFACE_URLS.account);
+    }
+  }, [auth.status, lockedSurface, opsMode]);
   // Destructured because it is the STABLE member (useCallback in the hook);
   // `auth` itself is a fresh object every render and must never sit in a
   // debounce effect's dependency array.
@@ -808,6 +828,13 @@ export default function Studio() {
   // thing and it happens when the person actually wants to talk.
   const start = async (event) => {
     event?.preventDefault();
+    if (auth.status === 'signedIn') {
+      // The signed-in path (realignment): the session cookie is the
+      // authority — no password, no admin exchange, holder.start({}) rides
+      // the cookie straight into /api/session/create.
+      await holder.start({});
+      return;
+    }
     await holder.start({ password: accessKey });
     setAccessKey(''); // exchanged — no reason to keep it in memory
   };
@@ -1470,6 +1497,26 @@ export default function Studio() {
                 </p>
               )}
             </div>
+          ) : apiConfigured && auth.status === 'signedIn' ? (
+            /* The signed-in start (realignment): the account IS the key. One
+               button; the cookie carries the authority. Unverified accounts
+               get the server's verification_required back, surfaced by the
+               holder's error line below the button. */
+            <form onSubmit={start} className="flex flex-col items-center gap-2.5">
+              <button
+                type="submit"
+                disabled={unlocking}
+                className="flex items-center justify-center gap-2 rounded-full px-10 py-3.5 text-[11px] tracking-[0.16em] uppercase bg-white text-[#08080F] disabled:opacity-40 transition-opacity"
+              >
+                {unlocking ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+                Start the lens
+              </button>
+              {unlockError && (
+                <p role="alert" className="flex items-center justify-center gap-1.5 text-[11px] text-[#EF4444]">
+                  <AlertTriangle size={11} /> {unlockError}
+                </p>
+              )}
+            </form>
           ) : apiConfigured ? (
             <form onSubmit={start} className="flex flex-col gap-2.5">
               <label

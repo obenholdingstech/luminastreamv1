@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (night) — verification + Google + three surfaces shipped
+
+- Secrets: 4 mirrored to GH encrypted secrets (pipes, never printed) + manual push workflow (CI token; LiveKit/admin five stay human-set). **TURNSTILE keys missing from secrets.env — CEO gap.**
+- Server (env-gated): ZeptoMail verification (noreply@obenholding.org, one-shot hashed 24h tokens, read-and-burn), Turnstile fail-closed at signup, Google OAuth (state cookie; sub-keyed; NO auto-link — P8 operation), /api/auth/config public-by-design values, videoGate dual-door.
+- Surfaces: apex hero → account. auth → studio. locked (typed URLs bounce to account.; previews + ?ops keep dev/probes). Signed-in Start = one button on the cookie. 301+205 tests.
+- **Next:** merge → dispatch secrets workflow → live-verify order → P4c.
+
 ## 7 August 2026 (later) — REALIGNMENT server core: roles, verification schema, dual-door gate
 
 - Migration 0003 (users.role + hashed email_verifications); ADMIN_EMAILS env bootstrap (admin password's successor — empty grants nobody); ONE shared user-session resolver; session gate: signed-in (admin|verified) first, admin token = ops tooling only; unverified → 403 verification_required. 203 worker tests.

@@ -149,6 +149,47 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
       await d1.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?1').bind(now()).run();
     },
 
+    // ── email verification (realignment) — one-shot, hashed, expiring ──
+
+    async createEmailVerification({ tokenHash, userId, subject, ttlSeconds }) {
+      const t = now();
+      await d1
+        .prepare(
+          'INSERT INTO email_verifications (token_hash, user_id, subject, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)',
+        )
+        .bind(tokenHash, userId, subject, t, t + ttlSeconds)
+        .run();
+    },
+
+    /** Read-and-burn: the row is deleted whether or not it was still valid,
+     * so a token can never be replayed — one click, one chance. */
+    async consumeEmailVerification(tokenHash) {
+      const row = await d1
+        .prepare('SELECT user_id, subject, expires_at FROM email_verifications WHERE token_hash = ?1')
+        .bind(tokenHash)
+        .first();
+      await d1.prepare('DELETE FROM email_verifications WHERE token_hash = ?1').bind(tokenHash).run();
+      if (!row || row.expires_at <= now()) return null;
+      return { userId: row.user_id, subject: row.subject };
+    },
+
+    /** The password identity's email for a user (resend needs a target). */
+    async findIdentitySubject(userId) {
+      const row = await d1
+        .prepare("SELECT subject FROM auth_identities WHERE user_id = ?1 AND provider = 'password'")
+        .bind(userId)
+        .first();
+      return row ?? null;
+    },
+
+    /** Verification attaches to the identity the mail was SENT to. */
+    async markIdentityVerified(userId, subject) {
+      await d1
+        .prepare('UPDATE auth_identities SET verified = 1 WHERE user_id = ?1 AND subject = ?2')
+        .bind(userId, subject)
+        .run();
+    },
+
     /** The ADMIN_EMAILS bootstrap writes roles; nothing client-facing does. */
     async setRole(userId, role) {
       await d1

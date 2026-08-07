@@ -79,6 +79,33 @@ test('signed-in but UNVERIFIED is its own refusal — the UI must say "verify", 
   assert.equal((await res.json()).error, 'verification_required');
 });
 
+test('CSRF: a cookie arriving with an UNTRUSTED Origin resolves as anonymous (401), trusted passes, absent passes', async () => {
+  // Trusted origin + admin cookie → gate passes (registry refusal, not auth).
+  const trusted = await userEnv({ role: 'admin' });
+  const okRes = await call(
+    req('/api/session/create', { cookie: trusted.cookie, origin: 'https://studio.luminastream.live' }),
+    trusted.env,
+  );
+  assert.notEqual(okRes.status, 401);
+  // UNTRUSTED origin + the same cookie → the cookie is IGNORED, the request
+  // is anonymous, and with no ops token it dies at 401 — a cross-site page
+  // that made the victim's browser attach the cookie gets nothing.
+  const attacked = await userEnv({ role: 'admin' });
+  const evil = await call(
+    req('/api/session/create', { cookie: attacked.cookie, origin: 'https://evil.example' }),
+    attacked.env,
+  );
+  assert.equal(evil.status, 401);
+  // ABSENT origin + cookie → passes (curl and native clients never carry a
+  // victim's cookie; there is no CSRF without a browser).
+  const headless = await userEnv({ role: 'admin' });
+  const bare = await call(
+    req('/api/session/create', { cookie: headless.cookie, origin: null }),
+    headless.env,
+  );
+  assert.notEqual(bare.status, 401);
+});
+
 test('no cookie and no admin token is a plain 401 — nothing about the account model leaks', async () => {
   const { env } = await userEnv();
   const res = await call(req('/api/session/create', {}), env);

@@ -8,16 +8,71 @@
 // (the lib-with-a-test rule covers state that OUTLIVES interactions; a
 // text field draft does not).
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, LogOut, UserRound } from 'lucide-react';
 
-export function AccountPanel({ auth }) {
+// Cloudflare Turnstile, loaded once and rendered explicitly. The widget is
+// the CLIENT half of the sign-up bot wall — the server enforces with
+// siteverify whenever its secret exists, so shipping enforcement without
+// this widget would 403 every human (CodeRabbit, PR 88).
+let turnstileScriptPromise = null;
+function loadTurnstile() {
+  turnstileScriptPromise ??= new Promise((resolve, reject) => {
+    if (globalThis.turnstile) return resolve(globalThis.turnstile);
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.onload = () => resolve(globalThis.turnstile);
+    script.onerror = () => {
+      turnstileScriptPromise = null; // a CDN blip must not poison every retry
+      reject(new Error('turnstile failed to load'));
+    };
+    document.head.appendChild(script);
+  });
+  return turnstileScriptPromise;
+}
+
+export function AccountPanel({ auth, turnstileSiteKey = null }) {
   const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const turnstileHostRef = useRef(null);
+  const turnstileWidgetRef = useRef(null);
+
+  const needsTurnstile = mode === 'signup' && Boolean(turnstileSiteKey);
+  useEffect(() => {
+    if (!needsTurnstile || !turnstileHostRef.current) return undefined;
+    let cancelled = false;
+    loadTurnstile()
+      .then((turnstile) => {
+        if (cancelled || !turnstileHostRef.current || turnstileWidgetRef.current != null) return;
+        turnstileWidgetRef.current = turnstile.render(turnstileHostRef.current, {
+          sitekey: turnstileSiteKey,
+          theme: 'dark',
+          callback: (token) => setTurnstileToken(token),
+          'expired-callback': () => setTurnstileToken(''),
+        });
+      })
+      .catch(() => {
+        /* the server will refuse without a token; the error line explains */
+      });
+    return () => {
+      cancelled = true;
+      if (turnstileWidgetRef.current != null) {
+        try {
+          globalThis.turnstile?.remove(turnstileWidgetRef.current);
+        } catch {
+          /* widget already gone */
+        }
+        turnstileWidgetRef.current = null;
+        setTurnstileToken('');
+      }
+    };
+  }, [needsTurnstile, turnstileSiteKey]);
 
   if (auth.status === 'checking') return null;
 
@@ -47,10 +102,27 @@ export function AccountPanel({ auth }) {
     setError('');
     const res =
       mode === 'signup'
-        ? await auth.signUp({ email, password, displayName: displayName || undefined })
+        ? await auth.signUp({
+            email,
+            password,
+            displayName: displayName || undefined,
+            turnstileToken: turnstileToken || undefined,
+          })
         : await auth.signIn({ email, password });
     setBusy(false);
-    if (!res.ok && res.message) setError(res.message);
+    if (!res.ok) {
+      if (res.message) setError(res.message);
+      // A consumed/failed challenge token is single-use — reset the widget
+      // so the retry gets a fresh one.
+      if (needsTurnstile && turnstileWidgetRef.current != null) {
+        try {
+          globalThis.turnstile?.reset(turnstileWidgetRef.current);
+        } catch {
+          /* widget already gone */
+        }
+        setTurnstileToken('');
+      }
+    }
   };
 
   return (
@@ -110,6 +182,7 @@ export function AccountPanel({ auth }) {
           {mode === 'signup' ? 'create' : 'sign in'}
         </button>
       </div>
+      {needsTurnstile && <div ref={turnstileHostRef} className="flex justify-center" />}
       {error && (
         <p role="alert" className="text-[10px] text-[#F59E0B] text-center">
           {error}
