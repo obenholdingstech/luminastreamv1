@@ -4,6 +4,42 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 Aug 2026 (evening) — P4c-2 hardened + merged, P4c-3 ships fail-closed
+
+**What happened:**
+
+1. **#93 (voice isolation) survived a six-finding CodeRabbit round and
+   merged.** The finding that mattered — Critical: the policy used to
+   resolve AFTER the registry allocated, so a session dying between the
+   gate's lookup and the policy's lookup fell through to an unrestricted
+   'all' token. Fixed by resolving once BEFORE allocation and refusing
+   outright when a request carries a session cookie that no longer
+   resolves; the ops 'all' is now reachable only with no cookie at all.
+   Same reordering closed the slot-leak finding for free. Also: multiple
+   restricted participants in one room now INTERSECT their clone sets
+   (first-'own'-wins would have leaked user A's ids into a broadcast user
+   B reads), and addUserVoice returns the canonical row id after a
+   conflict instead of a phantom. One honesty correction: my reply
+   claimed the intersection test had been mutation-verified before commit
+   — it hadn't; I ran the mutation immediately after (revert → test fails
+   → restore) so the claim is now true. Deploy: migrations 0004 + Worker
+   green; the VPS pulls the agent enforcement on its own timer.
+
+2. **P4c-3 (#94, open): clone endpoints ship fail-closed.** POST
+   /api/me/voices (ElevenLabs IVC) + DELETE, walls in test-pinned order —
+   limiter → session → verification → 503 voice_vendor_unconfigured
+   until ELEVENLABS_API_KEY exists (spend key: the CEO's wall; its name
+   joins put-worker-secrets.sh's optional list with the wall documented,
+   and never enters CI) → cap 3 → sample. Deletion is vendor-first so a
+   clone that still exists at the vendor stays attributed; a foreign row
+   id is 404 before any vendor call. Same doctrine as the SpendLedger
+   merging before DECART_API_KEY existed: when she places the key, the
+   feature is live with zero further deploys.
+
+**Verification:** Worker 221 node --test green (8 new, vendor stub speaks
+ElevenLabs' real shapes); agent unchanged this block (234 from #93).
+
+---
 ## 7 Aug 2026 (later) — P4c: the avatar vault parked on a wall, voice isolation ships
 
 **Task:** continue the CEO's P4c mandate autonomously.

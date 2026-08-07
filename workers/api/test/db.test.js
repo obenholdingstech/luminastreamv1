@@ -109,24 +109,20 @@ test('ids and clocks come from the injected deps — no second clock hides in SQ
   assert.ok(!/unixepoch|CURRENT_TIMESTAMP|datetime\(/i.test(q.sql), 'SQL mints no time of its own');
 });
 
-test('addUserVoice: the returned id is the CANONICAL row, read back after the upsert', async () => {
-  // On conflict the fresh insert id never lands (only label updates), so a
-  // second registration for the same (user, vendor voice) must hand back
-  // the FIRST row's id — a phantom id would make removeUserVoice a no-op
-  // (CodeRabbit, PR 93).
-  const d1 = createFakeD1({
-    respond: (sql, binds) => {
-      if (/SELECT id FROM user_voices/.test(sql) && binds[0] === 'u1' && binds[1] === 'v-1') {
-        return { id: 'row-original' };
-      }
-      return null;
-    },
-  });
-  const db = createDb(d1, fixedDeps());
-  const first = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Me' });
-  const second = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Renamed' });
-  assert.equal(first.id, 'row-original');
-  assert.equal(second.id, 'row-original', 'conflict returns the surviving row, not the phantom insert');
-  const selects = d1.executed.filter((e) => /SELECT id FROM user_voices/.test(e.sql));
-  assert.equal(selects.length, 2, 'every call reads back the canonical id');
+test('addUserVoice: count-and-insert is ONE statement, and a cap refusal returns null', async () => {
+  // The cap must be atomic — a read-then-write pair lets two concurrent
+  // clones both pass the check (CodeRabbit, PR 94). The statement carries
+  // its own COUNT guard; the caller learns refusal from meta.changes.
+  const granted = createFakeD1();
+  let db = createDb(granted, fixedDeps());
+  const ok = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Me', cap: 3 });
+  assert.deepEqual(ok, { id: 'id-1' }, 'the fresh id is the row id — no read-back needed');
+  const insert = granted.executed[0];
+  assert.match(insert.sql, /SELECT COUNT\(\*\) FROM user_voices WHERE user_id/, 'the guard lives IN the insert');
+  assert.equal(insert.binds[5], 3, 'the cap travels as a bind');
+
+  const refused = createFakeD1({ runMeta: () => ({ changes: 0 }) });
+  db = createDb(refused, fixedDeps());
+  assert.equal(await db.addUserVoice('u1', { vendorVoiceId: 'v-2', label: 'Me', cap: 3 }), null,
+    'cap hit answers null so the caller can compensate at the vendor');
 });

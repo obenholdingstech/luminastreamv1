@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (evening) — P4c-3: clone endpoints ship fail-closed
+
+- **#93 merged** (voice isolation; CodeRabbit's Critical revocation-race fixed: policy resolves before allocation, cookie-present-but-dead-session refuses — never 'all').
+- **P4c-3:** POST /api/me/voices (ElevenLabs IVC) + DELETE — every wall in order: limiter → session → verification → **503 voice_vendor_unconfigured until ELEVENLABS_API_KEY exists** (spend key — CEO's wall; name added to put-worker-secrets.sh optional list, NEVER to CI) → cap 3 → sample. Delete: vendor-first, row survives vendor failure; cross-user row id = 404 before any vendor call.
+- **Next:** avatar binding PR the moment the CF token gets R2 permission; then the client UI for both libraries.
+
 ## 7 August 2026 (later) — P4c: avatars parked on CEO wall, voice isolation done
 
 - **provision-r2 FAILED (expected wall):** CI's CLOUDFLARE_API_TOKEN lacks R2 permission (auth 10000). **CEO: add R2 edit permission to the token in the CF dashboard, then re-run "Provision R2 (avatars)" from Actions.** Avatar vault is finished on feat/p4c-avatars and PRs the moment buckets exist.

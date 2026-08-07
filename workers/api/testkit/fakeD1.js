@@ -6,7 +6,7 @@
 // Lives in testkit/ (not test/) for the same reason registryHarness does:
 // `node --test` would report a helper file as an empty passing test.
 
-export function createFakeD1({ respond = () => null } = {}) {
+export function createFakeD1({ respond = () => null, runMeta = () => null } = {}) {
   const executed = []; // { sql, binds, via: 'run'|'first'|'batch' }
 
   const statement = (sql) => {
@@ -22,7 +22,9 @@ export function createFakeD1({ respond = () => null } = {}) {
       },
       async run() {
         executed.push({ sql, binds, via: 'run' });
-        return { success: true };
+        // Conditional writes read `meta.changes`; the default says "the
+        // write landed" so only tests exercising a refusal opt in.
+        return { success: true, meta: runMeta(sql, binds) ?? { changes: 1 } };
       },
       // D1's multi-row read. The responder may return an array (the rows),
       // a single row (wrapped), or null (no rows) — same contract as first().
