@@ -328,7 +328,9 @@ test('avatars: bytes surviving a FAILED R2 delete are unreachable — the row is
   const rows = [{ id, name: 'ghost', content_type: 'image/png', size: 3, created_at: 1 }];
   const r2 = createFakeR2();
   await r2.put(key, new Uint8Array([9, 9, 9]));
+  let r2Deletes = 0;
   r2.delete = async () => {
+    r2Deletes += 1;
     throw new Error('r2 refused the delete');
   };
   const { cookie, d1 } = await userSession('u1', {
@@ -346,6 +348,7 @@ test('avatars: bytes surviving a FAILED R2 delete are unreachable — the row is
   const del = await call(req(`/api/me/avatars/${id}`, { method: 'DELETE', cookie }), env);
   assert.equal(del.status, 200);
   assert.equal(rows.length, 0, 'the row really died — not just a statement in a log');
+  assert.equal(r2Deletes, 1, 'the byte delete was ATTEMPTED — best-effort is not skip');
   assert.ok(d1.executed.some((e) => /SET avatar_key = NULL/.test(e.sql)),
     'the selection cleared DESPITE the failed byte delete');
   assert.ok(r2._objects.has(key), 'the bytes really did survive — the hazard is real');
