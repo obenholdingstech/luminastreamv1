@@ -55,7 +55,11 @@ function refusal(res) {
 /** @returns {Promise<Array<{id:string, voiceId:string, label:string}>|null>} */
 export async function listMyVoices(base = API_BASE) {
   const res = await jsonFetch('/api/me/voices', {}, base);
-  return res?.status === 200 && res.data?.ok ? res.data.voices : null;
+  // An ok answer whose voices is not an array (SPA fallback HTML parsed as
+  // something, a proxy mangling the body) is a FAILED list, not an empty
+  // one — the panel must show its error state, not crash on .map.
+  if (res?.status !== 200 || !res.data?.ok || !Array.isArray(res.data.voices)) return null;
+  return res.data.voices;
 }
 
 /**

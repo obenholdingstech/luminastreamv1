@@ -95,3 +95,14 @@ test('an empty base is same-origin — the relative endpoint is called, not refu
   }
   assert.equal(await listMyVoices(null), null, 'only a MISSING base refuses');
 });
+
+test('a malformed ok response (voices not an array) is a FAILED list, never a crash', async () => {
+  for (const voices of [undefined, null, 'nope', { 0: 'x' }]) {
+    const s = stub(200, { ok: true, voices });
+    try {
+      assert.equal(await listMyVoices(BASE), null, JSON.stringify(voices));
+    } finally {
+      s.restore();
+    }
+  }
+});

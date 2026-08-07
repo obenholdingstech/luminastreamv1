@@ -20,9 +20,14 @@ export default function VoiceLibrary({ onLibraryChanged }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const fileRef = useRef(null);
+  // Reloads are sequenced: only the NEWEST request may set state, so a slow
+  // older response can never overwrite a fresher list (CodeRabbit, PR 95).
+  const reloadSeq = useRef(0);
 
   const reload = useCallback(async () => {
+    const seq = ++reloadSeq.current;
     const items = await listMyVoices();
+    if (seq !== reloadSeq.current) return; // a newer reload owns the state now
     setList(items === null ? { phase: 'error', items: [] } : { phase: 'ready', items });
   }, []);
 
