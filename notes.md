@@ -2,7 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
-## 8 August 2026 (early) — P4c COMPLETE pending one key
+## 7 August 2026 (late) — voice cap to five, cloning live, P4c closes
+
+- **CEO cleared both walls:** production env locked to main; ELEVENLABS_API_KEY pushed via her script run.
+- **Voice cap → 5 (CEO mandate):** the cap was already ATOMIC (the voices invented the conditional-insert pattern at #94; avatars copied it) — this PR moves the number to 5 and PINS it by test.
+- **New:** /api/auth/config serves voiceCloningEnabled (key PRESENCE only) — the studio can say "cloning is live" honestly and ops can verify secret pushes without a session.
+- **Next: Phase 5** on the CEO's green light once the cap is confirmed live.
+
+## 7 August 2026 (late) (early) — P4c COMPLETE pending one key
 
 - **R2 live:** token perms + service enable (two distinct CEO walls, both cleared); buckets exist.
 - **#96 merged:** avatar vault, cap atomic in D1, D1-authoritative reads, orphan-said deletes — four review rounds, all mutation-verified.

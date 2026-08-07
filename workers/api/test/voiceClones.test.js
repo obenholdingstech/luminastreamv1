@@ -135,7 +135,7 @@ test('clone: success registers the vendor voice under the SESSION user', async (
   }
 });
 
-test('clone: the cap refuses the fourth BEFORE any vendor call', async () => {
+test('clone: the cap refuses the SIXTH before any vendor call — five custom voices per user (CEO, 7 Aug 2026, late)', async () => {
   const vendor = stubVendor();
   try {
     const { cookie, env } = await userEnv({
@@ -143,6 +143,8 @@ test('clone: the cap refuses the fourth BEFORE any vendor call', async () => {
         { rowId: 'r1', vendorId: 'v1' },
         { rowId: 'r2', vendorId: 'v2' },
         { rowId: 'r3', vendorId: 'v3' },
+        { rowId: 'r4', vendorId: 'v4' },
+        { rowId: 'r5', vendorId: 'v5' },
       ],
     });
     const res = await worker.fetch(
@@ -298,4 +300,24 @@ test('clone: a compensation that FAILS over HTTP is logged as VOICE-ORPHAN — r
     console.error = originalError;
     vendor.restore();
   }
+});
+
+test('the cap IS five — the CEO mandate is a pinned number, not a drifting constant', async () => {
+  const { MAX_VOICES_PER_USER } = await import('../src/voiceRoutes.js');
+  assert.equal(MAX_VOICES_PER_USER, 5, 'five custom voices per user (CEO, 7 Aug 2026, late)');
+});
+
+test('config: voiceCloningEnabled reports key PRESENCE, never the key', async () => {
+  const on = await worker.fetch(
+    req('/api/auth/config', { method: 'GET' }),
+    { ELEVENLABS_API_KEY: 'xi-secret-value', AUTH_LIMITER: allowLimiter },
+  );
+  const onBody = await on.json();
+  assert.equal(onBody.voiceCloningEnabled, true);
+  assert.ok(!JSON.stringify(onBody).includes('xi-secret-value'), 'the key itself never leaves');
+  const off = await worker.fetch(
+    req('/api/auth/config', { method: 'GET' }),
+    { AUTH_LIMITER: allowLimiter },
+  );
+  assert.equal((await off.json()).voiceCloningEnabled, false);
 });
