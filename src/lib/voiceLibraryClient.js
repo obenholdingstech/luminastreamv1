@@ -27,7 +27,9 @@ const CLONE_MESSAGES = {
  * @returns {Promise<{ status: number, data: any } | null>}
  */
 async function jsonFetch(path, { method = 'GET', body } = {}, base = API_BASE) {
-  if (!base) return null;
+  // An EMPTY base is same-origin (unset VITE_API_BASE serves /api/* from the
+  // same host) — only a missing base refuses (CodeRabbit, PR 95).
+  if (base == null) return null;
   try {
     const res = await fetch(`${base}${path}`, {
       method,

@@ -82,5 +82,16 @@ test('a dead network is a refusal, not a crash; no base is a null list', async (
   } finally {
     globalThis.fetch = original;
   }
-  assert.equal(await listMyVoices(''), null, 'unconfigured base breaks nothing');
+});
+
+test('an empty base is same-origin — the relative endpoint is called, not refused', async () => {
+  const s = stub(200, { ok: true, voices: [{ id: 'r', voiceId: 'v', label: 'x' }] });
+  try {
+    const voices = await listMyVoices('');
+    assert.equal(s.calls[0].url, '/api/me/voices', 'relative, same-origin');
+    assert.equal(voices.length, 1);
+  } finally {
+    s.restore();
+  }
+  assert.equal(await listMyVoices(null), null, 'only a MISSING base refuses');
 });

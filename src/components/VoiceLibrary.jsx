@@ -1,39 +1,50 @@
 // The per-user voice library (P4c-3). Signed-in users manage the clones
 // attached to THEIR account — the server scopes every call by the session,
-// so this component holds no user id and no vendor knowledge; it uploads a
-// sample, lists what it owns, and deletes what it owns.
+// so this component holds no user id and no vendor knowledge.
 //
-// Honesty rule inherited from the whole console: refusals are shown in the
-// server's own terms. Until the CEO places the vendor key, cloning answers
-// "not switched on yet" — the wall says it is a wall, not an outage.
+// The DECISIONS live in src/lib/voiceLibrary.js (pure, tested — CodeRabbit,
+// PR 95); this component keeps only React state, the FileReader, and the
+// mapping from {notice, changed} to the status line and the reload +
+// refresh_voices pair. A failed LIST is its own rendered state with a retry
+// — never an eternal "loading…".
 
-import { Loader2, Mic2, Trash2, Upload } from 'lucide-react';
+import { Loader2, Mic2, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { afterClone, afterDelete, cloneLabel, sampleRefusal } from '@/lib/voiceLibrary';
 import { cloneMyVoice, deleteMyVoice, listMyVoices } from '@/lib/voiceLibraryClient';
 
-const MAX_SAMPLE_BYTES = 10 * 1024 * 1024; // matches the server's decoded wall
-
 export default function VoiceLibrary({ onLibraryChanged }) {
-  const [voices, setVoices] = useState(null); // null = not yet loaded
+  // phase: 'loading' | 'error' | 'ready'
+  const [list, setList] = useState({ phase: 'loading', items: [] });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const fileRef = useRef(null);
 
   const reload = useCallback(async () => {
-    setVoices(await listMyVoices());
+    const items = await listMyVoices();
+    setList(items === null ? { phase: 'error', items: [] } : { phase: 'ready', items });
   }, []);
 
   useEffect(() => {
     reload();
   }, [reload]);
 
+  const applyOutcome = async ({ notice: line, changed }) => {
+    setNotice(line);
+    if (changed) {
+      await reload();
+      onLibraryChanged?.();
+    }
+  };
+
   const onPick = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = ''; // same file twice must still fire change
     if (!file) return;
-    if (file.size > MAX_SAMPLE_BYTES) {
-      setNotice('that file is over 10MB — a minute of clean speech is plenty');
+    const refused = sampleRefusal(file);
+    if (refused) {
+      setNotice(refused);
       return;
     }
     setBusy(true);
@@ -45,15 +56,12 @@ export default function VoiceLibrary({ onLibraryChanged }) {
         reader.onerror = () => reject(reader.error);
         reader.readAsDataURL(file);
       });
-      const name = file.name.replace(/\.[^.]+$/, '').slice(0, 60) || 'My voice';
-      const res = await cloneMyVoice({ name, sampleData, mimeType: file.type || undefined });
-      if (res.ok) {
-        setNotice('voice cloned — it appears in the selector shortly');
-        await reload();
-        onLibraryChanged?.();
-      } else {
-        setNotice(res.message ?? '');
-      }
+      const res = await cloneMyVoice({
+        name: cloneLabel(file.name),
+        sampleData,
+        mimeType: file.type || undefined,
+      });
+      await applyOutcome(afterClone(res));
     } catch {
       setNotice('could not read that file — try another');
     } finally {
@@ -64,10 +72,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
   const onDelete = async (id) => {
     setBusy(true);
     setNotice('');
-    const res = await deleteMyVoice(id);
-    if (!res.ok) setNotice(res.message ?? '');
-    await reload();
-    onLibraryChanged?.();
+    await applyOutcome(afterDelete(await deleteMyVoice(id)));
     setBusy(false);
   };
 
@@ -96,15 +101,26 @@ export default function VoiceLibrary({ onLibraryChanged }) {
         />
       </div>
 
-      {voices === null ? (
+      {list.phase === 'loading' ? (
         <p className="mt-2 text-[11px] text-[#64748B]">loading…</p>
-      ) : voices.length === 0 ? (
+      ) : list.phase === 'error' ? (
+        <p className="mt-2 flex items-center gap-2 text-[11px] text-[#FBBF24]">
+          could not load your voices
+          <button
+            type="button"
+            onClick={reload}
+            className="flex items-center gap-1 text-[#A5B4FC] hover:text-[#E2E8F0] transition-colors"
+          >
+            <RefreshCw size={10} aria-hidden /> retry
+          </button>
+        </p>
+      ) : list.items.length === 0 ? (
         <p className="mt-2 text-[11px] text-[#64748B]">
           no cloned voices yet — upload a minute of clean speech to create one
         </p>
       ) : (
         <ul className="mt-2 space-y-1">
-          {voices.map((v) => (
+          {list.items.map((v) => (
             <li key={v.id} className="flex items-center justify-between gap-2 text-[12px] text-[#E2E8F0]">
               <span className="truncate">{v.label}</span>
               <button
