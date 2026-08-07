@@ -4,6 +4,45 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 8 Aug 2026 (early) — R2 unblocked, the vault lands, the library UI
+
+**Task (CEO, verbatim):** "Cloudflare Error 10000 Resolved: I have updated
+the CLOUDFLARE_API_TOKEN to include R2 Storage (Edit) permissions" · then
+"enabled" (R2 service, after run 2 failed 10042) · "keep the project going
+acording to the roadmap for 3hrs while am away"
+
+**What happened:**
+
+1. **Provisioning: two walls, both named.** Run 2 failed 10042 (R2 the
+   SERVICE was off — distinct from the token permission); the CEO enabled
+   it; run 3 created both buckets, verified in the listing.
+
+2. **#96 (avatar vault) through four CodeRabbit rounds:** (r1) the cap
+   went ATOMIC — user_avatars (0005) holds the slot, conditional INSERT
+   with the COUNT guard in-statement, reserved BEFORE the R2 write, failed
+   writes reconcile the row away; plus inline-invalid-wins on the image
+   action, 405 on the select route, and the AND-predicate pin. (r2) D1
+   became the AUTHORITY for every read — fetchOne/select/video-start all
+   consult the row first, so bytes surviving a failed R2 delete are
+   unreachable cents, never a stale identity; remove() row-first with the
+   orphan SAID (AVATAR-ORPHAN line) and the profile clear unconditional.
+   (r3) the orphan regression went stateful — one live fixture across
+   delete→fetch→select, mutation-verified (row delete disabled → 3
+   assertions fail).
+
+3. **The library UI (this PR):** stored avatars as thumbnails beside the
+   existing pick — signed-in uploads persist automatically (failure SAID:
+   "saved for this session only"), clicking selects server-side, applies
+   LIVE by reference (video.updateImage({avatarId}) — no bytes re-cross
+   the wire), and rides the next start as avatarId. avatarClient +
+   avatarLibrary born with the #95 lessons (array-validated lists, error
+   state + retry, sequenced reloads, same-origin empty base); object URLs
+   revoked on replace and unmount.
+
+**Verification:** Worker 238 green (vault); lib 324 green (UI); ritual
+clean on both branches; buckets live-verified in the provision listing.
+
+---
 ## 7 Aug 2026 (evening) — P4c-2 hardened + merged, P4c-3 ships fail-closed
 
 **What happened:**

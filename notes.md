@@ -2,6 +2,14 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 8 August 2026 (early) — P4c COMPLETE pending one key
+
+- **R2 live:** token perms + service enable (two distinct CEO walls, both cleared); buckets exist.
+- **#96 merged:** avatar vault, cap atomic in D1, D1-authoritative reads, orphan-said deletes — four review rounds, all mutation-verified.
+- **Avatar UI PR:** library thumbnails in the studio; uploads persist for signed-in users; select applies live by reference; starts ride avatarId.
+- **P4c state: avatars DONE end to end; voices DONE except ELEVENLABS_API_KEY placement (CEO wall).** Environment→main restriction still queued (CEO one-click).
+- **Next:** roadmap P5 (wallets) groundwork / concurrent-CPU drill prep.
+
 ## 7 August 2026 (night) — voice library UI + P4c server arc complete
 
 - **#94 merged + deployed:** clone endpoints live behind the fail-closed wall — anonymous POST /api/me/voices answers 401 live (session wall first), and the 503 vendor wall awaits ELEVENLABS_API_KEY (hers).
