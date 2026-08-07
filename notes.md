@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (later) — P4c: avatars parked on CEO wall, voice isolation done
+
+- **provision-r2 FAILED (expected wall):** CI's CLOUDFLARE_API_TOKEN lacks R2 permission (auth 10000). **CEO: add R2 edit permission to the token in the CF dashboard, then re-run "Provision R2 (avatars)" from Actions.** Avatar vault is finished on feat/p4c-avatars and PRs the moment buckets exist.
+- **CEO one-click #2 (from #92):** Settings → Environments → production → Deployment branches → `main` only.
+- **Voice isolation shipped:** policy signed into every LiveKit grant (admin='all', user='own'+their clone ids); agent filters the broadcast list and rejects disallowed switches with an oracle-free message; /api/me/voices scoped by session. user_voices table awaits P4c-3 clone creation (fail-closed until ELEVENLABS_API_KEY — her wall).
+- **Next:** P4c-3 fail-closed clone endpoints; avatar client UI after the binding PR.
+
 ## 7 August 2026 (day) — no-avatar bug dead, Turnstile live, admin door, P4c opens
 
 - **#90**: the CEO's "voice worked, no avatar" bug — `shouldStart` still required adminToken; cookie users have none, so the video leg never armed (ops probes carry the token, hence green). Session is the authority now.

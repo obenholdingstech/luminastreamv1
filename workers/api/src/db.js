@@ -86,6 +86,49 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
         .run();
     },
 
+    // ── user voices (P4c) — one row = one vendor voice owned by one user ──
+
+    /** The caller's clones, nothing else's — the ONE product query. */
+    async listUserVoices(userId) {
+      const { results } = await d1
+        .prepare('SELECT id, vendor_voice_id, label, created_at FROM user_voices WHERE user_id = ?1 ORDER BY created_at')
+        .bind(userId)
+        .all();
+      return results ?? [];
+    },
+
+    /**
+     * Register a clone. Idempotent per (user, vendor voice) — and the id
+     * returned is the CANONICAL row's, read back after the upsert: on
+     * conflict the insert's fresh id never lands, and handing it out would
+     * name a row that does not exist (CodeRabbit, PR 93 — a later
+     * removeUserVoice with a phantom id would delete nothing).
+     */
+    async addUserVoice(userId, { vendorVoiceId, label }) {
+      await d1
+        .prepare(
+          'INSERT INTO user_voices (id, user_id, vendor_voice_id, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (user_id, vendor_voice_id) DO UPDATE SET label = excluded.label',
+        )
+        .bind(newId(), userId, vendorVoiceId, label, now())
+        .run();
+      const row = await d1
+        .prepare('SELECT id FROM user_voices WHERE user_id = ?1 AND vendor_voice_id = ?2')
+        .bind(userId, vendorVoiceId)
+        .first();
+      return { id: row?.id ?? null };
+    },
+
+    /**
+     * Remove a clone registration — scoped by BOTH id and user_id, so a
+     * leaked row id from another account deletes nothing.
+     */
+    async removeUserVoice(userId, id) {
+      await d1
+        .prepare('DELETE FROM user_voices WHERE id = ?1 AND user_id = ?2')
+        .bind(id, userId)
+        .run();
+    },
+
     /** A session opened — written by the machine, never the client. */
     async recordSessionStart({ userId = null, room, mode = null }) {
       const id = newId();

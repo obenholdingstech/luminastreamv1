@@ -4,6 +4,43 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 Aug 2026 (later) — P4c: the avatar vault parked on a wall, voice isolation ships
+
+**Task:** continue the CEO's P4c mandate autonomously.
+
+**What happened:**
+
+1. **Provision-R2 dispatched — and the wall answered.** Run 31198771084
+   failed with Cloudflare auth error 10000: the CI CLOUDFLARE_API_TOKEN has
+   no R2 permission. This is the anticipated failure mode, documented in the
+   workflow header — the fix is a token-permission edit in the CF dashboard,
+   which is credential scoping, which is the CEO's wall. Queued for her.
+
+2. **The avatar vault is BUILT and PARKED** (branch feat/p4c-avatars,
+   committed + pushed, 217 Worker tests green): AVATARS binding +
+   MEDIA_LIMITER, /api/me/avatars CRUD where every R2 key is
+   avatars/<userId>/<id> with userId from the resolved cookie session only —
+   isolation by construction; video create/image accept avatarId under the
+   same rule. The PR opens the moment the buckets exist; the binding must
+   never deploy first.
+
+3. **Voice isolation (P4c-2) ships:** user_voices table (0004), the policy
+   STAMPED into every LiveKit grant the Worker mints — {"voicePolicy":"all"}
+   for admins/ops, {"voicePolicy":"own","voices":[ids]} for ordinary users —
+   riding the token signature, so unforgeable client-side. The agent
+   enforces it at both doors: _switch_voice rejects with ONE message for
+   unknown-and-disallowed (no existence oracle for other users' clones), and
+   the broadcast voice list narrows to the strictest policy in the room, so
+   the dropdown a user sees IS their entitlement. Parsing fails CLOSED:
+   metadata-less tokens hear premade only. /api/me/voices lists only the
+   caller's rows. Clone CREATION is P4c-3 and will fail closed until the
+   CEO places ELEVENLABS_API_KEY (spend key, her hands).
+
+**Verification:** agent 233 pytest green (9 new policy tests); Worker 211
+node --test green (5 new: stamp both roles, signature claim, scoped listing,
+query-string immunity). fakeD1 gained .all().
+
+---
 ## 7 Aug 2026 — the no-avatar bug, Turnstile live, the admin door, P4c opens
 
 **Task (CEO, verbatim):** "cloned voice worked perfectly, but the video

@@ -22,6 +22,8 @@ import { SpendLedger } from './spendLedger.js';
 import { createAuthRoutes } from './authRoutes.js';
 import { createDb } from './db.js';
 import { mayStartSession, resolveUserSession } from './userSession.js';
+import { readSessionCookie } from './auth.js';
+import { createVoiceRoutes } from './voiceRoutes.js';
 
 const VERSION = '0.1.0';
 
@@ -125,6 +127,17 @@ const authRoutes = createAuthRoutes({
   createDb,
 });
 
+// P4c: per-user voices — same injection discipline, plus the one resolver
+// that turns a cookie into a userId (the isolation key).
+const voiceRoutes = createVoiceRoutes({
+  json,
+  clientIp,
+  checkRateLimit,
+  rateLimitRefusal,
+  createDb,
+  resolveUserSession,
+});
+
 async function handleVerify(request, env, origin) {
   // Rate-limit BEFORE touching the password path — this endpoint is a password
   // oracle, so throttle by source IP hard (5 / 60s per colo, see wrangler.jsonc).
@@ -177,7 +190,13 @@ async function handleToken(request, env, origin) {
   }
 
   try {
-    const { token, exp } = await mintLiveKitToken(env, { room, identity });
+    // Admin-token gated: the ops/drill path hears everything, and says so in
+    // the same signed claim the agent enforces for everyone (P4c).
+    const { token, exp } = await mintLiveKitToken(env, {
+      room,
+      identity,
+      metadata: JSON.stringify({ voicePolicy: 'all' }),
+    });
     return json(
       { ok: true, token, url: env.LIVEKIT_URL ?? null, room, identity, expiresAt: exp },
       { origin },
@@ -292,6 +311,30 @@ async function handleSessionCreate(request, env, origin) {
   const refusal = await sessionGate(request, env, origin);
   if (refusal) return refusal;
 
+  // P4c: the voice policy rides the grant itself (CEO isolation mandate) —
+  // resolved HERE, before the registry allocates, for two reasons that are
+  // both CodeRabbit findings on #93:
+  //   * fail closed on principal loss: the gate admitted this caller, but a
+  //     session can die between two lookups (revocation, expiry-boundary).
+  //     A request that CARRIES a session cookie and no longer resolves must
+  //     be refused — never allowed to fall through to the ops-path 'all'.
+  //   * no slot leak: every read that can throw happens while there is
+  //     nothing allocated to clean up.
+  // The ops path (no cookie at all; the gate admitted via the admin token)
+  // is the only road to 'all' without an admin role.
+  const policyUser = await resolveUserSession(request, env, createDb);
+  if (!policyUser && readSessionCookie(request.headers.get('Cookie'))) {
+    return json({ ok: false, error: 'unauthenticated' }, { status: 401, origin });
+  }
+  let voicePolicy = JSON.stringify({ voicePolicy: 'all' });
+  if (policyUser && policyUser.role !== 'admin') {
+    const clones = await policyUser.db.listUserVoices(policyUser.userId);
+    voicePolicy = JSON.stringify({
+      voicePolicy: 'own',
+      voices: clones.map((v) => v.vendor_voice_id),
+    });
+  }
+
   const res = await callRegistry(env, '/create');
   if (!res) return registryUnavailable(origin);
   const created = await res.json().catch(() => null);
@@ -315,6 +358,7 @@ async function handleSessionCreate(request, env, origin) {
     const { token } = await mintLiveKitToken(env, {
       room: session.room,
       identity: session.identity,
+      metadata: voicePolicy,
       ttlSeconds,
     });
     return json(
@@ -1086,6 +1130,14 @@ export default {
         return authRoutes.putProfile(request, env, origin);
       }
       return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+    }
+
+    // ── P4c: the caller's voices. Cookie-only, scoped by the session. ──
+    if (pathname === '/api/me/voices') {
+      if (request.method !== 'GET') {
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return voiceRoutes.list(request, env, origin);
     }
 
     if (pathname === '/api/livekit/token') {
