@@ -86,6 +86,21 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
         .run();
     },
 
+    /**
+     * Clear the selected avatar ONLY if it is still this key — deleting an
+     * avatar must never unselect a different one the user picked meanwhile.
+     * (upsertProfile can't do this: its COALESCE semantics keep old values,
+     * which is right for partial saves and wrong for deliberate clearing.)
+     */
+    async clearProfileAvatarKeyIf(userId, avatarKey) {
+      await d1
+        .prepare(
+          'UPDATE lens_profiles SET avatar_key = NULL, updated_at = ?3 WHERE user_id = ?1 AND avatar_key = ?2',
+        )
+        .bind(userId, avatarKey, now())
+        .run();
+    },
+
     // ── user voices (P4c) — one row = one vendor voice owned by one user ──
 
     /** The caller's clones, nothing else's — the ONE product query. */
