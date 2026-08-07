@@ -14,6 +14,13 @@ const PAGES_PROJECT = 'luminastream-studio';
 
 const STATIC_ALLOWED = new Set([
   'https://studio.luminastream.live',
+  // The auth surface (realignment): sign-up/sign-in POST from here — the
+  // first live smoke of the three-surface split caught its absence as
+  // origin_not_allowed on every signup.
+  'https://account.luminastream.live',
+  // The public hero calls no APIs, but a same-site fetch from it must not
+  // be a special case if one ever appears.
+  'https://luminastream.live',
   'http://localhost:5173',
 ]);
 
