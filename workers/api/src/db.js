@@ -98,24 +98,30 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     },
 
     /**
-     * Register a clone. Idempotent per (user, vendor voice) — and the id
-     * returned is the CANONICAL row's, read back after the upsert: on
-     * conflict the insert's fresh id never lands, and handing it out would
-     * name a row that does not exist (CodeRabbit, PR 93 — a later
-     * removeUserVoice with a phantom id would delete nothing).
+     * Register a clone UNDER the per-user cap, atomically: the count check
+     * and the insert are ONE statement, so two concurrent clones cannot
+     * both pass a read-then-write cap (CodeRabbit, PR 94 — the previous
+     * list-then-insert pair was a TOCTOU race). Returns { id } when the
+     * row landed, null when the cap refused it — and null means the CALLER
+     * must compensate at the vendor, because the vendor voice already
+     * exists by the time this runs.
+     *
+     * (Vendor ids are fresh per clone, so there is no conflict path here —
+     * the UNIQUE constraint would surface a true double-registration as a
+     * thrown error, which is the loud version of a bug we want to hear.)
      */
-    async addUserVoice(userId, { vendorVoiceId, label }) {
-      await d1
+    async addUserVoice(userId, { vendorVoiceId, label, cap }) {
+      const id = newId();
+      const res = await d1
         .prepare(
-          'INSERT INTO user_voices (id, user_id, vendor_voice_id, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (user_id, vendor_voice_id) DO UPDATE SET label = excluded.label',
+          `INSERT INTO user_voices (id, user_id, vendor_voice_id, label, created_at)
+           SELECT ?1, ?2, ?3, ?4, ?5
+           WHERE (SELECT COUNT(*) FROM user_voices WHERE user_id = ?2) < ?6`,
         )
-        .bind(newId(), userId, vendorVoiceId, label, now())
+        .bind(id, userId, vendorVoiceId, label, now(), cap)
         .run();
-      const row = await d1
-        .prepare('SELECT id FROM user_voices WHERE user_id = ?1 AND vendor_voice_id = ?2')
-        .bind(userId, vendorVoiceId)
-        .first();
-      return { id: row?.id ?? null };
+      const changes = res?.meta?.changes ?? res?.changes ?? 0;
+      return changes >= 1 ? { id } : null;
     },
 
     /** One row, scoped by BOTH id and user_id — someone else's row id

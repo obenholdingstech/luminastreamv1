@@ -131,11 +131,35 @@ export function createVoiceRoutes(kit) {
         console.error('voice clone refused:', res.status, data?.detail ?? '');
         return json({ ok: false, error: 'voice_clone_rejected' }, { status: 502, origin });
       }
-      const { id } = await session.db.addUserVoice(session.userId, {
+      // The atomic cap: count-and-insert in one statement, because the
+      // listUserVoices check above is only the CHEAP early refusal — two
+      // concurrent clones can both pass it (CodeRabbit, PR 94). When the
+      // database refuses, the vendor voice already exists, so it is
+      // deleted before the 409 — an unregistered clone would spend quota
+      // and belong to no one.
+      const registered = await session.db.addUserVoice(session.userId, {
         vendorVoiceId: data.voice_id,
         label,
+        cap: MAX_VOICES_PER_USER,
       });
-      return json({ ok: true, id, voiceId: data.voice_id, label }, { origin });
+      if (!registered) {
+        try {
+          await fetch(
+            `${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/${encodeURIComponent(data.voice_id)}`,
+            {
+              method: 'DELETE',
+              headers: { 'xi-api-key': env.ELEVENLABS_API_KEY },
+              signal: AbortSignal.timeout(15_000),
+            },
+          );
+        } catch (err) {
+          // Best-effort: the refusal stands either way, but an orphaned
+          // vendor voice is worth a log line someone can act on.
+          console.error('cap-refused clone could not be deleted at vendor:', data.voice_id, err);
+        }
+        return json({ ok: false, error: 'voice_limit_reached' }, { status: 409, origin });
+      }
+      return json({ ok: true, id: registered.id, voiceId: data.voice_id, label }, { origin });
     },
 
     /**

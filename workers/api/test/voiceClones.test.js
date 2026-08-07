@@ -45,10 +45,11 @@ function stubVendor({ addStatus = 200, deleteStatus = 200 } = {}) {
   return { calls, restore: () => (globalThis.fetch = original) };
 }
 
-async function userEnv({ verified = 1, voices = [], hasKey = true } = {}) {
+async function userEnv({ verified = 1, voices = [], hasKey = true, runMeta } = {}) {
   const sessionToken = newSessionToken();
   const tokenHash = await sessionTokenHash(sessionToken);
   const d1 = createFakeD1({
+    runMeta,
     respond: (sql, binds) => {
       if (/FROM auth_sessions/.test(sql) && binds[0] === tokenHash) {
         return {
@@ -122,6 +123,8 @@ test('clone: success registers the vendor voice under the SESSION user', async (
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.voiceId, 'v-created');
+    assert.ok(typeof body.id === 'string' && body.id.length > 0,
+      'the row id is real — a null-id regression must fail here');
     assert.equal(vendor.calls[0].headers['xi-api-key'], 'xi-unit-test');
     const insert = d1.executed.find((e) => /INSERT INTO user_voices/.test(e.sql));
     assert.ok(insert, 'the registration was written');
@@ -222,6 +225,29 @@ test('delete: vendor confirms (or 404s) before the row dies; a vendor failure ke
     const del = d1.executed.find((e) => /DELETE FROM user_voices/.test(e.sql));
     assert.ok(del, 'already-gone at the vendor is fine to reap');
     assert.deepEqual(del.binds, ['a'.repeat(32), 'u1'], 'scoped by row AND user');
+  } finally {
+    vendor.restore();
+  }
+});
+
+test('clone: a cap race lost at the DATABASE deletes the vendor voice before the 409 — no orphaned quota', async () => {
+  // The listUserVoices pre-check passed (the fixture owns nothing), the
+  // vendor created the voice — and then the atomic insert refuses, as it
+  // would when a concurrent clone won the last slot. The route must
+  // compensate at the vendor and answer 409.
+  const vendor = stubVendor();
+  try {
+    const { cookie, env } = await userEnv({
+      runMeta: (sql) => (/SELECT COUNT\(\*\) FROM user_voices/.test(sql) ? { changes: 0 } : null),
+    });
+    const res = await worker.fetch(
+      req('/api/me/voices', { method: 'POST', cookie, body: { sampleData: SAMPLE_B64 } }),
+      env,
+    );
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).error, 'voice_limit_reached');
+    const del = vendor.calls.find((c) => c.method === 'DELETE' && c.url.includes('v-created'));
+    assert.ok(del, 'the just-created vendor voice was deleted, not orphaned');
   } finally {
     vendor.restore();
   }
