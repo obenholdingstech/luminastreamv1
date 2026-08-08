@@ -4,6 +4,56 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 7 Aug 2026 (night) — P4c sealed at five voices, P5's first two stones
+
+**Task (CEO, verbatim):** "I need that exact same strict, atomic slot
+logic applied to the cloned voices, but capped at 5 custom voices per
+user… Once that 5-voice cap is confirmed live in the database, you have
+the official green light to move forward on the roadmap: Phase 5"
+
+**What happened:**
+
+1. **#98 — the cap is five, pinned.** The voice cap was ALREADY atomic
+   (the conditional-insert-under-COUNT pattern was born on the voices at
+   #94; the avatar vault copied it) — so the change was the number, plus
+   a test that pins the value so it cannot drift, plus
+   `voiceCloningEnabled` on /api/auth/config (key PRESENCE only). That
+   flag immediately earned its keep: it reads FALSE in production — the
+   CEO's key push predates #94's script knowing the key's name. Queued
+   for her: pull, re-run put-worker-secrets.sh production. CodeRabbit's
+   one finding was a date I got wrong (I wrote 8 Aug; the commits say
+   7 Aug late) — fixed in all four places.
+
+2. **#99 — the rate table (P5 opens on the green light).** ROADMAP §P5's
+   retail-decoupling mandate as a pure module: credit-cents in SAFE
+   integers only, the margin floor as a PARSE invariant (retail below
+   declared COGS throws — selling at a loss is unrepresentable),
+   conversion once at reserve returning the {version, rate} pin, refunds
+   only against the pin (a current table is not in refundAtSettle's
+   signature — the two-prices bug has nowhere to live), CEIL at debit /
+   FLOOR at refund, over-usage clamps to zero. Three CodeRabbit rounds
+   hardened the money edges: safe-integer bounds, per-meter freezing
+   (a mutated rate can't bypass the floor), and finite-usage refusal
+   (-Infinity would have granted a full refund through the clamp).
+
+3. **#100 — the ledger pins (ZERO findings, the project's hundredth
+   PR).** Reserve converts once at the dev 1:1 table and the reservation
+   record carries {rateVersion, rateCentsPerUnit, debitCents}; every
+   settlement row computes refundCents against the RECORD's pin and
+   stores deductedCents for the wallet to consume. Rollout-safe: legacy
+   in-flight holds settle with no credit fields rather than throwing.
+   Seconds remain the budget authority, so live behavior is unchanged —
+   exactly the "rate-table change, not a refactor" the roadmap staged.
+
+**Verification:** 249 Worker tests green; deploys green; the pin-vs-
+current-table property proven by rewriting a record's pin and asserting
+the refund follows the record.
+
+**Next:** wallets — per-user balances keyed by P4 identity, consuming
+debitCents/refundCents; then tiers; the purchase flow waits on the CEO's
+payment-provider onboarding.
+
+---
 ## 8 Aug 2026 (early) — R2 unblocked, the vault lands, the library UI
 
 **Task (CEO, verbatim):** "Cloudflare Error 10000 Resolved: I have updated

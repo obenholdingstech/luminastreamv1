@@ -2,20 +2,26 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 7 August 2026 (night) — P5 stones 1+2 merged
+
+- **#98:** voice cap 5 (was already atomic — the pattern's birthplace), value pinned by test; config voiceCloningEnabled added — **reads FALSE live: CEO must pull + re-run put-worker-secrets.sh production.**
+- **#99 + #100:** rate table (margin floor unrepresentable, safe-integer money, pin semantics) wired into the ledger — reserve pins, settle refunds at the pin, deductedCents in every audit row. 1:1 dev table = zero behavior change; 249 tests.
+- **Next:** wallets (P4-keyed balances) → tiers → purchase flow (CEO onboarding).
+
 ## 7 August 2026 (late) — P4c closed, P5 opens with the rate table
 
 - **#98 merged + deployed:** voice cap 5, pinned by test; /api/auth/config gained voiceCloningEnabled.
 - **Live check found a gap:** voiceCloningEnabled=false — the CEO's key push predates #94's script (the script didn't know the key's name). **CEO: git pull, re-run put-worker-secrets.sh production; config flips true when it lands.**
 - **P5 opens (CEO green light):** rateTable.js — credit-cents integers, margin floor refuses to parse, CEIL at debit / FLOOR at refund, refunds only at the reservation's pinned rate. Ledger wiring is the next PR; then wallets.
 
-## 7 August 2026 (late) — voice cap to five, cloning live, P4c closes
+## 7 August 2026 (late) — voice cap to five, P4c closes *(cloning-live claim SUPERSEDED — see the entry above)*
 
-- **CEO cleared both walls:** production env locked to main; ELEVENLABS_API_KEY pushed via her script run.
+- **CEO cleared both walls:** production env locked to main; ELEVENLABS_API_KEY push ATTEMPTED via her script run — **the later live check found it did NOT land** (script predated #94 knowing the key's name); current status is voiceCloningEnabled=false until she pulls and re-runs.
 - **Voice cap → 5 (CEO mandate):** the cap was already ATOMIC (the voices invented the conditional-insert pattern at #94; avatars copied it) — this PR moves the number to 5 and PINS it by test.
 - **New:** /api/auth/config serves voiceCloningEnabled (key PRESENCE only) — the studio can say "cloning is live" honestly and ops can verify secret pushes without a session.
 - **Next: Phase 5** on the CEO's green light once the cap is confirmed live.
 
-## 7 August 2026 (late) (early) — P4c COMPLETE pending one key
+## 7 August 2026 (evening) — P4c COMPLETE pending one key
 
 - **R2 live:** token perms + service enable (two distinct CEO walls, both cleared); buckets exist.
 - **#96 merged:** avatar vault, cap atomic in D1, D1-authoritative reads, orphan-said deletes — four review rounds, all mutation-verified.
