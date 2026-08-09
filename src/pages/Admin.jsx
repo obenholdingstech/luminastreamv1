@@ -27,7 +27,6 @@ import {
   fetchUsers,
   setUserStatus,
 } from '@/lib/adminClient';
-import { SURFACE_URLS } from '@/lib/surface';
 
 const when = (epochSeconds) =>
   epochSeconds ? new Date(epochSeconds * 1000).toISOString().replace('T', ' ').slice(0, 16) : '—';
