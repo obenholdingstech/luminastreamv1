@@ -18,6 +18,11 @@ const STATIC_ALLOWED = new Set([
   // first live smoke of the three-surface split caught its absence as
   // origin_not_allowed on every signup.
   'https://account.luminastream.live',
+  // The admin console (P8): its API calls are cookie-credentialed, so its
+  // origin must sit in the trusted tier or the CSRF wall refuses every
+  // request. Caught by the adminRoutes tests BEFORE the live smoke this
+  // time — the #88/#89 lesson, learned once.
+  'https://admin.luminastream.live',
   // The public hero calls no APIs, but a same-site fetch from it must not
   // be a special case if one ever appears.
   'https://luminastream.live',

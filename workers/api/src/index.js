@@ -24,6 +24,7 @@ import { createDb } from './db.js';
 import { mayStartSession, resolveUserSession } from './userSession.js';
 import { readSessionCookie } from './auth.js';
 import { createVoiceRoutes } from './voiceRoutes.js';
+import { createAdminRoutes } from './adminRoutes.js';
 import { createAvatarRoutes, loadAvatarB64 } from './avatarRoutes.js';
 
 const VERSION = '0.1.0';
@@ -140,6 +141,21 @@ const voiceRoutes = createVoiceRoutes({
   createDb,
   resolveUserSession,
   mayStartSession,
+});
+
+// P8 (pulled forward): the admin API — role-walled people/ops reads plus
+// the one status mutation. callRegistry/callLedger are hoisted function
+// declarations, safe to hand over here.
+const adminRoutes = createAdminRoutes({
+  json,
+  readJson,
+  clientIp,
+  checkRateLimit,
+  rateLimitRefusal,
+  createDb,
+  resolveUserSession,
+  callRegistry,
+  callLedger,
 });
 
 // P4c: the avatar library — same injection discipline; additionally gets
@@ -1148,6 +1164,29 @@ export default {
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       return handleVerify(request, env, origin);
+    }
+
+    // ── P8: the admin console's API. Cookie + role, never the ops token. ──
+    if (pathname.startsWith('/api/admin/')) {
+      const method = request.method;
+      if (pathname === '/api/admin/overview' && method === 'GET') {
+        return adminRoutes.overview(request, env, origin);
+      }
+      if (pathname === '/api/admin/users' && method === 'GET') {
+        return adminRoutes.users(request, env, origin);
+      }
+      if (pathname === '/api/admin/sessions' && method === 'GET') {
+        return adminRoutes.sessions(request, env, origin);
+      }
+      if (pathname === '/api/admin/settlements' && method === 'GET') {
+        return adminRoutes.settlements(request, env, origin);
+      }
+      const st = pathname.match(/^\/api\/admin\/users\/([A-Za-z0-9_-]{1,64})\/status$/);
+      if (st) {
+        if (method === 'POST') return adminRoutes.setUserStatus(request, env, origin, st[1]);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      return json({ ok: false, error: 'not_found' }, { status: 404, origin });
     }
 
     // ── P4b: accounts. Cookie sessions, origin-gated, rate-limited hard. ──

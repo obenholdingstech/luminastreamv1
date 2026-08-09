@@ -150,8 +150,29 @@ export class SpendLedger {
       return this.#settleBySession(await this.#readJson(request));
     }
     if (pathname === '/budget') return this.#budget(config);
+    if (pathname === '/settlements') return this.#settlements();
     if (pathname === '/reset') return this.#reset();
     return json({ ok: false, error: 'not_found' }, 404);
+  }
+
+  // The audit trail, read-only, newest first (P8's console). The rows are
+  // returned VERBATIM — vendor summaries included — because the whole point
+  // of storing vendor truth was that someone would eventually read it.
+  //
+  // Newest-first is served by a TIME-KEYED INDEX (CodeRabbit, PR 102): a
+  // limit on the record keys themselves would truncate in UUID order and
+  // silently hide newer settlements once the count passed the limit. The
+  // index key's zero-padded millis make lexicographic order time order, so
+  // reverse+limit is exactly "the newest 100". (Settlements written before
+  // the index existed have no entry and stay reachable only by direct key —
+  // dev-era rows, accepted and said.)
+  async #settlements() {
+    const idx = await this.storage.list({ prefix: 'settlement-ts:', reverse: true, limit: 100 });
+    const keys = [...idx.values()].map((id) => `settlement:${id}`);
+    const rows = keys.length ? await this.storage.get(keys) : new Map();
+    // Assemble in INDEX order — the batched get answers a Map in its own
+    // key order, and the index is the one that knows the time.
+    return json({ ok: true, settlements: keys.map((k) => rows.get(k)).filter(Boolean) });
   }
 
   // The reaper — and, since P2c, THE EXECUTIONER (ROADMAP §P2, committed
@@ -225,6 +246,13 @@ export class SpendLedger {
     }
   }
 
+  // The index entry: zero-padded millis so lexicographic order IS time
+  // order; the id rides behind the timestamp to keep same-millisecond
+  // settlements distinct.
+  #settlementIndexKey(settledAt, reservationId) {
+    return `settlement-ts:${String(settledAt).padStart(14, '0')}:${reservationId}`;
+  }
+
   async #writeSettlement(record, { source, usedSeconds, vendorSummary = null, vendorKilled = null, orphanFlag = false }) {
     // P5: the refund is computed against the reservation's PINNED rate —
     // never a current table, which is deliberately not in scope here. A
@@ -244,6 +272,8 @@ export class SpendLedger {
             };
           })()
         : {};
+    const settledAt = this.now();
+    await this.storage.put(this.#settlementIndexKey(settledAt, record.id), record.id);
     // The audit trail (ROADMAP §P5): raw vendor summaries verbatim, distinct
     // from the deduction, read by reconciliation (P8) — never by the wallet.
     await this.storage.put(`settlement:${record.id}`, {
@@ -260,7 +290,7 @@ export class SpendLedger {
       vendorSummary,
       vendorKilled,
       orphanFlag,
-      settledAt: this.now(),
+      settledAt,
     });
   }
 
