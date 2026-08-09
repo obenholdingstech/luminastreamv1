@@ -4,6 +4,44 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 9 Aug 2026 — the agent's outage named, the admin console built
+
+**Task (CEO, verbatim):** "the agent isnt live, why?" · then "designing the
+admin page and adding the feautures you feel this project wil need and
+making it funtional" (autonomous block while she's out).
+
+**What happened:**
+
+1. **The outage: an unpaid vendor invoice, not code.** Her journal paste
+   showed it plainly — ElevenLabs `payment_required` on the synthesis
+   endpoint; the PREFLIGHT gate refused, five restarts, StartLimitBurst
+   parked the unit exactly as designed. Deploy-state showed my #93 agent
+   deploy healthy for days before. Queued for her: settle the invoice,
+   reset-failed + restart, watch the four gates.
+
+2. **The admin API (#102):** /api/admin/{overview,users,sessions,
+   settlements} + user suspend/reactivate. The wall is server-side
+   (cookie + role=admin; the ops token opens nothing). Suspension bites
+   at the target's next request — proven end to end. The tests caught a
+   REAL pre-live bug: admin.luminastream.live missing from the CORS
+   trusted tier (#88's account gap, would have been repeated). CodeRabbit
+   was throttled on the first pass — re-triggered per doctrine, and its
+   round found the settlements listing truncating on UUID key order:
+   fixed with a time-keyed index (padded-millis keys, reverse+limit),
+   mutation-verified against an adversarial last-sorting key.
+
+3. **The console UI (this PR):** overview cards (users/capacity/budget/
+   cloning flag), the people table with two-click suspend/reactivate
+   speaking the server's refusals, recent sessions, and the settlement
+   audit trail — deducted credit-cents column included, so P5's money
+   trail has a reader from day one. Every list: loading/error+retry/
+   ready, sequenced reloads, #95-lesson clients.
+
+**Also queued:** the studio budget-401 needs one live datapoint (the
+response body's error code) — asked rather than guessed. Engine-scaling
+epic drafted, awaiting her word on sequencing.
+
+---
 ## 7 Aug 2026 (night) — P4c sealed at five voices, P5's first two stones
 
 **Task (CEO, verbatim):** "I need that exact same strict, atomic slot
