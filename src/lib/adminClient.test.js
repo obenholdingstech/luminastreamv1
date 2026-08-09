@@ -38,11 +38,82 @@ test('every call is credentialed — the cookie is the only credential this cons
   }
 });
 
-test('malformed lists are FAILED reads — [null] and id-less users never reach the table', async () => {
-  for (const users of [undefined, 'nope', [null], [{ noId: true }], [{ id: '' }]]) {
+const GOOD_USER = {
+  id: 'u1', email: 'a@b.co', displayName: 'A', role: 'user', status: 'active',
+  verified: true, createdAt: 1, voices: 0, avatars: 0,
+};
+
+test('malformed lists are FAILED reads — every rendered field is required', async () => {
+  for (const users of [
+    undefined,
+    'nope',
+    [null],
+    [{ noId: true }],
+    [{ id: '' }],
+    [{ ...GOOD_USER, status: undefined }],
+    [{ ...GOOD_USER, verified: 'yes' }],
+    [{ ...GOOD_USER, voices: 'three' }],
+    [{ ...GOOD_USER, createdAt: -5 }],
+    [GOOD_USER, null],
+  ]) {
     const s = stub(200, { ok: true, users });
     try {
       assert.equal(await fetchUsers(BASE), null, JSON.stringify(users));
+    } finally {
+      s.restore();
+    }
+  }
+  const ok = stub(200, { ok: true, users: [GOOD_USER] });
+  try {
+    assert.equal((await fetchUsers(BASE)).length, 1, 'a fully-formed row passes');
+  } finally {
+    ok.restore();
+  }
+});
+
+test('a malformed overview is a FAILED read — the console never invents zeros', async () => {
+  const GOOD = {
+    ok: true,
+    users: { total: 2, active: 1, suspended: 1, admins: 1 },
+    capacity: null,
+    videoBudget: null,
+    voiceCloningEnabled: false,
+  };
+  for (const bad of [
+    { ...GOOD, users: undefined },
+    { ...GOOD, users: { total: 2 } },
+    { ...GOOD, users: { ...GOOD.users, active: 'one' } },
+    { ...GOOD, voiceCloningEnabled: 'yes' },
+    { ...GOOD, capacity: 'up' },
+  ]) {
+    const s = stub(200, bad);
+    try {
+      assert.equal(await fetchOverview(BASE), null, JSON.stringify(bad));
+    } finally {
+      s.restore();
+    }
+  }
+  const ok = stub(200, GOOD);
+  try {
+    assert.equal((await fetchOverview(BASE)).users.total, 2);
+  } finally {
+    ok.restore();
+  }
+});
+
+test('malformed session and settlement rows are FAILED reads — tables never dereference junk', async () => {
+  for (const sessions of [[null], [{ id: 's1' }], [{ id: 's1', room: 'r', started_at: 'now' }]]) {
+    const s = stub(200, { ok: true, sessions });
+    try {
+      assert.equal(await fetchSessions(BASE), null, JSON.stringify(sessions));
+    } finally {
+      s.restore();
+    }
+  }
+  for (const settlements of [[null], [{ grantedSeconds: 10 }], [{ reservationId: 'r', grantedSeconds: 10, usedSeconds: 'all' }]]) {
+    const s = stub(200, { ok: true, settlements });
+    try {
+      assert.equal(await fetchSettlements(BASE), null, JSON.stringify(settlements));
     } finally {
       s.restore();
     }

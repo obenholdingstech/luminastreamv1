@@ -42,10 +42,53 @@ function refusal(res) {
   return MESSAGES[res?.data?.error] ?? 'that did not work — try again';
 }
 
+// Every field the console RENDERS is validated here (CodeRabbit, PR 103):
+// an ok-shaped answer with a missing count or a null row must be a FAILED
+// read the panel retries — never invented zeros, never a table crash.
+const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
+const isStr = (v) => typeof v === 'string' && v.length > 0;
+
+function isOverview(d) {
+  const u = d?.users;
+  return (
+    u !== null &&
+    typeof u === 'object' &&
+    isCount(u.total) &&
+    isCount(u.active) &&
+    isCount(u.suspended) &&
+    isCount(u.admins) &&
+    (d.capacity === null || typeof d.capacity === 'object') &&
+    (d.videoBudget === null || typeof d.videoBudget === 'object') &&
+    typeof d.voiceCloningEnabled === 'boolean'
+  );
+}
+
+const isUserRow = (u) =>
+  u !== null &&
+  typeof u === 'object' &&
+  isStr(u.id) &&
+  (u.email === null || typeof u.email === 'string') &&
+  isStr(u.status) &&
+  isStr(u.role) &&
+  typeof u.verified === 'boolean' &&
+  isCount(u.voices) &&
+  isCount(u.avatars) &&
+  isCount(u.createdAt);
+
+const isSessionRow = (s) =>
+  s !== null && typeof s === 'object' && isStr(s.id) && isStr(s.room) && isCount(s.started_at);
+
+const isSettlementRow = (s) =>
+  s !== null &&
+  typeof s === 'object' &&
+  isStr(s.reservationId) &&
+  isCount(s.grantedSeconds) &&
+  isCount(s.usedSeconds);
+
 /** @returns {Promise<object|null>} the overview, or null (failed read). */
 export async function fetchOverview(base = API_BASE) {
   const res = await jsonFetch('/api/admin/overview', {}, base);
-  if (res?.status !== 200 || !res.data?.ok) return null;
+  if (res?.status !== 200 || !res.data?.ok || !isOverview(res.data)) return null;
   return res.data;
 }
 
@@ -53,9 +96,7 @@ export async function fetchOverview(base = API_BASE) {
 export async function fetchUsers(base = API_BASE) {
   const res = await jsonFetch('/api/admin/users', {}, base);
   if (res?.status !== 200 || !res.data?.ok || !Array.isArray(res.data.users)) return null;
-  if (!res.data.users.every((u) => u && typeof u === 'object' && typeof u.id === 'string' && u.id)) {
-    return null;
-  }
+  if (!res.data.users.every(isUserRow)) return null;
   return res.data.users;
 }
 
@@ -63,6 +104,7 @@ export async function fetchUsers(base = API_BASE) {
 export async function fetchSessions(base = API_BASE) {
   const res = await jsonFetch('/api/admin/sessions', {}, base);
   if (res?.status !== 200 || !res.data?.ok || !Array.isArray(res.data.sessions)) return null;
+  if (!res.data.sessions.every(isSessionRow)) return null;
   return res.data.sessions;
 }
 
@@ -70,6 +112,7 @@ export async function fetchSessions(base = API_BASE) {
 export async function fetchSettlements(base = API_BASE) {
   const res = await jsonFetch('/api/admin/settlements', {}, base);
   if (res?.status !== 200 || !res.data?.ok || !Array.isArray(res.data.settlements)) return null;
+  if (!res.data.settlements.every(isSettlementRow)) return null;
   return res.data.settlements;
 }
 

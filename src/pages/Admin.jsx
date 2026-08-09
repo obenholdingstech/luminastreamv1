@@ -126,11 +126,14 @@ export default function Admin() {
       setNotice('');
       return;
     }
-    setArming(null);
+    // `arming` survives until cleanup so the in-flight row can render its
+    // spinner (CodeRabbit, PR 103 — clearing it first made the Loader
+    // unreachable); `busy` disables every button meanwhile.
     setBusy(true);
     const res = await setUserStatus(u.id, nextStatus);
     setNotice(res.ok ? '' : (res.message ?? ''));
     await Promise.all([reloadUsers(), reloadOverview()]);
+    setArming(null);
     setBusy(false);
   };
 
