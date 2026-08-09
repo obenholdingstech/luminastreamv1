@@ -150,8 +150,18 @@ export class SpendLedger {
       return this.#settleBySession(await this.#readJson(request));
     }
     if (pathname === '/budget') return this.#budget(config);
+    if (pathname === '/settlements') return this.#settlements();
     if (pathname === '/reset') return this.#reset();
     return json({ ok: false, error: 'not_found' }, 404);
+  }
+
+  // The audit trail, read-only, newest first (P8's console). The rows are
+  // returned VERBATIM — vendor summaries included — because the whole point
+  // of storing vendor truth was that someone would eventually read it.
+  async #settlements() {
+    const map = await this.storage.list({ prefix: 'settlement:', limit: 100 });
+    const rows = [...map.values()].sort((a, b) => (b.settledAt ?? 0) - (a.settledAt ?? 0));
+    return json({ ok: true, settlements: rows });
   }
 
   // The reaper — and, since P2c, THE EXECUTIONER (ROADMAP §P2, committed

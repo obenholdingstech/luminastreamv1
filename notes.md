@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 9 August 2026 — agent diagnosed (vendor invoice), admin API ships
+
+- **Agent outage root-caused from the CEO's journal paste:** ElevenLabs `payment_required` on the synthesis endpoint — the PREFLIGHT gate refused, StartLimitBurst parked the unit as designed. **CEO: settle the invoice, then `systemctl --user reset-failed lumina-agent && systemctl --user restart lumina-agent`.** Not code; not the key.
+- **Admin API (P8 pulled forward, CEO directive):** /api/admin/{overview,users,sessions,settlements} + user suspend/reactivate — role-walled server-side (cookie + role=admin; the ops token opens nothing). Suspension has instant teeth (every resolver filters status='active'). Ledger gained a read-only /settlements.
+- **Real bug caught by the tests pre-live:** admin.luminastream.live was missing from the CORS trusted tier — the console's own credentialed calls would have died like account. did at #88.
+- **Next:** console UI PR; then the video/budget 401 chase; engine-scaling epic + tiers await CEO.
+
 ## 7 August 2026 (night) — P5 stones 1+2 merged
 
 - **#98:** voice cap 5 (was already atomic — the pattern's birthplace), value pinned by test; config voiceCloningEnabled added — **reads FALSE live: CEO must pull + re-run put-worker-secrets.sh production.**

@@ -209,6 +209,75 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
         .run();
     },
 
+    // ── admin reads + the one admin mutation (P8, pulled forward) ──
+
+    /** Everyone, newest first, with the facts the console renders. */
+    async listUsers(limit) {
+      const { results } = await d1
+        .prepare(
+          `SELECT u.id, u.display_name, u.role, u.status, u.created_at,
+             (SELECT ai.subject FROM auth_identities ai WHERE ai.user_id = u.id ORDER BY ai.created_at LIMIT 1) AS email,
+             (SELECT MAX(ai.verified) FROM auth_identities ai WHERE ai.user_id = u.id) AS verified,
+             (SELECT COUNT(*) FROM user_voices v WHERE v.user_id = u.id) AS voices,
+             (SELECT COUNT(*) FROM user_avatars a WHERE a.user_id = u.id) AS avatars
+           FROM users u ORDER BY u.created_at DESC LIMIT ?1`,
+        )
+        .bind(limit)
+        .all();
+      return results ?? [];
+    },
+
+    /** The headline numbers. */
+    async countUsers() {
+      const row = await d1
+        .prepare(
+          `SELECT COUNT(*) AS total,
+             SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+             SUM(CASE WHEN status = 'suspended' THEN 1 ELSE 0 END) AS suspended,
+             SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins
+           FROM users`,
+        )
+        .first();
+      return {
+        total: row?.total ?? 0,
+        active: row?.active ?? 0,
+        suspended: row?.suspended ?? 0,
+        admins: row?.admins ?? 0,
+      };
+    },
+
+    /** One user by id — for existence checks before the status write. */
+    async findUserById(userId) {
+      const row = await d1
+        .prepare('SELECT id, display_name, role, status FROM users WHERE id = ?1')
+        .bind(userId)
+        .first();
+      return row ?? null;
+    },
+
+    /**
+     * The admin status write. Enforcement costs nothing extra: every
+     * session resolver and sign-in query already filters status = 'active',
+     * so a suspended user's cookies die at their next request.
+     */
+    async setUserStatus(userId, status) {
+      await d1
+        .prepare('UPDATE users SET status = ?2, updated_at = ?3 WHERE id = ?1')
+        .bind(userId, status, now())
+        .run();
+    },
+
+    /** The recent session history, newest first, verbatim columns. */
+    async recentSessions(limit) {
+      const { results } = await d1
+        .prepare(
+          'SELECT id, user_id, room, mode, started_at FROM session_history ORDER BY started_at DESC LIMIT ?1',
+        )
+        .bind(limit)
+        .all();
+      return results ?? [];
+    },
+
     /** A session opened — written by the machine, never the client. */
     async recordSessionStart({ userId = null, room, mode = null }) {
       const id = newId();
