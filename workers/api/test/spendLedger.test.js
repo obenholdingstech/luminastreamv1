@@ -340,3 +340,31 @@ test('P5: a legacy record without a pin settles cleanly with no credit fields �
   assert.equal(s.refundCents, undefined, 'no pin, no credit fields — seconds accounting stands alone');
   assert.equal(s.usedSeconds, 10, 'the seconds trail is untouched');
 });
+
+test('P8: settlements answer the newest 100 BY TIME — a UUID that sorts last cannot hide a new settlement', async () => {
+  // 105 settlements whose RECORD keys sort adversarially: the newest one
+  // gets the lexicographically LAST uuid ('zzzz…'), so a limit applied to
+  // record keys would exclude it. The time index must return it FIRST.
+  const h = harness({ ...ENV, MAX_VIDEO_SECONDS_TOTAL: '100000' });
+  for (let i = 0; i < 105; i += 1) {
+    const r = (await reserve(h, { requestedSeconds: 10 })).body;
+    await settle(h, { reservationId: r.reservationId, settleToken: r.settleToken, usedSeconds: 1 });
+    h.advanceBy(1000);
+  }
+  // The adversarial newest: rename its record key to sort after everything.
+  const newest = (await reserve(h, { requestedSeconds: 10 })).body;
+  await settle(h, { reservationId: newest.reservationId, settleToken: newest.settleToken, usedSeconds: 2 });
+  const row = await h.storage.get(`settlement:${newest.reservationId}`);
+  const zKey = 'settlement:zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz';
+  await h.storage.delete(`settlement:${newest.reservationId}`);
+  await h.storage.put(zKey, row);
+  // repoint its index entry at the renamed record
+  const idx = await h.storage.list({ prefix: 'settlement-ts:' });
+  for (const [k, v] of idx) {
+    if (v === newest.reservationId) await h.storage.put(k, 'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz');
+  }
+
+  const out = await call(h, '/settlements');
+  assert.equal(out.body.settlements.length, 100, 'the window is 100');
+  assert.equal(out.body.settlements[0].usedSeconds, 2, 'the newest settlement is FIRST, wherever its key sorts');
+});

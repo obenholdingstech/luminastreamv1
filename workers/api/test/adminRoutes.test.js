@@ -71,7 +71,14 @@ async function world({ users = [] } = {}) {
         }));
       }
       if (/SELECT COUNT\(\*\) AS total/.test(sql)) {
-        return { total: users.length, active: users.filter((u) => u.status === 'active').length, suspended: 0, admins: 1 };
+        // Fixture-DERIVED, every field (CodeRabbit, PR 102): hardcoded
+        // aggregates would let the overview pass while counting wrongly.
+        return {
+          total: users.length,
+          active: users.filter((u) => u.status === 'active').length,
+          suspended: users.filter((u) => u.status === 'suspended').length,
+          admins: users.filter((u) => u.role === 'admin').length,
+        };
       }
       if (/FROM users WHERE id/.test(sql)) {
         const u = byId(binds[0]);
@@ -178,12 +185,17 @@ test('an admin cannot suspend themselves, and garbage statuses refuse', async ()
 
 test('overview: missing DO bindings degrade to nulls — the console renders what it can', async () => {
   const { env, cookies } = await world({
-    users: [{ id: 'u-admin', name: 'Amy', role: 'admin', status: 'active' }],
+    users: [
+      { id: 'u-admin', name: 'Amy', role: 'admin', status: 'active' },
+      { id: 'u-sus', name: 'S', role: 'user', status: 'suspended' },
+    ],
   });
   const res = await call(req('/api/admin/overview', { cookie: cookies['u-admin'] }), env);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.users.total, 1);
+  assert.equal(body.users.total, 2);
+  assert.equal(body.users.suspended, 1, 'the suspended count comes from the data, not a constant');
+  assert.equal(body.users.admins, 1);
   assert.equal(body.capacity, null, 'no registry binding → null, not 500');
   assert.equal(body.videoBudget, null, 'no ledger binding → null, not 500');
   assert.equal(body.voiceCloningEnabled, false);

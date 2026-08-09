@@ -32,6 +32,15 @@ export function createRegistryHarness({ env = {}, startAt = Date.now(), cls = Se
 
   const storage = {
     async get(key) {
+      // The real DO accepts an ARRAY and answers a Map (present keys only).
+      if (Array.isArray(key)) {
+        const out = new Map();
+        for (const k of key) {
+          const v = store.get(k);
+          if (v !== undefined) out.set(k, structuredClone(v));
+        }
+        return out;
+      }
       const value = store.get(key);
       return value === undefined ? undefined : structuredClone(value);
     },
@@ -51,11 +60,15 @@ export function createRegistryHarness({ env = {}, startAt = Date.now(), cls = Se
       for (const k of keys) if (store.delete(k)) deleted += 1;
       return deleted;
     },
-    async list({ prefix = '' } = {}) {
+    async list({ prefix = '', reverse = false, limit } = {}) {
+      // Real DO semantics: keys ordered, THEN reversed, THEN limited — the
+      // order of those operations is exactly what the settlements-index
+      // regression depends on, so the fake must not simplify it.
+      let keys = [...store.keys()].sort().filter((k) => k.startsWith(prefix));
+      if (reverse) keys = keys.reverse();
+      if (Number.isInteger(limit)) keys = keys.slice(0, limit);
       const out = new Map();
-      for (const k of [...store.keys()].sort()) {
-        if (k.startsWith(prefix)) out.set(k, structuredClone(store.get(k)));
-      }
+      for (const k of keys) out.set(k, structuredClone(store.get(k)));
       return out;
     },
     async getAlarm() {
