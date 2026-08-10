@@ -442,7 +442,8 @@ test('HEAL on list: an orphaned row with a sample is re-cloned on the active key
     assert.equal(body.voices[0].voiceId, 'v-healed', 'the new vendor identity');
     assert.equal(body.voices[0].vendorAccount, await fingerprintKey('sk-live'));
     const upd = d1.executed.find((e) => /UPDATE user_voices SET vendor_voice_id/.test(e.sql));
-    assert.deepEqual(upd.binds, [rowId, 'u1', 'v-healed', await fingerprintKey('sk-live')]);
+    assert.deepEqual(upd.binds, [rowId, 'u1', 'v-old', 'v-healed', await fingerprintKey('sk-live')],
+      'the write is a COMPARE-AND-SWAP anchored on the vendor id the healer read');
     const remap = d1.executed.find((e) => /UPDATE lens_profiles SET voice_id/.test(e.sql));
     assert.ok(remap, 'the saved selection follows the voice');
     assert.equal(remap.binds[1], 'v-old');
@@ -538,6 +539,90 @@ test('SESSION-CREATE heals the SELECTED voice before the policy stamp — the gr
     const payload = JSON.parse(Buffer.from(token.split('.')[1].replaceAll('-', '+').replaceAll('_', '/'), 'base64').toString());
     const policy = JSON.parse(payload.metadata);
     assert.deepEqual(policy.voices, ['v-healed'], 'the stamp carries the HEALED id — the stream proceeds with the true voice');
+  } finally {
+    vendor.restore();
+  }
+});
+
+test('HEAL race: two concurrent heals leave exactly ONE tracked clone — the loser deletes its duplicate', async () => {
+  let cloneCount = 0;
+  const vendor = stubVendorPool({
+    'sk-live': { addStatus: 200 },
+  });
+  // per-call voice ids so the two racers get DIFFERENT clones
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.endsWith('/v1/voices/add')) {
+      cloneCount += 1;
+      return new Response(JSON.stringify({ voice_id: `v-heal-${cloneCount}` }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return originalFetch(url, opts);
+  };
+  try {
+    const rowId = '1'.repeat(32);
+    let currentVendorId = 'v-old';
+    const { cookie, env, r2 } = await userEnv({
+      voices: [{ rowId, vendorId: 'v-old', label: 'Me', account: 'kDEADDEAD' }],
+      runMeta: (sql, binds) => {
+        // A faithful CAS fake: the conditional update wins only when the
+        // expected vendor id still matches, and mutates the "row".
+        if (/UPDATE user_voices SET vendor_voice_id/.test(sql)) {
+          if (binds[2] === currentVendorId) {
+            currentVendorId = binds[3];
+            return { changes: 1 };
+          }
+          return { changes: 0 };
+        }
+        return null;
+      },
+    });
+    env.ELEVENLABS_API_KEY = 'sk-live';
+    await r2.put(`voice-samples/u1/${rowId}`, new Uint8Array([1]));
+    // Two list requests race their heals.
+    const [a, b] = await Promise.all([
+      worker.fetch(req('/api/me/voices', { method: 'GET', cookie }), env),
+      worker.fetch(req('/api/me/voices', { method: 'GET', cookie }), env),
+    ]);
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    const deletes = vendor.calls.filter((c) => c.method === 'DELETE');
+    // Either the second heal saw the healed row (0 duplicate, 0 deletes) or
+    // it raced, lost the CAS, and deleted its duplicate.
+    assert.equal(cloneCount - 1, deletes.length,
+      'every clone beyond the first was compensated — exactly one tracked clone survives');
+  } finally {
+    globalThis.fetch = originalFetch;
+    vendor.restore();
+  }
+});
+
+test('DELETE: a failed sample cleanup keeps the ROW as the retry record — never a silent loss', async () => {
+  const vendor = stubVendorPool({ 'xi-unit-test': { deleteStatus: 404 } });
+  try {
+    const rowId = '2'.repeat(32);
+    const { cookie, env, r2, d1 } = await userEnv({
+      voices: [{ rowId, vendorId: 'v-x' }],
+    });
+    await r2.put(`voice-samples/u1/${rowId}`, new Uint8Array([1]));
+    const realDelete = r2.delete.bind(r2);
+    r2.delete = async () => {
+      throw new Error('r2 refused');
+    };
+    const fail = await worker.fetch(req(`/api/me/voices/${rowId}`, { method: 'DELETE', cookie }), env);
+    assert.equal(fail.status, 502);
+    assert.equal((await fail.json()).error, 'sample_cleanup_failed');
+    assert.ok(!d1.executed.some((e) => /DELETE FROM user_voices/.test(e.sql)),
+      'the row SURVIVES a failed sample delete — it IS the retry record');
+    // The retry: sample delete works now; the vendor 404 is tolerated
+    // (already deleted on the first attempt) — the chain is idempotent.
+    r2.delete = realDelete;
+    const retry = await worker.fetch(req(`/api/me/voices/${rowId}`, { method: 'DELETE', cookie }), env);
+    assert.equal(retry.status, 200);
+    assert.equal(r2._objects.size, 0, 'the obligation was discharged on retry');
   } finally {
     vendor.restore();
   }

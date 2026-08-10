@@ -142,17 +142,20 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     },
 
     /**
-     * The healer's write: the SAME row gets its new vendor identity — the
-     * user's voice keeps its row id (and its stored sample) across account
-     * moves. Scoped by id AND user_id, the no-oracle rule.
+     * The healer's write, as a COMPARE-AND-SWAP: the update lands only if
+     * the row still carries the vendor identity the healer read (two
+     * concurrent heals cannot both win — the loser learns it lost and
+     * compensates its duplicate clone at the vendor; CodeRabbit, PR 104).
+     * Returns whether THIS caller won. Scoped by id AND user_id.
      */
-    async updateUserVoiceVendor(userId, id, { vendorVoiceId, vendorAccount }) {
-      await d1
+    async updateUserVoiceVendorIf(userId, id, { expectedVendorVoiceId, vendorVoiceId, vendorAccount }) {
+      const res = await d1
         .prepare(
-          'UPDATE user_voices SET vendor_voice_id = ?3, vendor_account = ?4 WHERE id = ?1 AND user_id = ?2',
+          'UPDATE user_voices SET vendor_voice_id = ?4, vendor_account = ?5 WHERE id = ?1 AND user_id = ?2 AND vendor_voice_id = ?3',
         )
-        .bind(id, userId, vendorVoiceId, vendorAccount)
+        .bind(id, userId, expectedVendorVoiceId, vendorVoiceId, vendorAccount)
         .run();
+      return (res?.meta?.changes ?? res?.changes ?? 0) >= 1;
     },
 
     /**

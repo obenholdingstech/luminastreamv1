@@ -186,7 +186,9 @@ export function createVoiceRoutes(kit) {
         vendorName: `lumina-${session.userId.slice(0, 8)}-${label}`.slice(0, 90),
       });
       if (!created) {
-        await env.AVATARS.delete(skey).catch(() => {});
+        await env.AVATARS.delete(skey).catch((err) =>
+          console.error(`SAMPLE-ORPHAN ${skey}: cleanup after clone refusal failed`, err),
+        );
         return json({ ok: false, error: 'voice_clone_rejected' }, { status: 502, origin });
       }
       // The atomic cap: count-and-insert in one statement (PR 94). From here
@@ -205,12 +207,16 @@ export function createVoiceRoutes(kit) {
       } catch (err) {
         console.error('clone registration failed after vendor create:', err);
         await compensateVendorVoice(created.key, vendorBase, created.voiceId);
-        await env.AVATARS.delete(skey).catch(() => {});
+        await env.AVATARS.delete(skey).catch((err) =>
+          console.error(`SAMPLE-ORPHAN ${skey}: cleanup after registration failure failed`, err),
+        );
         return json({ ok: false, error: 'voice_clone_rejected' }, { status: 502, origin });
       }
       if (!registered) {
         await compensateVendorVoice(created.key, vendorBase, created.voiceId);
-        await env.AVATARS.delete(skey).catch(() => {});
+        await env.AVATARS.delete(skey).catch((err) =>
+          console.error(`SAMPLE-ORPHAN ${skey}: cleanup after cap refusal failed`, err),
+        );
         return json({ ok: false, error: 'voice_limit_reached' }, { status: 409, origin });
       }
       return json(
@@ -259,9 +265,20 @@ export function createVoiceRoutes(kit) {
       if (!vres.ok && vres.status !== 404) {
         return json({ ok: false, error: 'vendor_delete_failed' }, { status: 502, origin });
       }
+      // The sample dies BEFORE the row (CodeRabbit, PR 104): if this delete
+      // fails, the row survives and the user's retry re-runs the whole
+      // chain idempotently (the vendor delete above tolerates 404), so the
+      // cleanup obligation is never silently lost — no new state needed,
+      // the ROW is the retry record.
+      if (env.AVATARS) {
+        try {
+          await env.AVATARS.delete(sampleKey(session.userId, rowId));
+        } catch (err) {
+          console.error(`SAMPLE-ORPHAN ${sampleKey(session.userId, rowId)}: delete failed, row kept for retry`, err);
+          return json({ ok: false, error: 'sample_cleanup_failed' }, { status: 502, origin });
+        }
+      }
       await session.db.removeUserVoice(session.userId, rowId);
-      // The sample dies with the voice — retention only ever serves healing.
-      if (env.AVATARS) await env.AVATARS.delete(sampleKey(session.userId, rowId)).catch(() => {});
       return json({ ok: true }, { origin });
     },
   };

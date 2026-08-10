@@ -36,10 +36,13 @@ export async function parsePool(envValue) {
   return pool;
 }
 
-/** Any key at all? (The presence flag — a pool claim, not a health claim.) */
+/** Any key at all? Same presence rule as parsePool — at least one
+ * comma-separated entry survives trimming — so the config flag can never
+ * claim "enabled" while the pool parses empty (CodeRabbit, PR 104). */
 export function anyVendorKey(env) {
-  return Boolean(
-    typeof env.ELEVENLABS_API_KEY === 'string' && env.ELEVENLABS_API_KEY.trim().replaceAll(',', ''),
+  return (
+    typeof env.ELEVENLABS_API_KEY === 'string' &&
+    env.ELEVENLABS_API_KEY.split(',').some((part) => part.trim().length > 0)
   );
 }
 

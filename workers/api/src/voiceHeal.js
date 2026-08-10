@@ -97,10 +97,26 @@ export async function healUserVoice(env, db, userId, row) {
       vendorName: `lumina-${userId.slice(0, 8)}-${row.label}`.slice(0, 90),
     });
     if (!healed) return row;
-    await db.updateUserVoiceVendor(userId, row.id, {
+    // Compare-and-swap: only the FIRST heal of this row wins; a concurrent
+    // loser deletes its duplicate clone with the key that made it and
+    // adopts whatever the winner wrote.
+    const won = await db.updateUserVoiceVendorIf(userId, row.id, {
+      expectedVendorVoiceId: row.vendor_voice_id,
       vendorVoiceId: healed.voiceId,
       vendorAccount: healed.fingerprint,
     });
+    if (!won) {
+      try {
+        await fetch(`${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/${encodeURIComponent(healed.voiceId)}`, {
+          method: 'DELETE',
+          headers: { 'xi-api-key': healed.key },
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch (err) {
+        console.error(`VOICE-ORPHAN ${healed.voiceId}: losing duplicate heal could not be deleted`, err);
+      }
+      return (await db.findUserVoice(userId, row.id)) ?? row;
+    }
     await db.remapProfileVoiceId(userId, row.vendor_voice_id, healed.voiceId);
     console.error(
       `VOICE-STRANDED ${row.vendor_account} ${row.vendor_voice_id}: healed to ${healed.fingerprint} ${healed.voiceId} — the old vendor-side voice has no key to delete it with`,

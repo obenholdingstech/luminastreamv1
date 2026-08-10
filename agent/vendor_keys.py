@@ -61,6 +61,14 @@ def parse_pool(env_value):
 
 _PAYMENT_MARKERS = ("payment_required", "payment_issue", "quota_exceeded", "payment", "billing")
 
+# The STT variant is NARROWER than the TTS one, deliberately: WebSocket
+# errors carry no HTTP status line to anchor on, so only the vendor's
+# explicit billing statuses qualify. A bare "auth_error" (or the loose
+# "payment"/"billing" words) must NOT restart the agent — preflight's STT
+# probe is a connect, not a spend, so a key that fails only mid-session
+# auth would pass preflight again and loop the restarts (CodeRabbit, PR 104).
+_STT_BILLING_STATUSES = ("payment_required", "payment_issue", "quota_exceeded")
+
 
 def is_payment_class(exc):
     """Is this TTS error the vendor refusing for MONEY reasons?"""
@@ -71,7 +79,6 @@ def is_payment_class(exc):
 
 
 def is_stt_payment_class(exc):
-    """The STT variant: WebSocket-framed errors carry no HTTP status line,
-    so this matches on the vendor's own auth/billing vocabulary alone."""
+    """The STT variant: explicit vendor billing statuses ONLY (see above)."""
     text = str(exc).lower()
-    return any(marker in text for marker in (*_PAYMENT_MARKERS, "auth_error"))
+    return any(status in text for status in _STT_BILLING_STATUSES)

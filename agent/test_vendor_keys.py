@@ -75,9 +75,14 @@ def test_payment_class_is_unreachable_by_transients():
         assert not is_payment_class(exc), str(exc)
 
 
-def test_stt_payment_class_matches_vendor_vocabulary_only():
-    assert is_stt_payment_class(SttError("auth_error: quota_exceeded"))
+def test_stt_payment_class_matches_explicit_billing_statuses_only():
+    assert is_stt_payment_class(SttError("auth_error: quota_exceeded")), "billing status present"
     assert is_stt_payment_class(SttError("payment_required"))
+    # A bare auth_error must NOT restart: preflight's STT probe is a
+    # connect, not a spend — a mid-session-only auth failure would pass
+    # preflight again and loop the restarts (CodeRabbit, PR 104).
+    assert not is_stt_payment_class(SttError("auth_error: invalid key"))
+    assert not is_stt_payment_class(SttError("billing department is closed"))
     assert not is_stt_payment_class(SttError("connection lost"))
     assert not is_stt_payment_class(SttError("timeout waiting for final"))
 
@@ -202,7 +207,7 @@ def test_payment_class_tts_error_requests_restart_once():
 
 def test_stt_payment_class_requests_restart_too():
     async def main():
-        stt = MockStt(error=SttError("auth_error: payment_required"), stream_fails=True)
+        stt = MockStt(error=SttError("payment_required: settle the invoice"), stream_fails=True)
         engine, _, _ = build(stt=stt)
         calls = _spyed(engine)
         engine.start()
