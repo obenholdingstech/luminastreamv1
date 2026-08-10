@@ -115,11 +115,16 @@ test('addUserVoice: count-and-insert is ONE statement, and a cap refusal returns
   // its own COUNT guard; the caller learns refusal from meta.changes.
   const granted = createFakeD1();
   let db = createDb(granted, fixedDeps());
-  const ok = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Me', cap: 3 });
+  const ok = await db.addUserVoice('u1', { vendorVoiceId: 'v-1', label: 'Me', cap: 3, vendorAccount: 'kabc12345' });
   assert.deepEqual(ok, { id: 'id-1' }, 'the fresh id is the row id — no read-back needed');
   const insert = granted.executed[0];
   assert.match(insert.sql, /SELECT COUNT\(\*\) FROM user_voices WHERE user_id/, 'the guard lives IN the insert');
-  assert.equal(insert.binds[5], 3, 'the cap travels as a bind');
+  assert.equal(insert.binds[4], 'kabc12345', 'the creating account fingerprint rides the row');
+  assert.equal(insert.binds[6], 3, 'the cap travels as a bind');
+  // The clone flow mints the id BEFORE the vendor call so the sample and
+  // the row share one identity — the override must be honoured.
+  const explicit = await db.addUserVoice('u1', { id: 'row-fixed', vendorVoiceId: 'v-2', label: 'X', cap: 3 });
+  assert.deepEqual(explicit, { id: 'row-fixed' });
 
   const refused = createFakeD1({ runMeta: () => ({ changes: 0 }) });
   db = createDb(refused, fixedDeps());

@@ -78,9 +78,11 @@ from elevenlabs_client import (
     check_credentials,
     fetch_voice,
     list_voices,
+    list_voices_strict,
     resolve_voice_settings,
     voice_settings_from,
 )
+import vendor_keys
 from endpointer import PcmQueue, UtteranceEndpointer
 from rvc_client import RvcClient
 from tts_engine import TtsEngine
@@ -1345,9 +1347,15 @@ async def build_tts_engine(args, profile_flat, cli_overrides):
     governor = SpendGovernor()
     governor.log_startup()
 
-    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    # The keyring (CEO architecture, 10 Aug 2026): ELEVENLABS_API_KEY keeps
+    # its name, its VALUE is the ordered pool — first key preferred, next
+    # keys tried when a candidate fails its gates. A bare single key is a
+    # pool of one, byte-identical to the old behavior.
+    pool = vendor_keys.parse_pool(os.environ.get("ELEVENLABS_API_KEY"))
     voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
-    check_credentials(api_key, voice_id)
+    # An empty pool reuses check_credentials so the operator reads the exact
+    # existing "missing from secrets.env" sentence.
+    check_credentials(pool[0].api_key if pool else None, voice_id)
 
     drill_lines = []
     if args.drill_script:
@@ -1360,9 +1368,9 @@ async def build_tts_engine(args, profile_flat, cli_overrides):
     http = aiohttp.ClientSession(
         connector=aiohttp.TCPConnector(keepalive_timeout=120, limit=8))
     try:
-        return await _preflight_and_build(args, http, api_key, voice_id,
-                                          governor, drill_lines,
-                                          profile_flat, cli_overrides)
+        return await _preflight_pool(args, http, pool, voice_id,
+                                     governor, drill_lines,
+                                     profile_flat, cli_overrides)
     except BaseException:
         # Close the session a failed preflight opened. Otherwise aiohttp prints
         # an "Unclosed client session" traceback on GC, burying the single
@@ -1371,12 +1379,71 @@ async def build_tts_engine(args, profile_flat, cli_overrides):
         raise
 
 
-async def _preflight_and_build(args, http, api_key, voice_id, governor,
-                               drill_lines, profile_flat, cli_overrides):
-    # ELEVENLABS_VOICE_ID is the startup default; a committed profile MAY pin a
-    # different voice (config-as-code). The selector overrides per-session and
-    # never writes back to secrets.env.
-    startup_voice = profile_flat.get("voice") or voice_id
+def resolve_startup_voice(configured, voices):
+    """The startup voice THIS account can actually serve.
+
+    The configured voice (profile pin or ELEVENLABS_VOICE_ID) may be a clone
+    living on a different account — the trap that would make a healthy
+    backup key look dead at fetch_voice. If the configured id is on this
+    account's list, use it; else fall back to the account's first premade,
+    LOUDLY (a last-resort safety net — the Worker's voice healer keeps
+    product clones on the active account, so this firing means a
+    dashboard-era or foreign voice is pinned); no premade either → this
+    candidate is unusable.
+    """
+    ids = {v["voice_id"] for v in voices}
+    if configured and configured in ids:
+        return configured
+    for v in voices:
+        if v.get("category") == "premade":
+            log.warning(
+                "startup voice %r is not on this account — falling back to "
+                "premade %r (%s). If a pinned clone was expected, re-clone it "
+                "through the studio so the healer owns its sample.",
+                configured, v.get("name"), v["voice_id"])
+            return v["voice_id"]
+    raise PreflightError(
+        "This account lists no usable startup voice (configured voice absent "
+        "and no premade voices visible).")
+
+
+async def _preflight_pool(args, http, pool, voice_id, governor,
+                          drill_lines, profile_flat, cli_overrides):
+    """Try each key in pool order; the first that passes every gate wins.
+
+    Order IS preference (the operator edits the list); a candidate that
+    fails ANY gate — listing, voice resolution, STT, the 1-char warmup
+    synthesis — is recorded and the next is tried. All dead → one
+    PreflightError naming every account's reason, keys only ever
+    fingerprint/masked.
+    """
+    configured_voice = profile_flat.get("voice") or voice_id
+    failures = []
+    for cand in pool:
+        try:
+            voices = await list_voices_strict(http, cand.api_key)
+            startup_voice = resolve_startup_voice(configured_voice, voices)
+            result = await _preflight_and_build(
+                args, http, cand.api_key, startup_voice, voices,
+                governor, drill_lines, profile_flat, cli_overrides)
+            log.info("ELEVENLABS ACCOUNT %s ACTIVE (key %s)",
+                     cand.fingerprint, vendor_keys.mask(cand.api_key))
+            return result
+        except PreflightError as exc:
+            failures.append(f"account {cand.fingerprint} "
+                            f"(key {vendor_keys.mask(cand.api_key)}): {exc}")
+            log.warning("ElevenLabs account %s failed preflight — trying next "
+                        "key in the pool. Reason: %s", cand.fingerprint, exc)
+    raise PreflightError(
+        "All configured ElevenLabs accounts failed preflight: "
+        + " | ".join(failures))
+
+
+async def _preflight_and_build(args, http, api_key, startup_voice, voices,
+                               governor, drill_lines, profile_flat, cli_overrides):
+    # The startup voice and the account listing arrive PRE-RESOLVED by the
+    # pool loop (one strict GET per candidate, one source of truth); the
+    # gate chain below is byte-identical to the single-key era.
     voice = await fetch_voice(http, api_key, startup_voice)
 
     # Precedence, resolved now that the clone's own settings are in hand:
@@ -1418,8 +1485,8 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor,
     engine.request_continuity = bool(resolved.get("request_continuity", True))
     engine.normalizer.set_enabled(resolved["loudness_normalize"])
     engine.normalizer.set_target_db(resolved["loudness_target_db"])
-    # Account voices for the selector — a free GET, so it's not metered.
-    engine.voices = await list_voices(http, api_key)
+    # The pool loop's strict listing, reused — no second GET, no drift.
+    engine.voices = voices
     # Warm BOTH vendors before the room join — the STT handshake (~900 ms) and
     # the TTS cold-voice penalty (993 ms vs ~376 ms steady) would otherwise land
     # inside the first utterance's tail. Same philosophy as the RVC warmup.
@@ -1431,7 +1498,16 @@ async def _preflight_and_build(args, http, api_key, voice_id, governor,
             f"Could not open the ElevenLabs realtime STT session ({exc!r}). The "
             f"key and voice were accepted, so this is the realtime endpoint — "
             f"check outbound WebSocket access to {stt.url.split('?')[0]}.")
-    await tts.warmup(governor)
+    try:
+        await tts.warmup(governor)
+    except PreflightError:
+        # A candidate that dies at the spend gate must not leak its live STT
+        # socket into the next candidate's attempt on the shared session.
+        try:
+            await stt.close()
+        except Exception:
+            pass
+        raise
     log.info("PREFLIGHT OK — engine=tts model=%s stt=%s voice=%r (%d account voices)",
              model, stt.model, voice.get("name"), len(engine.voices))
     return http, engine.start()

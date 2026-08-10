@@ -11,6 +11,8 @@
 // (grants, refunds) deliberately wait for P5's wallets — the admin console
 // must never invent a second money path.
 
+import { anyVendorKey } from './vendorKeys.js';
+
 const USER_PAGE_LIMIT = 50;
 
 /**
@@ -77,7 +79,7 @@ export function createAdminRoutes(kit) {
           users: counts,
           capacity: capacity?.ok ? capacity : null,
           videoBudget: budget?.ok ? budget : null,
-          voiceCloningEnabled: Boolean(env.ELEVENLABS_API_KEY),
+          voiceCloningEnabled: anyVendorKey(env),
         },
         { origin },
       );

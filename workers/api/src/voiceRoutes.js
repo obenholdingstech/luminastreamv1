@@ -13,6 +13,9 @@
 // insert (db.addUserVoice), so concurrent clones cannot race past it and
 // spam the vendor's cloning endpoint. (The pre-vendor listUserVoices check
 // in clone() is only the cheap early refusal; the insert is the wall.)
+import { parsePool } from './vendorKeys.js';
+import { cloneOnPool, healUserVoice, sampleKey } from './voiceHeal.js';
+
 export const MAX_VOICES_PER_USER = 5;
 const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io';
 // ~10MB decoded — a voice sample is audio (the vendor wants ≥1 minute of
@@ -48,11 +51,11 @@ function decodeSample(raw) {
  * ledger-executioner pattern; it arrives if orphan lines ever actually
  * appear — the alert comes first, the machinery only with evidence.)
  */
-async function compensateVendorVoice(env, base, vendorVoiceId) {
+async function compensateVendorVoice(apiKey, base, vendorVoiceId) {
   try {
     const res = await fetch(`${base}/v1/voices/${encodeURIComponent(vendorVoiceId)}`, {
       method: 'DELETE',
-      headers: { 'xi-api-key': env.ELEVENLABS_API_KEY },
+      headers: { 'xi-api-key': apiKey },
       signal: AbortSignal.timeout(15_000),
     });
     // An HTTP failure RESOLVES (ok === false) — it must count as a failed
@@ -103,11 +106,24 @@ export function createVoiceRoutes(kit) {
     async list(request, env, origin) {
       const { refusal, session } = await requireUser(request, env, origin);
       if (refusal) return refusal;
-      const voices = await session.db.listUserVoices(session.userId);
+      const rows = await session.db.listUserVoices(session.userId);
+      // The library self-repairs on view: any clone whose creating key left
+      // the pool is re-provisioned from OUR sample (healUserVoice no-ops
+      // for healthy rows and never throws — the list is not the place a
+      // repair becomes a failure).
+      const voices = [];
+      for (const row of rows) {
+        voices.push(await healUserVoice(env, session.db, session.userId, row));
+      }
       return json(
         {
           ok: true,
-          voices: voices.map((v) => ({ id: v.id, voiceId: v.vendor_voice_id, label: v.label })),
+          voices: voices.map((v) => ({
+            id: v.id,
+            voiceId: v.vendor_voice_id,
+            label: v.label,
+            vendorAccount: v.vendor_account,
+          })),
         },
         { origin },
       );
@@ -125,7 +141,14 @@ export function createVoiceRoutes(kit) {
       if (!mayStartSession(session)) {
         return json({ ok: false, error: 'verification_required' }, { status: 403, origin });
       }
-      if (!env.ELEVENLABS_API_KEY) {
+      const pool = await parsePool(env.ELEVENLABS_API_KEY);
+      if (pool.length === 0) {
+        return json({ ok: false, error: 'voice_vendor_unconfigured' }, { status: 503, origin });
+      }
+      // The sample vault is REQUIRED: a clone we cannot heal later must not
+      // exist (CEO architecture — the voice is OUR property, the vendor is
+      // interchangeable).
+      if (!env.AVATARS) {
         return json({ ok: false, error: 'voice_vendor_unconfigured' }, { status: 503, origin });
       }
       const existing = await session.db.listUserVoices(session.userId);
@@ -139,56 +162,67 @@ export function createVoiceRoutes(kit) {
         typeof body?.name === 'string' && body.name.trim()
           ? body.name.trim().slice(0, 60)
           : 'My voice';
+      const mimeType = typeof body?.mimeType === 'string' ? body.mimeType : 'audio/mpeg';
+
+      // The row id is minted BEFORE the vendor call so the stored sample and
+      // the row share one identity from birth; the sample lands FIRST —
+      // personal data whose retention serves the user (it dies with the
+      // voice, and P8 account-deletion will cascade here).
+      const rowId = crypto.randomUUID();
+      const skey = sampleKey(session.userId, rowId);
+      try {
+        await env.AVATARS.put(skey, bytes, { httpMetadata: { contentType: mimeType } });
+      } catch (err) {
+        console.error('voice sample failed to land, refusing the clone:', err);
+        return json({ ok: false, error: 'storage_unavailable' }, { status: 502, origin });
+      }
 
       // Vendor-attributable name: the ElevenLabs dashboard must say whose
-      // clone this is without a database lookup.
-      const vendorName = `lumina-${session.userId.slice(0, 8)}-${label}`.slice(0, 90);
-      const form = new FormData();
-      form.set('name', vendorName);
-      form.append('files', new Blob([bytes], { type: body?.mimeType || 'audio/mpeg' }), 'sample');
-      let res;
-      try {
-        res = await fetch(`${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/add`, {
-          method: 'POST',
-          headers: { 'xi-api-key': env.ELEVENLABS_API_KEY },
-          body: form,
-          signal: AbortSignal.timeout(30_000),
-        });
-      } catch {
-        return json({ ok: false, error: 'vendor_unreachable' }, { status: 502, origin });
-      }
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.voice_id) {
-        // Log the detail, never echo it — vendor errors can carry account
-        // internals a client has no business reading.
-        console.error('voice clone refused:', res.status, data?.detail ?? '');
+      // clone this is without a database lookup. cloneOnPool tries keys in
+      // pool order, falling through payment-class refusals only.
+      const created = await cloneOnPool(env, pool, {
+        bytes,
+        mimeType,
+        vendorName: `lumina-${session.userId.slice(0, 8)}-${label}`.slice(0, 90),
+      });
+      if (!created) {
+        await env.AVATARS.delete(skey).catch((err) =>
+          console.error(`SAMPLE-ORPHAN ${skey}: cleanup after clone refusal failed`, err),
+        );
         return json({ ok: false, error: 'voice_clone_rejected' }, { status: 502, origin });
       }
-      // The atomic cap: count-and-insert in one statement, because the
-      // listUserVoices check above is only the CHEAP early refusal — two
-      // concurrent clones can both pass it (CodeRabbit, PR 94). From here
-      // on the vendor voice EXISTS, so every failure — the cap refusing,
-      // or the database throwing outright — must compensate at the vendor
-      // before answering: an unregistered clone spends quota and belongs
-      // to no one.
+      // The atomic cap: count-and-insert in one statement (PR 94). From here
+      // on the vendor voice EXISTS, so every failure compensates at the
+      // vendor — with the CREATING key — and reaps the sample.
       const vendorBase = env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE;
       let registered;
       try {
         registered = await session.db.addUserVoice(session.userId, {
-          vendorVoiceId: data.voice_id,
+          id: rowId,
+          vendorVoiceId: created.voiceId,
           label,
           cap: MAX_VOICES_PER_USER,
+          vendorAccount: created.fingerprint,
         });
       } catch (err) {
         console.error('clone registration failed after vendor create:', err);
-        await compensateVendorVoice(env, vendorBase, data.voice_id);
+        await compensateVendorVoice(created.key, vendorBase, created.voiceId);
+        await env.AVATARS.delete(skey).catch((err) =>
+          console.error(`SAMPLE-ORPHAN ${skey}: cleanup after registration failure failed`, err),
+        );
         return json({ ok: false, error: 'voice_clone_rejected' }, { status: 502, origin });
       }
       if (!registered) {
-        await compensateVendorVoice(env, vendorBase, data.voice_id);
+        await compensateVendorVoice(created.key, vendorBase, created.voiceId);
+        await env.AVATARS.delete(skey).catch((err) =>
+          console.error(`SAMPLE-ORPHAN ${skey}: cleanup after cap refusal failed`, err),
+        );
         return json({ ok: false, error: 'voice_limit_reached' }, { status: 409, origin });
       }
-      return json({ ok: true, id: registered.id, voiceId: data.voice_id, label }, { origin });
+      return json(
+        { ok: true, id: registered.id, voiceId: created.voiceId, label, vendorAccount: created.fingerprint },
+        { origin },
+      );
     },
 
     /**
@@ -203,8 +237,17 @@ export function createVoiceRoutes(kit) {
       if (refusal) return refusal;
       const row = await session.db.findUserVoice(session.userId, rowId);
       if (!row) return json({ ok: false, error: 'voice_not_found' }, { status: 404, origin });
-      if (!env.ELEVENLABS_API_KEY) {
+      const pool = await parsePool(env.ELEVENLABS_API_KEY);
+      if (pool.length === 0) {
         return json({ ok: false, error: 'voice_vendor_unconfigured' }, { status: 503, origin });
+      }
+      // The vendor delete needs the CREATING account's key. Absent from the
+      // pool → HARD refusal: soft-skipping would manufacture the exact
+      // VOICE-ORPHAN condition this module exists to prevent, and naming
+      // the missing account is an operator problem to surface, not hide.
+      const creating = pool.find((c) => c.fingerprint === row.vendor_account);
+      if (!creating) {
+        return json({ ok: false, error: 'voice_vendor_account_unavailable' }, { status: 503, origin });
       }
       let vres;
       try {
@@ -212,7 +255,7 @@ export function createVoiceRoutes(kit) {
           `${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/${encodeURIComponent(row.vendor_voice_id)}`,
           {
             method: 'DELETE',
-            headers: { 'xi-api-key': env.ELEVENLABS_API_KEY },
+            headers: { 'xi-api-key': creating.key },
             signal: AbortSignal.timeout(15_000),
           },
         );
@@ -221,6 +264,19 @@ export function createVoiceRoutes(kit) {
       }
       if (!vres.ok && vres.status !== 404) {
         return json({ ok: false, error: 'vendor_delete_failed' }, { status: 502, origin });
+      }
+      // The sample dies BEFORE the row (CodeRabbit, PR 104): if this delete
+      // fails, the row survives and the user's retry re-runs the whole
+      // chain idempotently (the vendor delete above tolerates 404), so the
+      // cleanup obligation is never silently lost — no new state needed,
+      // the ROW is the retry record.
+      if (env.AVATARS) {
+        try {
+          await env.AVATARS.delete(sampleKey(session.userId, rowId));
+        } catch (err) {
+          console.error(`SAMPLE-ORPHAN ${sampleKey(session.userId, rowId)}: delete failed, row kept for retry`, err);
+          return json({ ok: false, error: 'sample_cleanup_failed' }, { status: 502, origin });
+        }
       }
       await session.db.removeUserVoice(session.userId, rowId);
       return json({ ok: true }, { origin });

@@ -39,8 +39,12 @@ import logging
 import time
 
 import knobs
-from elevenlabs_client import SttError, TtsError
+import os
+import signal
+
+from elevenlabs_client import SttError, TtsError, VendorAccountDead
 from loudness import LoudnessNormalizer
+from vendor_keys import is_payment_class, is_stt_payment_class
 from spend_governor import GovernorRefusal
 from wer import best_match
 
@@ -90,6 +94,14 @@ class TtsEngine:
         self._utt_stt_reserved = 0.0   # STT seconds already metered for it
         self.generation = 0            # bumped on mode re-entry; see reset()
         self._warming = False          # a warm-on-join synthesis is in flight
+        # Mid-run vendor failover (keyring, 10 Aug 2026): payment-class
+        # vendor refusals raise VendorAccountDead ONCE; the worker loop
+        # turns it into a clean self-restart so the keyring preflight can
+        # fail over to the next key. Injectable for tests — the default
+        # signals the agent's own SIGTERM handlers, reusing the existing
+        # clean-shutdown path (capture finalized, report written).
+        self._vendor_dead = False
+        self._request_restart = lambda: os.kill(os.getpid(), signal.SIGTERM)
         # Live-tunable (Phase 4 console, "queue_wait_warn_ms" knob). Diagnostic
         # only — it moves a WARN threshold, never the audio.
         self.queue_wait_warn_ms = QUEUE_WAIT_WARN_MS
@@ -317,6 +329,14 @@ class TtsEngine:
                 await self._process(utt)
             except asyncio.CancelledError:
                 raise
+            except VendorAccountDead as exc:
+                # BEFORE the generic except, or it would be swallowed. The
+                # utterance was already dropped and logged at its site; what
+                # remains is the failover itself.
+                log.error("ELEVENLABS ACCOUNT DEAD MID-RUN (%s) — restarting "
+                          "to fail over to the next key in the pool", exc)
+                self._request_restart()
+                return
             except Exception:
                 # Belt and braces: _process already catches everything it
                 # expects. An unexpected error must still not kill the worker.
@@ -404,6 +424,11 @@ class TtsEngine:
             return
         except SttError as exc:
             self._drop(utt, "stt_error", str(exc))
+            # A dead account kills STT FIRST (the transcript never reaches
+            # TTS), so the failover classifier must live here too.
+            if is_stt_payment_class(exc) and not self._vendor_dead:
+                self._vendor_dead = True
+                raise VendorAccountDead(str(exc))
             return
         rec["stt_ms"] = round(stt_ms, 1)
         rec["transcript"] = transcript
@@ -489,6 +514,9 @@ class TtsEngine:
                 rec["enqueue_delay_ms"] = round((enqueued_at - first_at) * 1000.0, 1)
         except TtsError as exc:
             self._drop(utt, "tts_error", str(exc))
+            if is_payment_class(exc) and not self._vendor_dead:
+                self._vendor_dead = True
+                raise VendorAccountDead(str(exc))
             return
         finally:
             self._synth_in_flight = False

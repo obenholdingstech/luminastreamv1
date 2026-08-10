@@ -26,6 +26,7 @@ import { readSessionCookie } from './auth.js';
 import { createVoiceRoutes } from './voiceRoutes.js';
 import { createAdminRoutes } from './adminRoutes.js';
 import { createAvatarRoutes, loadAvatarB64 } from './avatarRoutes.js';
+import { healUserVoice } from './voiceHeal.js';
 
 const VERSION = '0.1.0';
 
@@ -364,6 +365,18 @@ async function handleSessionCreate(request, env, origin) {
   let voicePolicy = JSON.stringify({ voicePolicy: 'all' });
   if (policyUser && policyUser.role !== 'admin') {
     const clones = await policyUser.db.listUserVoices(policyUser.userId);
+    // The healer's session trigger (CEO flow, 10 Aug 2026): the user's
+    // SELECTED voice is repaired BEFORE the policy stamp, so the grant
+    // carries the healed vendor id and the stream proceeds with their true
+    // voice. One voice, synchronously — the rest of the library heals on
+    // the list view. healUserVoice no-ops for healthy rows, never throws.
+    const profile = await policyUser.db.getProfile(policyUser.userId);
+    const selectedId = profile?.voice_id ?? null;
+    for (let i = 0; i < clones.length; i += 1) {
+      if (clones[i].vendor_voice_id === selectedId) {
+        clones[i] = await healUserVoice(env, policyUser.db, policyUser.userId, clones[i]);
+      }
+    }
     voicePolicy = JSON.stringify({
       voicePolicy: 'own',
       voices: clones.map((v) => v.vendor_voice_id),

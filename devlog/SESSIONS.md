@@ -4,6 +4,60 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 10 Aug 2026 — the pool behind the key, and voices that follow their owner
+
+**Task (CEO, verbatim essentials):** "we shouldn't change the
+ELEVENLABS_API_KEY variable name… the value behind it is handled by our
+key-management/routing system" · "every voice clone is stored and managed
+in our own system… the backend automatically fetches their reference audio
+from R2… silently re-clones the voice using the active preferred key… the
+stream proceeds with their true custom voice" · she vetoed the premade
+fallback: "The system must do the work, not the user."
+
+**What shipped:**
+
+1. **The keyring.** ELEVENLABS_API_KEY's VALUE is now an ordered,
+   comma-separated pool; a bare key is a pool of one (back-compat
+   byte-identical). Order is preference; membership is the operator's
+   liveness assertion. Accounts are labeled by key FINGERPRINT
+   (k+sha256[:8]) — stable across reordering, safe to log; raw keys appear
+   nowhere. Two thin layers (agent/vendor_keys.py,
+   workers/api/src/vendorKeys.js), one semantics.
+
+2. **Agent failover.** Pool preflight: strict per-key voice listing →
+   per-account startup-voice resolution (the trap: the profile pins an
+   account-1 clone that would 404 the healthy backup at fetch_voice) →
+   the unchanged gate chain; first healthy key logs
+   "ELEVENLABS ACCOUNT <fp> ACTIVE". Mid-run, payment-class refusals at
+   EITHER vendor (STT dies first on a dead account) raise
+   VendorAccountDead once → clean SIGTERM self-restart → the keyring
+   skips the dead key. The classifier is provably unreachable by
+   transients — including payment WORDS on non-payment statuses, a test
+   gap the mutation run itself exposed and closed.
+
+3. **The healer.** Clone samples persist to R2 at birth
+   (voice-samples/<user>/<rowId>, sample BEFORE vendor call — a clone we
+   can't heal must not exist; sample dies with the voice). A row whose
+   creating key left the pool re-clones silently on the active key —
+   session-create heals the SELECTED voice before the policy stamp (the
+   grant carries the healed id), the library view heals the rest. Same
+   row id, profile selection remapped, the stranded vendor-side voice
+   logged for reconciliation. Deletion uses the CREATING key and
+   hard-refuses (503 voice_vendor_account_unavailable) when that account
+   left the pool — soft-skip would manufacture orphans.
+
+**Honest constraints, told plainly:** clones are account-scoped at the
+vendor (her question — answered before design); her own pinned voice is a
+dashboard-era clone with no stored sample, so it alone cannot auto-heal —
+one studio re-clone retires it. Concurrent-heal locking deferred to P5's
+wallet DO, named in the plan.
+
+**Verification:** agent 249 pytest green (15 new); Worker 268 node --test
+green (12 new incl. session-create heal end-to-end into the decoded JWT
+stamp); frontend 333 + ritual clean (bare gates). Mutation runs: heal
+predicate, delete hard-refusal, and the payment classifier all bite.
+
+---
 ## 9 Aug 2026 — the agent's outage named, the admin console built
 
 **Task (CEO, verbatim):** "the agent isnt live, why?" · then "designing the
