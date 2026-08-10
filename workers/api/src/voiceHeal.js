@@ -107,11 +107,16 @@ export async function healUserVoice(env, db, userId, row) {
     });
     if (!won) {
       try {
-        await fetch(`${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/${encodeURIComponent(healed.voiceId)}`, {
+        const del = await fetch(`${env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE}/v1/voices/${encodeURIComponent(healed.voiceId)}`, {
           method: 'DELETE',
           headers: { 'xi-api-key': healed.key },
           signal: AbortSignal.timeout(15_000),
         });
+        // An HTTP failure RESOLVES — it is a failed compensation, not a
+        // success (the PR-94 lesson, applied here too). 404 = already gone.
+        if (!del.ok && del.status !== 404) {
+          console.error(`VOICE-ORPHAN ${healed.voiceId}: losing duplicate heal delete answered ${del.status}`);
+        }
       } catch (err) {
         console.error(`VOICE-ORPHAN ${healed.voiceId}: losing duplicate heal could not be deleted`, err);
       }

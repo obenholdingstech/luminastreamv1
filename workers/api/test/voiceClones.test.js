@@ -627,3 +627,65 @@ test('DELETE: a failed sample cleanup keeps the ROW as the retry record — neve
     vendor.restore();
   }
 });
+
+test('HEAL race: a losing compensation that answers HTTP 500 is SAID as VOICE-ORPHAN — resolved failures are not successes', async () => {
+  let cloneCount = 0;
+  // A BARRIER makes the race deterministic: the first /voices/add holds
+  // until the second arrives, so BOTH heals pass the orphan check before
+  // either CAS lands — the losing path always executes, and this test can
+  // actually fail (a race left to chance asserts nothing on a lucky run).
+  let releaseFirst;
+  const secondArrived = new Promise((r) => {
+    releaseFirst = r;
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.endsWith('/v1/voices/add')) {
+      cloneCount += 1;
+      const mine = cloneCount;
+      if (mine === 1) await secondArrived;
+      else releaseFirst();
+      return new Response(JSON.stringify({ voice_id: `v-heal-${mine}` }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (/api\.elevenlabs\.io\/v1\/voices\//.test(u) && opts.method === 'DELETE') {
+      return new Response('{}', { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+    return originalFetch(url, opts);
+  };
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.map(String).join(' '));
+  try {
+    const rowId = '3'.repeat(32);
+    let currentVendorId = 'v-old';
+    const { cookie, env, r2 } = await userEnv({
+      voices: [{ rowId, vendorId: 'v-old', label: 'Me', account: 'kDEADDEAD' }],
+      runMeta: (sql, binds) => {
+        if (/UPDATE user_voices SET vendor_voice_id/.test(sql)) {
+          if (binds[2] === currentVendorId) {
+            currentVendorId = binds[3];
+            return { changes: 1 };
+          }
+          return { changes: 0 };
+        }
+        return null;
+      },
+    });
+    env.ELEVENLABS_API_KEY = 'sk-live';
+    await r2.put(`voice-samples/u1/${rowId}`, new Uint8Array([1]));
+    await Promise.all([
+      worker.fetch(req('/api/me/voices', { method: 'GET', cookie }), env),
+      worker.fetch(req('/api/me/voices', { method: 'GET', cookie }), env),
+    ]);
+    assert.equal(cloneCount, 2, 'the barrier guarantees both heals cloned — the race is not left to chance');
+    const orphanLine = errors.find((l) => l.includes('VOICE-ORPHAN') && l.includes('answered 500'));
+    assert.ok(orphanLine, 'the failed compensation is greppable, never silently treated as deleted');
+  } finally {
+    console.error = originalError;
+    globalThis.fetch = originalFetch;
+  }
+});
