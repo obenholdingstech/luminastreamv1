@@ -148,25 +148,31 @@ async def fetch_voice(session, api_key, voice_id):
             "Check outbound network/DNS on this host.")
 
 
-async def list_voices(session, api_key):
-    """GET /v1/voices — the account's voices (cloned + ElevenLabs premade).
+async def list_voices_strict(session, api_key):
+    """GET /v1/voices, RAISING on failure — the keyring preflight's probe.
 
-    A free GET (no synthesis), so it is NOT metered by the governor. Returns
-    [{voice_id, name, category}]; an empty list on any failure — the selector is
-    a convenience and a listing failure must never take the agent down. The
-    shared community Voice Library is a SEPARATE surface (/v1/shared-voices plus
-    an add step) and is deliberately out of scope here (see PR)."""
+    The pool loop (convert_agent._preflight_pool) needs a listing failure to
+    disqualify a candidate key loudly, not to hand back an empty selector.
+    Raises PreflightError with the operator-sentence discipline; the key
+    itself never appears in the message."""
     try:
         async with session.get(f"https://{API_HOST}/v1/voices",
                                headers={"xi-api-key": api_key}) as r:
+            if r.status in (401, 403):
+                raise PreflightError(
+                    f"ElevenLabs rejected this key (HTTP {r.status}) on the voice "
+                    "listing — it may be mistyped, revoked, or from a closed account.")
             if r.status != 200:
-                log.warning("voice listing failed (HTTP %d) — selector stays empty",
-                            r.status)
-                return []
+                body = (await r.text())[:160]
+                raise PreflightError(
+                    f"ElevenLabs voice listing failed (HTTP {r.status}): {body}")
             data = json.loads(await r.text())
+    except PreflightError:
+        raise
     except Exception as exc:
-        log.warning("could not list voices (%r) — selector stays empty", exc)
-        return []
+        raise PreflightError(
+            f"Could not reach api.elevenlabs.io to list voices ({exc!r}). "
+            "Check the VPS's network/DNS.")
     out = []
     for v in data.get("voices", []):
         vid = v.get("voice_id")
@@ -177,6 +183,24 @@ async def list_voices(session, api_key):
                     "category": v.get("category") or "voice"})
     log.info("listed %d account voices", len(out))
     return out
+
+
+async def list_voices(session, api_key):
+    """GET /v1/voices — the account's voices (cloned + ElevenLabs premade).
+
+    A free GET (no synthesis), so it is NOT metered by the governor. Returns
+    [{voice_id, name, category}]; an empty list on any failure — the selector is
+    a convenience and a listing failure must never take the agent down. The
+    shared community Voice Library is a SEPARATE surface (/v1/shared-voices plus
+    an add step) and is deliberately out of scope here (see PR).
+
+    The RAISING variant above serves the keyring preflight; this wrapper keeps
+    the failure-silent contract for every runtime call site (refresh_voices)."""
+    try:
+        return await list_voices_strict(session, api_key)
+    except PreflightError as exc:
+        log.warning("could not list voices (%s) — selector stays empty", exc)
+        return []
 
 
 def voice_settings_from(voice):
@@ -228,6 +252,16 @@ class _SttConnectionLost(SttError):
 
 class TtsError(Exception):
     pass
+
+
+class VendorAccountDead(Exception):
+    """The active vendor account refused for MONEY reasons mid-run.
+
+    Raised (once) from the engine's drop sites when a payment-class error is
+    classified; the worker loop turns it into a clean self-restart so the
+    keyring preflight can fail over to the next key in the pool. Never raised
+    for transient errors — the classifier in vendor_keys.py is deliberately
+    unreachable by timeouts, 429s, 5xx, and network noise."""
 
 
 class SttClient:

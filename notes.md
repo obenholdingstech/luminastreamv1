@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 10 August 2026 — vendor keys become a pool; voices become OUR property
+
+- **CEO architecture (her veto reshaped the design):** ELEVENLABS_API_KEY keeps its name everywhere; its VALUE is an ordered comma-separated pool — order = preference, membership = liveness assertion. No SECOND_* names anywhere.
+- **The healer:** clone samples persist to R2 (voice-samples/<user>/<rowId>); a clone whose creating key left the pool is silently re-cloned on the active key at session-create (selected voice) and on library view (all) — same row, new vendor identity, profile selection follows. No premade downgrade, no user action.
+- **Agent:** pool preflight (first healthy key wins; per-account startup-voice resolution defuses the pinned-clone trap); mid-run payment-class refusals at EITHER vendor trigger one clean SIGTERM restart into the next key. Gate strings untouched.
+- **CEO rollout (after merge):** set ELEVENLABS_API_KEY="<key2>,<key1>" (or key2 only until account 1 is paid — removal triggers healing) in BOTH VPS secrets.env and via put-worker-secrets.sh production; reset-failed the unit; re-clone her voice once through the studio (dashboard-era clone has no sample and cannot auto-heal).
+
 ## 9 August 2026 — agent diagnosed (vendor invoice), admin API ships
 
 - **Agent outage root-caused from the CEO's journal paste:** ElevenLabs `payment_required` on the synthesis endpoint — the PREFLIGHT gate refused, StartLimitBurst parked the unit as designed. **CEO: settle the invoice, then `systemctl --user reset-failed lumina-agent && systemctl --user restart lumina-agent`.** Not code; not the key.

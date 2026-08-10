@@ -106,7 +106,7 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
     /** The caller's clones, nothing else's — the ONE product query. */
     async listUserVoices(userId) {
       const { results } = await d1
-        .prepare('SELECT id, vendor_voice_id, label, created_at FROM user_voices WHERE user_id = ?1 ORDER BY created_at')
+        .prepare('SELECT id, vendor_voice_id, label, vendor_account, created_at FROM user_voices WHERE user_id = ?1 ORDER BY created_at')
         .bind(userId)
         .all();
       return results ?? [];
@@ -125,25 +125,54 @@ export function createDb(d1, { newId = () => crypto.randomUUID(), now = () => Ma
      * the UNIQUE constraint would surface a true double-registration as a
      * thrown error, which is the loud version of a bug we want to hear.)
      */
-    async addUserVoice(userId, { vendorVoiceId, label, cap }) {
-      const id = newId();
+    async addUserVoice(userId, { id = newId(), vendorVoiceId, label, cap, vendorAccount = 'legacy' }) {
+      // `id` may arrive from the caller: the clone flow mints it BEFORE the
+      // vendor call so the stored sample (voice-samples/<user>/<id>) and the
+      // row share an identity from birth.
       const res = await d1
         .prepare(
-          `INSERT INTO user_voices (id, user_id, vendor_voice_id, label, created_at)
-           SELECT ?1, ?2, ?3, ?4, ?5
-           WHERE (SELECT COUNT(*) FROM user_voices WHERE user_id = ?2) < ?6`,
+          `INSERT INTO user_voices (id, user_id, vendor_voice_id, label, vendor_account, created_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6
+           WHERE (SELECT COUNT(*) FROM user_voices WHERE user_id = ?2) < ?7`,
         )
-        .bind(id, userId, vendorVoiceId, label, now(), cap)
+        .bind(id, userId, vendorVoiceId, label, vendorAccount, now(), cap)
         .run();
       const changes = res?.meta?.changes ?? res?.changes ?? 0;
       return changes >= 1 ? { id } : null;
+    },
+
+    /**
+     * The healer's write: the SAME row gets its new vendor identity — the
+     * user's voice keeps its row id (and its stored sample) across account
+     * moves. Scoped by id AND user_id, the no-oracle rule.
+     */
+    async updateUserVoiceVendor(userId, id, { vendorVoiceId, vendorAccount }) {
+      await d1
+        .prepare(
+          'UPDATE user_voices SET vendor_voice_id = ?3, vendor_account = ?4 WHERE id = ?1 AND user_id = ?2',
+        )
+        .bind(id, userId, vendorVoiceId, vendorAccount)
+        .run();
+    },
+
+    /**
+     * After a heal, the saved selection follows the voice: remap the
+     * profile's voice_id ONLY if it still points at the old vendor id.
+     */
+    async remapProfileVoiceId(userId, oldVendorId, newVendorId) {
+      await d1
+        .prepare(
+          'UPDATE lens_profiles SET voice_id = ?3, updated_at = ?4 WHERE user_id = ?1 AND voice_id = ?2',
+        )
+        .bind(userId, oldVendorId, newVendorId, now())
+        .run();
     },
 
     /** One row, scoped by BOTH id and user_id — someone else's row id
      * resolves to null, same no-oracle rule as everywhere. */
     async findUserVoice(userId, id) {
       const row = await d1
-        .prepare('SELECT id, vendor_voice_id, label FROM user_voices WHERE id = ?1 AND user_id = ?2')
+        .prepare('SELECT id, vendor_voice_id, label, vendor_account FROM user_voices WHERE id = ?1 AND user_id = ?2')
         .bind(id, userId)
         .first();
       return row ?? null;

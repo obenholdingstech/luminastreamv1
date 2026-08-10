@@ -45,6 +45,12 @@ SECRET_NAMES=(ADMIN_PASSWORD ADMIN_SESSION_SECRET LIVEKIT_API_KEY LIVEKIT_API_SE
 #   GOOGLE_CLIENT_ID/SECRET   Google sign-in (CEO's console credentials)
 #   ZEPTOMAIL_TOKEN      email verification sender
 #   ELEVENLABS_API_KEY   voice cloning (P4c-3). SPEND-AUTHORITY KEY — one of
+#                        10 Aug 2026: the VALUE may be a comma-separated POOL
+#                        ("key_active,key_backup") — order is preference,
+#                        membership is the liveness assertion (removing a
+#                        dead account's key triggers the voice healer). A
+#                        bare single key is a pool of one. Same name, same
+#                        wall, everywhere.
 #                        the three human walls: only the CEO adds it to
 #                        secrets.env and only at her direction is this script
 #                        run with it present. Absent, every clone endpoint

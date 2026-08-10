@@ -42,6 +42,7 @@ import { isTrustedForCredentials } from './cors.js';
 import { base64UrlEncode, sha256 } from './crypto.js';
 import { resolveUserSession } from './userSession.js';
 import { emailEnabled, sendVerificationEmail } from './email.js';
+import { anyVendorKey } from './vendorKeys.js';
 
 /**
  * @param {{
@@ -254,10 +255,10 @@ export function createAuthRoutes(kit) {
           googleEnabled: Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
           emailEnabled: emailEnabled(env),
           turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
-          // Presence only, never the key: lets the studio say "cloning is
-          // live" honestly, and lets ops verify a secret push landed
-          // without a signed-in session (P4c-3 went live 7 Aug 2026, late).
-          voiceCloningEnabled: Boolean(env.ELEVENLABS_API_KEY),
+          // Presence only, never a key: a non-empty POOL behind the one
+          // ELEVENLABS_API_KEY interface (10 Aug 2026). A pool claim, not a
+          // health claim — the 9 Aug incident taught the difference.
+          voiceCloningEnabled: anyVendorKey(env),
         },
         { origin },
       );
