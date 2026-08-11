@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 11 August 2026 (later) — three mandates closed
+
+- **#105 Decart pool (live fix, zero findings):** her pool push predated the code — mints were 401ing; now the mint falls through payment refusals and downstream rides the minted token.
+- **#106 clone modal:** pure cloneFlow module; language persists (0007) and the HEALER replays it; toast/progress/retryable failures.
+- **#107 Health screen (in review):** per-key live probes (quota = amber-before-dead) + agent-in-room via LiveKit RoomService; console/health tabs, 30s refresh.
+- ElevenLabs failover confirmed live by the CEO (her wrangler was authed to a past project — found via secret list).
+
 ## 11 August 2026 — Decart pool wired (live fix), ElevenLabs failover CONFIRMED
 
 - **ElevenLabs failover LIVE, CEO-verified** — root cause of the "key pending" mystery was her local wrangler authed to a past project's account; she re-authed and re-pushed.
