@@ -32,6 +32,7 @@ import {
 } from '@/lib/unifiedLens';
 import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
+import { groupVoices } from '@/lib/voiceGroups';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -234,6 +235,7 @@ export default function Studio() {
   // useMemo so the object is referentially stable for the autosave effect's
   // dependency array (exhaustive-deps: a fresh {} per render re-arms it).
   const voiceLabels = useMemo(() => voiceMeta?.choice_labels ?? {}, [voiceMeta]);
+  const voiceCategories = useMemo(() => voiceMeta?.choice_categories ?? {}, [voiceMeta]);
 
   // Pre-start identity (CEO directive, 3 Aug evening): the voice is chosen
   // BEFORE the lens starts. The selector is populated from the agent's live
@@ -265,6 +267,14 @@ export default function Studio() {
   const effectiveVoiceLabels = liveVoiceList
     ? voiceLabels
     : Object.fromEntries(voiceManifest.voices.map((v) => [v.id, v.label]));
+  // "Your voices" vs "system voices" (CEO, 11 Aug 2026). The live broadcast
+  // carries explicit categories; the manifest (and an older agent's
+  // broadcast) carries them only in the label suffix — groupVoices resolves
+  // both, so the split works pre-connect and across deploy skew.
+  const voiceGroups = useMemo(
+    () => groupVoices(effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList ? voiceCategories : {}),
+    [effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList, voiceCategories],
+  );
   // A stored choice is only a choice while the current list still offers it.
   // A voice deleted from the account (or absent from the agent's live list)
   // would otherwise leave the controlled <select> with no matching option —
@@ -1019,7 +1029,10 @@ export default function Studio() {
   const activeMode = LENS_MODES.find((m) => m.id === lensMode) ?? LENS_MODES[0];
 
   return (
-    <div className="min-h-screen bg-[#08080F] text-white flex flex-col">
+    // min-h dvh where supported: on mobile, 100vh includes the browser
+    // chrome, so the Start block can sit under the address bar — dvh is
+    // the visible viewport. The vh class stays as the fallback.
+    <div className="min-h-screen supports-[min-height:100dvh]:min-h-[100dvh] bg-[#08080F] text-white flex flex-col">
       {/* Ambient ground — a single soft wash, tinted by the current tone. */}
       <div
         aria-hidden
@@ -1032,7 +1045,7 @@ export default function Studio() {
 
       <header
         {...chromeInert}
-        className={`relative flex items-center justify-between px-6 sm:px-10 py-6 transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-60 hover:opacity-100 focus-within:opacity-100' : ''}`}
+        className={`relative flex items-center justify-between px-4 sm:px-10 py-5 sm:py-6 transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-60 hover:opacity-100 focus-within:opacity-100' : ''}`}
       >
         <div className="flex items-baseline gap-3">
           <span className="text-[13px] tracking-[0.42em] uppercase text-white/90">Lumina</span>
@@ -1049,7 +1062,7 @@ export default function Studio() {
 
       <main
         {...chromeInert}
-        className={`relative isolate flex-1 flex flex-col items-center justify-center px-6 pb-16 ${cinematic ? 'cinematic-chrome' : ''}`}
+        className={`relative isolate flex-1 flex flex-col items-center justify-center px-4 sm:px-6 pb-16 ${cinematic ? 'cinematic-chrome' : ''}`}
       >
         {/* cinematic-veil: the ring cedes the stage to the stream (CSS keeps
             its layout box, so nothing below jumps). The mic meter keeps
@@ -1272,7 +1285,9 @@ export default function Studio() {
         {effectiveVoiceChoices.length > 0 &&
           !(isConnected && agentMode && agentMode !== agentModeFor('converted')) && (
           <div className="mt-4 flex flex-col items-center gap-1">
-            <div className="flex items-center gap-2">
+            {/* wrap + max-w-full: a long voice name must never widen the
+                select past a phone screen — the label drops above instead */}
+            <div className="flex flex-wrap items-center justify-center gap-2">
               <label
                 htmlFor="lens-voice"
                 className="text-[9px] tracking-[0.18em] uppercase text-[#4A5568]"
@@ -1286,7 +1301,7 @@ export default function Studio() {
                   chooseVoice(e.target.value);
                   if (isConnected) requestVoice(e.target.value);
                 }}
-                className="bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
+                className="max-w-full bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
               >
                 {/* With no stored choice the select's value is '' — without
                     this option the browser would DISPLAY the first voice in
@@ -1298,11 +1313,24 @@ export default function Studio() {
                     choose a voice…
                   </option>
                 )}
-                {effectiveVoiceChoices.map((id) => (
-                  <option key={id} value={id} className="bg-[#08080F]">
-                    {effectiveVoiceLabels[id] ?? id}
-                  </option>
-                ))}
+                {voiceGroups.personal.length > 0 && (
+                  <optgroup label="your voices" className="bg-[#08080F]">
+                    {voiceGroups.personal.map((v) => (
+                      <option key={v.id} value={v.id} className="bg-[#08080F]">
+                        {v.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {voiceGroups.system.length > 0 && (
+                  <optgroup label="system voices" className="bg-[#08080F]">
+                    {voiceGroups.system.map((v) => (
+                      <option key={v.id} value={v.id} className="bg-[#08080F]">
+                        {v.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
             {!isConnected && validChosenVoice && (
@@ -1343,7 +1371,9 @@ export default function Studio() {
             rides the first start, so hiding them behind the key would force
             the user to configure their identity AFTER the meter starts. */}
         <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
-            <div className="flex items-center gap-3">
+            {/* the fidelity readout is one long honest sentence — on a phone
+                it wraps, centered, instead of pushing the panel sideways */}
+            <div className="flex flex-wrap items-center justify-center gap-3 px-2 text-center">
               {(video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping) && (
                 <span className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#64748B]">
                   <Loader2 size={11} className="animate-spin" />
@@ -1393,7 +1423,7 @@ export default function Studio() {
                 smoothly. Rendered only while the aligned stream is live AND
                 presented — a raw passthrough has nothing to trim. */}
             {video.phase === VIDEO_PHASE.live && fidelity.alignActive && !presentingRaw && (
-              <div className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
+              <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
                 <span>sync trim</span>
                 <button
                   type="button"
@@ -1420,7 +1450,10 @@ export default function Studio() {
             {/* Identity controls: the reference avatar and the live prompt.
                 Both work BEFORE start (they ride the create) and DURING the
                 stream (identity swap / restyle without reconnecting). */}
-            <div className="w-full flex items-center gap-2">
+            {/* flex-wrap + a floor on the prompt input: on a narrow screen
+                the input takes its own full-width line rather than being
+                crushed between the avatar pill and the Apply button */}
+            <div className="w-full flex flex-wrap items-center gap-2">
               <input
                 ref={avatarInputRef}
                 type="file"
@@ -1483,7 +1516,7 @@ export default function Studio() {
                     ? 'restyle live — e.g. "change cloth to blue"'
                     : 'style the lens — e.g. "warm studio light, navy jacket"'
                 }
-                className="min-w-0 flex-1 bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:outline-none focus:border-[#6366F1]"
+                className="min-w-[9rem] flex-1 bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:outline-none focus:border-[#6366F1]"
               />
               {video.phase === VIDEO_PHASE.live && (
                 <button
@@ -1735,7 +1768,7 @@ export default function Studio() {
           may already be using. */}
       <footer
         {...chromeInert}
-        className={`relative px-6 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-60 hover:opacity-100 focus-within:opacity-100' : ''}`}
+        className={`relative px-4 sm:px-10 py-5 text-center text-[10px] text-[#2E2E44] tracking-wide transition-opacity duration-500 motion-reduce:transition-none ${cinematic ? 'opacity-60 hover:opacity-100 focus-within:opacity-100' : ''}`}
       >
         {allocation ? (
           <>
