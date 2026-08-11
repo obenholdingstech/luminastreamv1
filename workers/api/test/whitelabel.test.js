@@ -798,3 +798,63 @@ test('a negative vendor billed value cannot become an over-refund', async (t) =>
   const budget = await (await worker.fetch(req('/api/video/budget', { method: 'GET', token }), env)).json();
   assert.equal(budget.spentSeconds, 0, 'and never negative');
 });
+
+// ─── the DECART POOL (CEO mandate, 11 Aug 2026) ────────────────────────────
+
+test('POOL: a money-refused first key falls through at the MINT — the whole session lands on the healthy key', async (t) => {
+  const { env } = setup();
+  env.DECART_API_KEY = 'dk-broke,dk-live';
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    tokens: (entry) => {
+      if (entry.headers['x-api-key'] === 'dk-broke') {
+        // The live-verified broke signal (3 Aug 2026): 422 Insufficient credits.
+        return new Response(JSON.stringify({ detail: 'Insufficient credits' }), { status: 422 });
+      }
+      return null; // dk-live falls to the default 200
+    },
+  });
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token, { sdpOffer: 'v=0 offer', requestedSeconds: 30 });
+  assert.equal(res.status, 200, 'the session was created despite the broke first key');
+  const mints = vendor.calls.filter((c) => c.url.endsWith('/v1/client/tokens'));
+  assert.deepEqual(mints.map((c) => c.headers['x-api-key']), ['dk-broke', 'dk-live'],
+    'pool order, payment fall-through');
+  const create = vendor.calls.find((c) => c.url.endsWith('/v1/realtime/sessions'));
+  assert.equal(create.headers['x-api-key'], 'constrained-client-token',
+    'downstream uses the minted token — nothing after the mint knows the pool exists');
+});
+
+test('POOL: a NON-payment mint failure does not try the next key', async (t) => {
+  const { env } = setup();
+  env.DECART_API_KEY = 'dk-one,dk-two';
+  const token = await adminToken(env);
+  const vendor = stubVendor({
+    tokens: (entry) => {
+      if (entry.headers['x-api-key'] === 'dk-one') {
+        return new Response(JSON.stringify({ detail: 'internal' }), { status: 500 });
+      }
+      return null;
+    },
+  });
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token);
+  assert.equal(res.status, 502, 'a 500 is not a money problem — no fall-through, the failure surfaces');
+  const mints = vendor.calls.filter((c) => c.url.endsWith('/v1/client/tokens'));
+  assert.deepEqual(mints.map((c) => c.headers['x-api-key']), ['dk-one'], 'exactly one attempt');
+});
+
+test('POOL: a comma-junk key value reads as unconfigured — the raw pool string never reaches the vendor', async (t) => {
+  const { env } = setup();
+  env.DECART_API_KEY = ' , ,';
+  const token = await adminToken(env);
+  const vendor = stubVendor();
+  t.after(vendor.restore);
+
+  const res = await createSession(env, token);
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'video_vendor_unconfigured');
+  assert.equal(vendor.calls.length, 0);
+});

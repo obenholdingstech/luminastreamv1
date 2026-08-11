@@ -2,6 +2,12 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 11 August 2026 — Decart pool wired (live fix), ElevenLabs failover CONFIRMED
+
+- **ElevenLabs failover LIVE, CEO-verified** — root cause of the "key pending" mystery was her local wrangler authed to a past project's account; she re-authed and re-pushed.
+- **URGENT fix shipped:** she pushed DECART_API_KEY as a pool ("key1,key2") ahead of routing code — the old Worker sent the literal comma string as the key, 401ing every video mint. All 8 Decart read sites now route through splitPool; the MINT is the one fall-through point (payment-class → next key; the minted client token carries the whole session so nothing downstream knows the pool exists); classifier honours the live-verified 422 "Insufficient credits".
+- **Next in this block (CEO mandates):** clone-flow UX (modal name+language, async progress, toast) → Admin System Health screen (per-key live probes + agent-in-room via LiveKit ListParticipants).
+
 ## 10 August 2026 — vendor keys become a pool; voices become OUR property
 
 - **CEO architecture (her veto reshaped the design):** ELEVENLABS_API_KEY keeps its name everywhere; its VALUE is an ordered comma-separated pool — order = preference, membership = liveness assertion. No SECOND_* names anywhere.
