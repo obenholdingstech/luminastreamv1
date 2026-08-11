@@ -34,6 +34,7 @@ import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/li
 import voiceManifest from '@/lib/voiceManifest.json';
 import { groupVoices, mergeLibraryVoices } from '@/lib/voiceGroups';
 import { listMyVoices } from '@/lib/voiceLibraryClient';
+import { createReloadSequence, foldListResponse } from '@/lib/listReload';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -241,20 +242,29 @@ export default function Studio() {
   // The user's OWN library, from our API — the selector's second source.
   // A fresh clone must appear the moment the server confirms it, with no
   // agent involved (11 Aug live test: the toast fired, the agent was down,
-  // and the new voice had no path into the dropdown). Reloads are
-  // sequenced so a stale response never overwrites a fresher list; a
-  // failed list keeps the last known library rather than blanking it.
+  // and the new voice had no path into the dropdown). The POLICY —
+  // response ordering and failure retention — lives in src/lib/listReload
+  // (pure, tested); this block is wiring only. The list is user-scoped,
+  // so it follows the session: emptied and invalidated the moment the
+  // user is not signed in (a pending response from the previous account
+  // must never land after sign-out), reloaded on sign-in.
+  const auth = useAuth();
   const [libraryVoices, setLibraryVoices] = useState([]);
-  const librarySeq = useRef(0);
+  const [librarySeq] = useState(() => createReloadSequence());
   const reloadLibraryVoices = useCallback(async () => {
-    const seq = ++librarySeq.current;
+    const rev = librarySeq.begin();
     const items = await listMyVoices();
-    if (seq !== librarySeq.current) return;
-    if (items !== null) setLibraryVoices(items);
-  }, []);
+    if (!librarySeq.isCurrent(rev)) return;
+    setLibraryVoices((prev) => foldListResponse(prev, items));
+  }, [librarySeq]);
   useEffect(() => {
+    if (auth.status !== 'signedIn') {
+      librarySeq.begin(); // sign-out is an intent — it supersedes in-flight
+      setLibraryVoices([]);
+      return;
+    }
     reloadLibraryVoices();
-  }, [reloadLibraryVoices]);
+  }, [auth.status, librarySeq, reloadLibraryVoices]);
 
   // Pre-start identity (CEO directive, 3 Aug evening): the voice is chosen
   // BEFORE the lens starts. The selector is populated from the agent's live
@@ -806,7 +816,7 @@ export default function Studio() {
   }, [videoPathMs, video.pipeline]);
 
   // ── the account (P4b-ui): the lens remembers who you are ─────────────
-  const auth = useAuth();
+  // (auth itself is read earlier — the voice library follows the session)
   // Layout effect, not a render-phase write: the ref must be committed
   // before any FileReader.onload can observe it (CodeRabbit, PR 97).
   useLayoutEffect(() => {
@@ -881,10 +891,14 @@ export default function Studio() {
       lastSavedIdentityRef.current = snapshot;
       saveProfile({
         voiceId: validChosenVoice ?? undefined,
-        // The same label source the <select> renders — the broadcast labels
-        // alone are empty before the agent connects, and COALESCE would then
-        // pair the NEW voiceId with the PREVIOUS voice's stored name.
-        voiceName: validChosenVoice ? effectiveVoiceLabels[validChosenVoice] : undefined,
+        // The same label source the <select> renders — the MERGED map, so a
+        // library-only voice (fresh clone, agent not connected) still sends
+        // its name; an unlabeled id falls back to the id itself. Anything
+        // less and COALESCE pairs the NEW voiceId with the PREVIOUS
+        // voice's stored name.
+        voiceName: validChosenVoice
+          ? (mergedVoices.labels[validChosenVoice] ?? validChosenVoice)
+          : undefined,
         stylePrompt: livePrompt.trim() || undefined,
         videoPathMs,
       });
@@ -893,7 +907,7 @@ export default function Studio() {
     // Stable members only: `auth` itself is a fresh object every render, and
     // depending on it re-arms this debounce faster than 800ms while the lens
     // is live — the timer would be cleared before it EVER fired.
-  }, [auth.status, saveProfile, validChosenVoice, videoPathMs, livePrompt, effectiveVoiceLabels]);
+  }, [auth.status, saveProfile, validChosenVoice, videoPathMs, livePrompt, mergedVoices.labels]);
   // Direct-mode audio alignment — THE LAGGARD IS THE MASTER CLOCK (doctrine
   // generalized, 4 Aug evening): in converted mode audio is slow and video
   // holds (above); in Direct mode audio returns in ~350ms while the video
