@@ -29,7 +29,11 @@ const STATIC_ALLOWED = new Set([
   'http://localhost:5173',
 ]);
 
-const ALLOW_METHODS = 'GET, POST, PUT, OPTIONS';
+// DELETE joined 11 Aug 2026 — its absence meant every browser BLOCKED the
+// voice/avatar delete calls at preflight, surfacing as the client's generic
+// "that did not work" (the CEO's live test). A method the API serves must be
+// a method the preflight admits.
+const ALLOW_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
 const ALLOW_HEADERS = 'Content-Type, X-Admin-Token';
 const MAX_AGE = '86400';
 

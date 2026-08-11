@@ -2,6 +2,13 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 11 August 2026 (night) — the CEO's live-test bugs, all three
+
+- **Deletes were CORS:** DELETE was missing from Access-Control-Allow-Methods — browsers blocked every voice/avatar delete at preflight (live-verified by curl before the fix). One constant, both buttons.
+- **Decart probe 400:** the probe invented its own payload fields; it now mirrors the working production mint's shape with small values.
+- **Agent 404s:** LiveKit rooms exist only while occupied — the probe now ListRooms first (names filter), reads an absent pool room as DOWN ("room empty — no agent connected"), and inspects only active rooms; a between-calls 404 is down too.
+- Next per her order: media limits (15MB avatars client-compressed to the vendor wall; 150MB samples with in-browser audio extraction incl. video containers) → voice categorization + responsive refactor.
+
 ## 11 August 2026 (later) — three mandates: two closed, one in review
 
 - **#105 Decart pool (live fix, zero findings):** her pool push predated the code — mints were 401ing; now the mint falls through payment refusals and downstream rides the minted token.
