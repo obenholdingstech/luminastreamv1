@@ -25,6 +25,12 @@ test('explicit broadcast categories win and group the selector', () => {
     { id: 'c', label: 'Gen' },
   ], 'account-created kinds are yours, order preserved, suffix dropped');
   assert.deepEqual(system, [{ id: 'b', label: 'Roger' }]);
+
+  // a CONFLICT is the only real test of precedence: the label claims
+  // premade, the broadcast says cloned — the broadcast must win
+  const conflict = groupVoices(['x'], { x: 'Voice (premade)' }, { x: 'cloned' });
+  assert.deepEqual(conflict.personal.map(({ id }) => id), ['x']);
+  assert.deepEqual(conflict.system, []);
 });
 
 test('label-parse fallback groups older broadcasts and the manifest', () => {
