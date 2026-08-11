@@ -25,12 +25,19 @@ export async function runCloneFlow({ file, name, language }, { readFile, clone }
     return { ok: false, error: 'could not read that file — try picking it again' };
   }
   const trimmed = name.trim();
-  const res = await clone({
-    name: trimmed,
-    sampleData,
-    mimeType: file?.type || undefined,
-    ...(language ? { language } : {}),
-  });
+  let res;
+  try {
+    res = await clone({
+      name: trimmed,
+      sampleData,
+      mimeType: file?.type || undefined,
+      ...(language ? { language } : {}),
+    });
+  } catch {
+    // A rejecting transport must come back as a retryable OUTCOME — the
+    // modal only re-enables its controls when an outcome returns.
+    return { ok: false, error: 'the connection dropped mid-clone — try again' };
+  }
   if (res?.ok) {
     return { ok: true, toast: `“${trimmed}” is ready — it's in your voice selector` };
   }

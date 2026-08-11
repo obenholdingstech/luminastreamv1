@@ -52,3 +52,12 @@ test('a server refusal surfaces its words; a file-read failure has its own sente
   assert.equal(unreadable.ok, false);
   assert.match(unreadable.error, /could not read that file/);
 });
+
+test('a REJECTING clone transport returns a retryable outcome — the modal must never stay disabled', async () => {
+  const out = await runCloneFlow(
+    { file: {}, name: 'x' },
+    deps({ clone: async () => { throw new TypeError('network down'); } }),
+  );
+  assert.equal(out.ok, false);
+  assert.match(out.error, /connection dropped/);
+});

@@ -123,9 +123,11 @@ test('addUserVoice: count-and-insert is ONE statement, and a cap refusal returns
   assert.equal(insert.binds[5], null, 'language rides the row — null = let the vendor infer');
   assert.equal(insert.binds[7], 3, 'the cap travels as a bind');
   // The clone flow mints the id BEFORE the vendor call so the sample and
-  // the row share one identity — the override must be honoured.
-  const explicit = await db.addUserVoice('u1', { id: 'row-fixed', vendorVoiceId: 'v-2', label: 'X', cap: 3 });
+  // the row share one identity — the override must be honoured; and a
+  // SELECTED language must land in its bind, not be discarded.
+  const explicit = await db.addUserVoice('u1', { id: 'row-fixed', vendorVoiceId: 'v-2', label: 'X', cap: 3, language: 'pt-BR' });
   assert.deepEqual(explicit, { id: 'row-fixed' });
+  assert.equal(granted.executed[1].binds[5], 'pt-BR', 'the chosen language rides its bind');
 
   const refused = createFakeD1({ runMeta: () => ({ changes: 0 }) });
   db = createDb(refused, fixedDeps());
