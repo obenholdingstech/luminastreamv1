@@ -75,10 +75,13 @@ async function probeDecartKey(env, cand) {
       method: 'POST',
       headers: { 'x-api-key': cand.key, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      // The SHAPE of the working production mint, verbatim (mintDecartClientToken)
+      // with small values — the first probe payload invented its own fields and
+      // Decart 400'd it, which misread as 'unreachable' (the CEO's live test).
       body: JSON.stringify({
-        expiresIn: 60,
-        constraints: { realtime: { maxSessionDuration: 1 } },
-        metadata: { probe: 'admin-health' },
+        expiresIn: 360,
+        constraints: { realtime: { maxSessionDuration: 60 } },
+        metadata: { reservationId: 'admin-health-probe' },
       }),
     });
     const body = await res.json().catch(() => null);
@@ -123,8 +126,39 @@ export async function probeAgents(env) {
   if (!host || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
     return rooms.map((room) => ({ room, agentLive: null, participants: null, detail: 'livekit not configured' }));
   }
+  // LiveKit rooms EXIST only while occupied, so ListParticipants on an
+  // empty pool room is a 404 — which the first version misread as unknown
+  // (the CEO's live test). The truth comes in two steps: ListRooms (active
+  // rooms only) names what exists; a pool room absent from that list is
+  // DOWN — no agent connected — not a mystery.
+  let active;
+  try {
+    const { token } = await mintLiveKitToken(env, {
+      room: rooms[0],
+      identity: 'admin-health-probe',
+      ttlSeconds: 60,
+      video: { roomList: true },
+    });
+    const res = await fetch(`https://${host}/twirp/livekit.RoomService/ListRooms`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      body: JSON.stringify({ names: rooms }),
+    });
+    if (!res.ok) {
+      return rooms.map((room) => ({ room, agentLive: null, participants: null, detail: `livekit answered HTTP ${res.status}` }));
+    }
+    const body = await res.json().catch(() => null);
+    active = new Set((body?.rooms ?? []).map((r) => r?.name).filter(Boolean));
+  } catch {
+    return rooms.map((room) => ({ room, agentLive: null, participants: null, detail: 'no answer within the probe timeout' }));
+  }
+
   return Promise.all(
     rooms.map(async (room) => {
+      if (!active.has(room)) {
+        return { room, agentLive: false, participants: 0, detail: 'room empty — no agent connected' };
+      }
       try {
         const { token } = await mintLiveKitToken(env, {
           room,
@@ -139,6 +173,10 @@ export async function probeAgents(env) {
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
           body: JSON.stringify({ room }),
         });
+        if (res.status === 404) {
+          // The room emptied between the two calls — down, honestly.
+          return { room, agentLive: false, participants: 0, detail: 'room empty — no agent connected' };
+        }
         if (!res.ok) {
           return { room, agentLive: null, participants: null, detail: `livekit answered HTTP ${res.status}` };
         }

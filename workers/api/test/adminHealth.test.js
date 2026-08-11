@@ -74,8 +74,18 @@ test('vendor probes: every pool key gets a row — ok with quota, payment, rejec
   }
 });
 
-test('agent probe: an echo-* participant in the room means LIVE; its absence means down; LiveKit silence says so', async () => {
+test('agent probe: active rooms are inspected, EMPTY pool rooms read as DOWN, LiveKit failures as unknown', async () => {
   const s = stubWorld([
+    [
+      '/twirp/livekit.RoomService/ListRooms',
+      (u, opts) => {
+        const { names } = JSON.parse(opts.body);
+        assert.deepEqual(names, ['room-live', 'room-noagent', 'room-empty', 'room-broken'],
+          'the pool rooms ride the names filter');
+        // room-empty is NOT active — LiveKit rooms exist only while occupied.
+        return jsonRes({ rooms: [{ name: 'room-live' }, { name: 'room-noagent' }, { name: 'room-broken' }] });
+      },
+    ],
     [
       '/twirp/livekit.RoomService/ListParticipants',
       (u, opts) => {
@@ -83,21 +93,42 @@ test('agent probe: an echo-* participant in the room means LIVE; its absence mea
         if (room === 'room-live') {
           return jsonRes({ participants: [{ identity: 'echo-convert-agent' }, { identity: 'speaker-1' }] });
         }
-        if (room === 'room-down') return jsonRes({ participants: [{ identity: 'speaker-2' }] });
+        if (room === 'room-noagent') return jsonRes({ participants: [{ identity: 'speaker-2' }] });
         return jsonRes({}, 500);
       },
     ],
   ]);
   try {
     const rows = await probeAgents({
-      SESSION_ROOMS: 'room-live, room-down, room-broken',
+      SESSION_ROOMS: 'room-live, room-noagent, room-empty, room-broken',
       LIVEKIT_URL: 'wss://unit.livekit.cloud',
       LIVEKIT_API_KEY: 'lk',
       LIVEKIT_API_SECRET: 'lks',
     });
     assert.deepEqual(rows[0], { room: 'room-live', agentLive: true, agentIdentity: 'echo-convert-agent', participants: 2 });
-    assert.equal(rows[1].agentLive, false, 'no echo-* participant = the unit is not serving');
-    assert.equal(rows[2].agentLive, null, 'LiveKit failure is UNKNOWN, said plainly — not false');
+    assert.equal(rows[1].agentLive, false, 'present but no echo-* = not serving');
+    assert.equal(rows[2].agentLive, false, 'ABSENT from ListRooms = empty = DOWN, not a 404 mystery');
+    assert.match(rows[2].detail, /room empty/);
+    assert.equal(rows[3].agentLive, null, 'a LiveKit failure is UNKNOWN, said plainly');
+  } finally {
+    s.restore();
+  }
+});
+
+test('agent probe: a room that empties between the two calls (404) reads as down, honestly', async () => {
+  const s = stubWorld([
+    ['/twirp/livekit.RoomService/ListRooms', () => jsonRes({ rooms: [{ name: 'r1' }] })],
+    ['/twirp/livekit.RoomService/ListParticipants', () => jsonRes({}, 404)],
+  ]);
+  try {
+    const rows = await probeAgents({
+      SESSION_ROOMS: 'r1',
+      LIVEKIT_URL: 'wss://unit.livekit.cloud',
+      LIVEKIT_API_KEY: 'lk',
+      LIVEKIT_API_SECRET: 'lks',
+    });
+    assert.equal(rows[0].agentLive, false);
+    assert.match(rows[0].detail, /room empty/);
   } finally {
     s.restore();
   }
