@@ -32,7 +32,9 @@ import {
 } from '@/lib/unifiedLens';
 import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
-import { groupVoices } from '@/lib/voiceGroups';
+import { groupVoices, mergeLibraryVoices } from '@/lib/voiceGroups';
+import { listMyVoices } from '@/lib/voiceLibraryClient';
+import { createReloadSequence, foldListResponse } from '@/lib/listReload';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -237,6 +239,33 @@ export default function Studio() {
   const voiceLabels = useMemo(() => voiceMeta?.choice_labels ?? {}, [voiceMeta]);
   const voiceCategories = useMemo(() => voiceMeta?.choice_categories ?? {}, [voiceMeta]);
 
+  // The user's OWN library, from our API — the selector's second source.
+  // A fresh clone must appear the moment the server confirms it, with no
+  // agent involved (11 Aug live test: the toast fired, the agent was down,
+  // and the new voice had no path into the dropdown). The POLICY —
+  // response ordering and failure retention — lives in src/lib/listReload
+  // (pure, tested); this block is wiring only. The list is user-scoped,
+  // so it follows the session: emptied and invalidated the moment the
+  // user is not signed in (a pending response from the previous account
+  // must never land after sign-out), reloaded on sign-in.
+  const auth = useAuth();
+  const [libraryVoices, setLibraryVoices] = useState([]);
+  const [librarySeq] = useState(() => createReloadSequence());
+  const reloadLibraryVoices = useCallback(async () => {
+    const rev = librarySeq.begin();
+    const items = await listMyVoices();
+    if (!librarySeq.isCurrent(rev)) return;
+    setLibraryVoices((prev) => foldListResponse(prev, items));
+  }, [librarySeq]);
+  useEffect(() => {
+    if (auth.status !== 'signedIn') {
+      librarySeq.begin(); // sign-out is an intent — it supersedes in-flight
+      setLibraryVoices([]);
+      return;
+    }
+    reloadLibraryVoices();
+  }, [auth.status, librarySeq, reloadLibraryVoices]);
+
   // Pre-start identity (CEO directive, 3 Aug evening): the voice is chosen
   // BEFORE the lens starts. The selector is populated from the agent's live
   // broadcast when there is one, else from the committed manifest (a capture
@@ -271,9 +300,21 @@ export default function Studio() {
   // carries explicit categories; the manifest (and an older agent's
   // broadcast) carries them only in the label suffix — groupVoices resolves
   // both, so the split works pre-connect and across deploy skew.
+  const mergedVoices = useMemo(
+    () =>
+      mergeLibraryVoices(
+        {
+          choices: effectiveVoiceChoices,
+          labels: effectiveVoiceLabels,
+          categories: liveVoiceList ? voiceCategories : {},
+        },
+        libraryVoices,
+      ),
+    [effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList, voiceCategories, libraryVoices],
+  );
   const voiceGroups = useMemo(
-    () => groupVoices(effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList ? voiceCategories : {}),
-    [effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList, voiceCategories],
+    () => groupVoices(mergedVoices.choices, mergedVoices.labels, mergedVoices.categories),
+    [mergedVoices],
   );
   // A stored choice is only a choice while the current list still offers it.
   // A voice deleted from the account (or absent from the agent's live list)
@@ -282,8 +323,15 @@ export default function Studio() {
   // The stored value itself is kept: the list in view changes (manifest
   // pre-connect, broadcast after), and a choice invalid against one may be
   // perfectly valid against the next.
+  // TWO validities, deliberately: the SELECT offers everything we can
+  // honestly display (broadcast ∪ library — a fresh clone is real the
+  // moment our server registered it), but the auto-apply effect below only
+  // SENDS ids the agent's own live list contains — requesting a voice the
+  // agent hasn't listed yet would earn a rejection, not a stream.
   const validChosenVoice =
-    chosenVoice && effectiveVoiceChoices.includes(chosenVoice) ? chosenVoice : null;
+    chosenVoice && mergedVoices.choices.includes(chosenVoice) ? chosenVoice : null;
+  const broadcastChosenVoice =
+    chosenVoice && voiceChoices.includes(chosenVoice) ? chosenVoice : null;
   const [voicePref] = useState(() => createVoicePreference());
 
   const voiceSelector = useMemo(
@@ -615,16 +663,17 @@ export default function Studio() {
       voicePref.shouldApply({
         sessionId: allocation?.identity ?? null,
         connected: isConnected,
-        // The VALIDATED choice: by this point the agent's broadcast has
-        // arrived (confirmedVoice gates shouldApply), so the list in force
-        // is the live one — a stored id it no longer offers is not sent.
-        chosen: validChosenVoice,
+        // The BROADCAST-validated choice: by this point the agent's list
+        // has arrived (confirmedVoice gates shouldApply), and only ids that
+        // list contains are sent — a library-merged clone the agent hasn't
+        // picked up yet stays selectable in the UI but is not auto-pushed.
+        chosen: broadcastChosenVoice,
         confirmedVoice,
       })
     ) {
-      requestVoice(validChosenVoice);
+      requestVoice(broadcastChosenVoice);
     }
-  }, [allocation, isConnected, validChosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
+  }, [allocation, isConnected, broadcastChosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
   // The invariant behind the fix above, enforced structurally: NO audio
@@ -767,7 +816,7 @@ export default function Studio() {
   }, [videoPathMs, video.pipeline]);
 
   // ── the account (P4b-ui): the lens remembers who you are ─────────────
-  const auth = useAuth();
+  // (auth itself is read earlier — the voice library follows the session)
   // Layout effect, not a render-phase write: the ref must be committed
   // before any FileReader.onload can observe it (CodeRabbit, PR 97).
   useLayoutEffect(() => {
@@ -842,10 +891,14 @@ export default function Studio() {
       lastSavedIdentityRef.current = snapshot;
       saveProfile({
         voiceId: validChosenVoice ?? undefined,
-        // The same label source the <select> renders — the broadcast labels
-        // alone are empty before the agent connects, and COALESCE would then
-        // pair the NEW voiceId with the PREVIOUS voice's stored name.
-        voiceName: validChosenVoice ? effectiveVoiceLabels[validChosenVoice] : undefined,
+        // The same label source the <select> renders — the MERGED map, so a
+        // library-only voice (fresh clone, agent not connected) still sends
+        // its name; an unlabeled id falls back to the id itself. Anything
+        // less and COALESCE pairs the NEW voiceId with the PREVIOUS
+        // voice's stored name.
+        voiceName: validChosenVoice
+          ? (mergedVoices.labels[validChosenVoice] ?? validChosenVoice)
+          : undefined,
         stylePrompt: livePrompt.trim() || undefined,
         videoPathMs,
       });
@@ -854,7 +907,7 @@ export default function Studio() {
     // Stable members only: `auth` itself is a fresh object every render, and
     // depending on it re-arms this debounce faster than 800ms while the lens
     // is live — the timer would be cleared before it EVER fired.
-  }, [auth.status, saveProfile, validChosenVoice, videoPathMs, livePrompt, effectiveVoiceLabels]);
+  }, [auth.status, saveProfile, validChosenVoice, videoPathMs, livePrompt, mergedVoices.labels]);
   // Direct-mode audio alignment — THE LAGGARD IS THE MASTER CLOCK (doctrine
   // generalized, 4 Aug evening): in converted mode audio is slow and video
   // holds (above); in Direct mode audio returns in ~350ms while the video
@@ -1282,7 +1335,7 @@ export default function Studio() {
             identity — voice, avatar, style — is chosen on the same screen as
             the access key, so the ONE press of Start carries all of it. The
             choices are local until then; nothing here needs a server. */}
-        {effectiveVoiceChoices.length > 0 &&
+        {mergedVoices.choices.length > 0 &&
           !(isConnected && agentMode && agentMode !== agentModeFor('converted')) && (
           <div className="mt-4 flex flex-col items-center gap-1">
             {/* wrap + max-w-full: a long voice name must never widen the
@@ -1359,7 +1412,15 @@ export default function Studio() {
             policy signed into this user's grant admits the new clone. */}
         {auth.status === 'signedIn' && (
           <div className="w-full max-w-sm">
-            <VoiceLibrary onLibraryChanged={refreshVoices} />
+            <VoiceLibrary
+              onLibraryChanged={() => {
+                // BOTH truths refresh: our library feeds the selector
+                // directly (no agent required), and the agent — when there
+                // is one — re-lists and re-broadcasts its own offer.
+                reloadLibraryVoices();
+                refreshVoices();
+              }}
+            />
           </div>
         )}
 
