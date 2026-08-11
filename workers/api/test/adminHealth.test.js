@@ -108,6 +108,7 @@ test('agent probe: active rooms are inspected, EMPTY pool rooms read as DOWN, Li
     assert.deepEqual(rows[0], { room: 'room-live', agentLive: true, agentIdentity: 'echo-convert-agent', participants: 2 });
     assert.equal(rows[1].agentLive, false, 'present but no echo-* = not serving');
     assert.equal(rows[2].agentLive, false, 'ABSENT from ListRooms = empty = DOWN, not a 404 mystery');
+    assert.equal(rows[2].participants, 0, 'an empty room has zero participants, said as zero');
     assert.match(rows[2].detail, /room empty/);
     assert.equal(rows[3].agentLive, null, 'a LiveKit failure is UNKNOWN, said plainly');
   } finally {
@@ -128,6 +129,7 @@ test('agent probe: a room that empties between the two calls (404) reads as down
       LIVEKIT_API_SECRET: 'lks',
     });
     assert.equal(rows[0].agentLive, false);
+    assert.equal(rows[0].participants, 0);
     assert.match(rows[0].detail, /room empty/);
   } finally {
     s.restore();
