@@ -33,6 +33,38 @@ export function splitVoiceLabel(label) {
 }
 
 /**
+ * Fold the signed-in user's OWN library (GET /api/me/voices rows) into the
+ * selector's inputs. The agent's broadcast remains its truth about what it
+ * offers — but a voice the user just cloned exists in OUR system the moment
+ * the API answers, and the selector must say so without waiting for an
+ * agent to be connected, or even alive (the 11 Aug live test: clone toast
+ * fired, agent was down, the new voice had NO path into the dropdown).
+ * Rows absent from `choices` are appended as personal voices; labels and
+ * categories fill only where the broadcast said nothing (broadcast-first,
+ * library-as-fallback).
+ */
+export function mergeLibraryVoices({ choices, labels = {}, categories = {} }, libraryRows) {
+  const rows = Array.isArray(libraryRows) ? libraryRows : [];
+  const outChoices = [...choices];
+  const outLabels = { ...labels };
+  const outCategories = { ...categories };
+  const have = new Set(outChoices);
+  for (const row of rows) {
+    const id = typeof row?.voiceId === 'string' && row.voiceId ? row.voiceId : null;
+    if (!id) continue;
+    if (!have.has(id)) {
+      have.add(id);
+      outChoices.push(id);
+    }
+    if (outLabels[id] === undefined && typeof row.label === 'string' && row.label) {
+      outLabels[id] = row.label;
+    }
+    if (outCategories[id] === undefined) outCategories[id] = 'cloned';
+  }
+  return { choices: outChoices, labels: outLabels, categories: outCategories };
+}
+
+/**
  * Partition the selector's ids into { personal, system } entries
  * ({ id, label }), order preserved within each group. `categories` is the
  * broadcast's explicit id → category map (may be empty); the label suffix

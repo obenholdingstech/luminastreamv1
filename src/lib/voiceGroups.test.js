@@ -1,7 +1,7 @@
 // Run: node --test src/lib/voiceGroups.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupVoices, splitVoiceLabel } from './voiceGroups.js';
+import { groupVoices, mergeLibraryVoices, splitVoiceLabel } from './voiceGroups.js';
 
 test('splitVoiceLabel: a known category suffix splits; anything else stays whole', () => {
   assert.deepEqual(splitVoiceLabel('Sarah - Mature, Reassuring, Confident (premade)'), {
@@ -49,6 +49,35 @@ test('"your voices" is a positive claim — unknowns land on the system side, un
     { id: 'x', label: 'Mystery' },
     { id: 'y', label: 'Bob (Laid-Back)' },
   ]);
+});
+
+test('the library reaches the selector without an agent — fresh clones appended as personal', () => {
+  const broadcast = { choices: ['p1'], labels: { p1: 'Roger (premade)' }, categories: { p1: 'premade' } };
+  const rows = [
+    { id: 'row1', voiceId: 'c1', label: 'TEST VOICE', vendorAccount: 'k1234' },
+    { id: 'row2', voiceId: 'c2', label: 'Mine Too', vendorAccount: 'k1234' },
+  ];
+  const merged = mergeLibraryVoices(broadcast, rows);
+  assert.deepEqual(merged.choices, ['p1', 'c1', 'c2'], 'broadcast order first, library appended');
+  assert.equal(merged.labels.c1, 'TEST VOICE');
+  assert.equal(merged.categories.c1, 'cloned');
+  const { personal } = groupVoices(merged.choices, merged.labels, merged.categories);
+  assert.deepEqual(personal.map(({ id }) => id), ['c1', 'c2'], 'a fresh clone lands in "your voices"');
+});
+
+test('merge is broadcast-first: rows already offered change nothing, junk rows are skipped', () => {
+  const broadcast = { choices: ['c1'], labels: { c1: 'Amy (cloned)' }, categories: { c1: 'cloned' } };
+  const merged = mergeLibraryVoices(broadcast, [
+    { voiceId: 'c1', label: 'stale db label' }, // broadcast label wins
+    { voiceId: '', label: 'no id' },
+    { label: 'missing voiceId entirely' },
+    null,
+  ]);
+  assert.deepEqual(merged.choices, ['c1'], 'no duplicate, no junk');
+  assert.equal(merged.labels.c1, 'Amy (cloned)', 'the broadcast label is kept');
+  // a non-array library (failed fetch upstream) is a no-op, never a crash
+  const untouched = mergeLibraryVoices(broadcast, null);
+  assert.deepEqual(untouched.choices, ['c1']);
 });
 
 test('a missing label falls back to the id; empty input yields empty groups', () => {
