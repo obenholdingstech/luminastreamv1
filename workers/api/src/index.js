@@ -27,6 +27,7 @@ import { createVoiceRoutes } from './voiceRoutes.js';
 import { createAdminRoutes } from './adminRoutes.js';
 import { createAvatarRoutes, loadAvatarB64 } from './avatarRoutes.js';
 import { healUserVoice } from './voiceHeal.js';
+import { splitPool, isDecartPaymentRefusal } from './vendorKeys.js';
 
 const VERSION = '0.1.0';
 
@@ -657,39 +658,56 @@ async function handleVideoSettle(request, env, origin) {
 const DECART_API_BASE = 'https://api.decart.ai';
 
 async function mintDecartClientToken(env, { grantedSeconds, reservationId }) {
-  const res = await fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}/v1/client/tokens`, {
-    method: 'POST',
-    // A vendor that hangs must not hang us. The hold is taken BEFORE this
-    // call (reserve → mint), so a stalled vendor would strand the hold until
-    // the caller's own fetch gave up. Ten seconds, then the catch path in
-    // handleVideoToken settles the hold back at zero use.
-    signal: AbortSignal.timeout(10_000),
-    headers: { 'x-api-key': env.DECART_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      // The token IS the session's control credential for its whole life —
-      // Decart accepts session control (ICE PATCH, prompt, DELETE) only from
-      // the token that created the session (verified live 3 Aug 2026; the
-      // raw key answers 401). So it must outlive the grant by enough for the
-      // settle path and the executioner's bounded retries: a token that
-      // expires mid-session leaves a stop that cannot stop.
-      expiresIn: grantedSeconds + 300,
-      constraints: { realtime: { maxSessionDuration: grantedSeconds } },
-      metadata: { reservationId },
-    }),
-  });
-  const body = await res.json().catch(() => null);
-  if (!res.ok || !body?.apiKey) {
+  // The POOL's one fall-through point (CEO mandate, 11 Aug 2026): the
+  // minted client token carries the whole session — create, control, and
+  // delete all authenticate with IT — so a mint that lands on a healthy
+  // key commits the session to that key's account and nothing downstream
+  // needs to know the pool exists. Payment-class refusals try the next
+  // key; anything else throws as before.
+  const pool = splitPool(env.DECART_API_KEY);
+  let last = null;
+  for (const apiKey of pool) {
+    const res = await fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}/v1/client/tokens`, {
+      method: 'POST',
+      // A vendor that hangs must not hang us. The hold is taken BEFORE this
+      // call (reserve → mint), so a stalled vendor would strand the hold until
+      // the caller's own fetch gave up. Ten seconds, then the catch path in
+      // handleVideoToken settles the hold back at zero use.
+      signal: AbortSignal.timeout(10_000),
+      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // The token IS the session's control credential for its whole life —
+        // Decart accepts session control (ICE PATCH, prompt, DELETE) only from
+        // the token that created the session (verified live 3 Aug 2026; the
+        // raw key answers 401). So it must outlive the grant by enough for the
+        // settle path and the executioner's bounded retries: a token that
+        // expires mid-session leaves a stop that cannot stop.
+        expiresIn: grantedSeconds + 300,
+        constraints: { realtime: { maxSessionDuration: grantedSeconds } },
+        metadata: { reservationId },
+      }),
+    });
+    const body = await res.json().catch(() => null);
+    if (res.ok && body?.apiKey) {
+      return { clientToken: body.apiKey, expiresAt: body.expiresAt ?? null };
+    }
+    last = res.status;
+    if (isDecartPaymentRefusal(res.status, body)) {
+      console.error(`decart mint refused for MONEY (HTTP ${res.status}) — trying next key in the pool`);
+      continue;
+    }
     throw new Error(`decart token mint failed: HTTP ${res.status}`);
   }
-  return { clientToken: body.apiKey, expiresAt: body.expiresAt ?? null };
+  throw new Error(`decart token mint failed on every pool key: HTTP ${last}`);
 }
 
 async function handleVideoToken(request, env, origin) {
   const refusal = await videoGate(request, env, origin);
   if (refusal) return refusal;
 
-  // Fail closed BEFORE reserving: no vendor key, no hold taken.
-  if (!env.DECART_API_KEY) {
+  // Fail closed BEFORE reserving: no vendor key, no hold taken. (Pool-aware:
+  // a value that parses to zero keys is as unconfigured as an absent one.)
+  if (splitPool(env.DECART_API_KEY).length === 0) {
     return json({ ok: false, error: 'video_vendor_unconfigured' }, { status: 503, origin });
   }
 
@@ -795,7 +813,7 @@ async function decartFetch(env, path, init) {
   return fetch(`${env.DECART_API_BASE ?? DECART_API_BASE}${path}`, {
     ...init,
     signal: AbortSignal.timeout(15_000),
-    headers: { 'x-api-key': env.DECART_API_KEY, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'x-api-key': splitPool(env.DECART_API_KEY)[0] ?? '', 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
 }
 
@@ -827,7 +845,7 @@ function normalizeReferenceImage(raw) {
 async function handleVideoSession(request, env, origin) {
   const refusal = await videoGate(request, env, origin);
   if (refusal) return refusal;
-  if (!env.DECART_API_KEY) {
+  if (splitPool(env.DECART_API_KEY).length === 0) {
     return json({ ok: false, error: 'video_vendor_unconfigured' }, { status: 503, origin });
   }
 
@@ -1021,7 +1039,10 @@ async function handleVideoSessionControl(request, env, origin, sid, action) {
   const vendorKey = payload.vtk
     ? await unseal(env.ADMIN_SESSION_SECRET, VENDOR_TOKEN_SEAL, payload.vtk)
     : null;
-  const vendorAuth = { 'x-api-key': vendorKey ?? env.DECART_API_KEY };
+  // The session's own minted token is the designed credential; the pool's
+  // ACTIVE key is only a legacy fallback (a raw pool string here would be
+  // an instant 401).
+  const vendorAuth = { 'x-api-key': vendorKey ?? splitPool(env.DECART_API_KEY)[0] ?? '' };
 
   if (action === 'candidates') {
     // Decart's contract (signaling-proxy-http, verified 3 Aug 2026): If-Match

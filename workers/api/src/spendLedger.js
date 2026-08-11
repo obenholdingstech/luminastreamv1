@@ -40,6 +40,7 @@
 
 import { base64UrlEncode, base64UrlDecode, sha256, timingSafeEqual } from './crypto.js';
 import { DEV_RATE_TABLE, convertAtReserve, refundAtSettle } from './rateTable.js';
+import { splitPool } from './vendorKeys.js';
 
 const KEY_PREFIX = 'reservation:';
 const SPENT_KEY = 'spentSeconds';
@@ -194,7 +195,7 @@ export class SpendLedger {
     const { open, due } = await this.#partition(now);
 
     for (const record of due) {
-      if (record.decartSessionId && (record.vendorToken || this.env.DECART_API_KEY)) {
+      if (record.decartSessionId && (record.vendorToken || splitPool(this.env.DECART_API_KEY).length)) {
         const killed = await this.#killVendorSession(record);
         if (!killed && (record.killAttempts ?? 0) < KILL_RETRIES) {
           // Re-arm for another try; the record stays, nextKillAt schedules it.
@@ -233,7 +234,7 @@ export class SpendLedger {
           // accepts for session control (raw key answers 401, verified live).
           // The raw key remains only as a fallback for records bound before
           // the token was persisted.
-          headers: { 'x-api-key': record.vendorToken ?? this.env.DECART_API_KEY },
+          headers: { 'x-api-key': record.vendorToken ?? splitPool(this.env.DECART_API_KEY)[0] },
           signal: AbortSignal.timeout(10_000),
         },
       );
