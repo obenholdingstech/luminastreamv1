@@ -19,7 +19,7 @@ function nowSeconds() {
   return Math.floor(Date.now() / 1000);
 }
 
-export async function mintLiveKitToken(env, { room, identity, name, metadata, ttlSeconds = MAX_LIVEKIT_TTL_SECONDS, now = nowSeconds() } = {}) {
+export async function mintLiveKitToken(env, { room, identity, name, metadata, video, ttlSeconds = MAX_LIVEKIT_TTL_SECONDS, now = nowSeconds() } = {}) {
   const apiKey = env?.LIVEKIT_API_KEY;
   const apiSecret = env?.LIVEKIT_API_SECRET;
   if (!apiKey || !apiSecret) throw new Error('LIVEKIT_API_KEY / LIVEKIT_API_SECRET not configured');
@@ -36,7 +36,10 @@ export async function mintLiveKitToken(env, { room, identity, name, metadata, tt
     // server-stamped voice policy. It rides the signature, so the client
     // can no more edit it than extend its own expiry.
     ...(metadata ? { metadata } : {}),
-    video: { roomJoin: true, room, canPublish: true, canSubscribe: true },
+    // The default grant is a join token; a caller may hand its own grant
+    // (the health probe mints roomAdmin to call RoomService — a server-side
+    // credential that never reaches a browser).
+    video: video ?? { roomJoin: true, room, canPublish: true, canSubscribe: true },
     iss: apiKey,
     exp,
     nbf: now,

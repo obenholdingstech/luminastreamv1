@@ -1215,6 +1215,9 @@ export default {
       if (pathname === '/api/admin/settlements' && method === 'GET') {
         return adminRoutes.settlements(request, env, origin);
       }
+      if (pathname === '/api/admin/health' && method === 'GET') {
+        return adminRoutes.health(request, env, origin);
+      }
       const st = pathname.match(/^\/api\/admin\/users\/([A-Za-z0-9_-]{1,64})\/status$/);
       if (st) {
         if (method === 'POST') return adminRoutes.setUserStatus(request, env, origin, st[1]);
