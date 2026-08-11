@@ -55,11 +55,13 @@ test('resample: identity at same rate, interpolation across rates, empty stays e
   const same = new Float32Array([0.1, 0.2]);
   assert.equal(resampleLinearMono(same, 44100, 44100), same, 'same rate = same array, no copy');
   assert.equal(resampleLinearMono(new Float32Array(0), 96000, 44100).length, 0);
-  // 4 samples at 2Hz → 2 samples at 1Hz: endpoints preserved
+  // 4 samples at 2Hz → 2 samples at 1Hz: sample TIME is preserved — output
+  // sample i reads input position i·(from/to), so [0,2], never a stretched
+  // [0,3] (endpoint-mapping would shift every moment of the signal).
   const down = resampleLinearMono(new Float32Array([0, 1, 2, 3]), 2, 1);
   assert.equal(down.length, 2);
   assert.equal(down[0], 0);
-  assert.equal(down[1], 3);
+  assert.equal(down[1], 2);
 });
 
 test('a 96kHz source still lands at the declared rate and under the caps', async () => {

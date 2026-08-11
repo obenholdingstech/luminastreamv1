@@ -38,9 +38,11 @@ export function resampleLinearMono(samples, fromRate, toRate) {
   if (fromRate === toRate || samples.length === 0) return samples;
   const outLen = Math.max(1, Math.round((samples.length * toRate) / fromRate));
   const out = new Float32Array(outLen);
-  const step = outLen > 1 ? (samples.length - 1) / (outLen - 1) : 0;
   for (let i = 0; i < outLen; i += 1) {
-    const pos = i * step;
+    // Source position by RATE RATIO — output sample i lands at the same
+    // moment in time as input position i·(from/to); mapping endpoints to
+    // endpoints instead would silently stretch the signal.
+    const pos = Math.min(samples.length - 1, (i * fromRate) / toRate);
     const i0 = Math.floor(pos);
     const i1 = Math.min(samples.length - 1, i0 + 1);
     const frac = pos - i0;
