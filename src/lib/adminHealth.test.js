@@ -23,6 +23,7 @@ test('formatCheckedAt: UTC seconds precision, junk is null', () => {
   assert.equal(formatCheckedAt(Date.UTC(2026, 7, 11, 12, 30, 45)), '2026-08-11 12:30:45');
   assert.equal(formatCheckedAt('now'), null);
   assert.equal(formatCheckedAt(0), null);
+  assert.equal(formatCheckedAt(9e15), null, 'beyond the Date range fails soft, never RangeError');
 });
 
 test('agentVerdict: the live/down/unknown trichotomy', () => {

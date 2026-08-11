@@ -29,7 +29,11 @@ export function formatQuota(quota) {
 /** Epoch millis → 'YYYY-MM-DD HH:MM:SS' UTC, or null for junk. */
 export function formatCheckedAt(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return null;
-  return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+  const date = new Date(ms);
+  // Finite-but-beyond-Date-range (>8.64e15) would make toISOString THROW —
+  // fail-soft means null, never a RangeError in a render.
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().replace('T', ' ').slice(0, 19);
 }
 
 /** The agent cell's verdict: 'live' | 'down' | 'unknown' + its prose. */
