@@ -2,6 +2,23 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 11 August 2026 (late night) — studio block closed
+
+- **#109 merged:** 15MB avatars compressed in-browser to the vendor
+  target; 150MB audio+video samples extracted in-browser to ~9MB WAV
+  @44.1k (decodeAudioData handles .mp4/.mov/.webm). CodeRabbit caught a
+  real rate-enforcement bug + a resampler time-stretch; both fixed,
+  mutation-verified.
+- **#110 open:** voice selector grouped your/system voices
+  (choice_categories in agent metadata + label fallback for
+  manifest/deploy-skew); full mobile responsive pass (100dvh, wrapping
+  rows, tap targets).
+- Decision: 150MB decode stays whole-file decodeAudioData (CEO mandate);
+  WebCodecs demux is the named follow-up if constrained devices fail.
+- Deleted stray workers/api/vendor_keys.py (stale misplaced 10 Aug draft).
+- Next: land #110; CEO's one-time studio re-clone of her voice;
+  budget-401 datapoint; engine-scaling epic awaiting her go.
+
 ## 11 August 2026 (night) — the CEO's live-test bugs, all three
 
 - **Deletes were CORS:** DELETE was missing from Access-Control-Allow-Methods — browsers blocked every voice/avatar delete at preflight (live-verified by curl before the fix). One constant, both buttons.

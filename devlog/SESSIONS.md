@@ -4,6 +4,75 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 11 Aug 2026 (late night) — the studio block closed: bugs → media limits → categorization + responsive
+
+**Task (CEO, verbatim essentials):** "Studio Bug Fixes, Health Probe
+Adjustments & Full UX Refactor … Delete Endpoints Broken … Decart Health
+Probe (HTTP 400) … LiveKit Room Probes (HTTP 404) … Avatar Images: Up to
+15 MB … Voice Audio Samples: Up to 150 MB. Video Container Support for
+Voice Cloning (.mp4, .mov, .webm) … parse/extract the audio track …
+Voice Categorization … clear UI separation … between Personal Cloned
+Voices and Premade System Voices. Mobile & Desktop Adaptive Design …
+Let's get the deletion endpoints and health probes fixed first, then
+roll out the media limit expansion and responsive UI refactor."
+
+**What shipped, in her order:**
+
+1. **#108 — the live-test bugs** (logged in the previous entry; merged
+   and deployed first, per her sequencing).
+
+2. **#109 — media limits (merged @ dcce034).** 15MB avatar picks: the
+   browser walks a compression ladder (4096@0.92 → 1024@0.7) to the
+   3.5MB vendor target — what's stored and sent is always vendor-usable.
+   150MB voice samples including video containers: the clone modal
+   accepts .mp4/.mov/.webm and the BROWSER extracts the audio track
+   (decodeAudioData at 44.1kHz), trims to 100s, and re-encodes a ~8.8MB
+   mono WAV — a 150MB screen recording never crosses the wire whole.
+   CodeRabbit: 4 findings over two rounds, every one addressed with
+   evidence + mutation runs. Two were real bugs it caught: the pipeline
+   didn't enforce its declared 44.1k rate (a 96kHz source would have
+   emitted a ~19MB WAV straight through the vendor cap), and my first
+   resampler fix mapped endpoints-to-endpoints, which stretches sample
+   time (now rate-ratio positions). The decode-memory finding was
+   accepted PARTIALLY: decoding at the context rate bounds PCM by
+   duration instead of source rate, and decode failure is now a caught
+   user-facing sentence — but the 150MB gate stays (her verbatim
+   mandate); truly bounded extraction needs WebCodecs + a demuxer,
+   named in the reply as the follow-up if constrained devices fail.
+   Merge-gate note: CodeRabbit's incremental ack of the final commit is
+   an EMPTY review object — indistinguishable from a throttled pass in
+   the API — so the pass was re-triggered and confirmed via its own
+   "Already reviewed" response before merging.
+
+3. **#110 — categorization + responsive (this PR).** The voice selector
+   is grouped "your voices" / "system voices": agent metadata now
+   carries choice_categories; pure src/lib/voiceGroups.js resolves
+   explicit-first with a label-suffix fallback (works pre-connect from
+   the manifest and across deploy skew). "Your voices" is a positive
+   claim — only cloned/generated/professional land there; a name's own
+   parenthetical is never mistaken for a category. Responsive pass as
+   surgery: 100dvh root (mobile address-bar fix), wrapping control
+   rows, the style prompt takes its own line when crushed, voice select
+   capped at screen width, px-4 mobile paddings, real tap areas on the
+   library delete affordances.
+
+**Findings/surprises:** a stale 10 Aug draft of agent/vendor_keys.py
+(pre-STT-narrowing) was found misplaced at workers/api/vendor_keys.py —
+untracked, deleted. `gh pr merge --delete-branch` also deletes the LOCAL
+branch, which broke a stacked rebase's upstream ref mid-flow (recovered
+via the SHA).
+
+**Files:** src/lib/{audioExtract,imageCompress,voiceGroups}.js (+tests),
+src/lib/{voiceLibrary,cloneFlow}.js, src/components/{VoiceLibrary,
+AvatarLibrary}.jsx, src/pages/Studio.jsx, agent/{knobs,test_knobs}.py,
+workers/api/src/cors.js + healthProbes.js (#108).
+
+**Verification:** 360 lib + 281 worker tests, agent test_knobs 24,
+lint/typecheck bare, production vite build (100dvh rule and grouped
+options confirmed in the emitted bundle); every new behavior
+mutation-verified (resample removal, final-rung regression, partition
+flip, suffix-strip skip — each kills exactly its test).
+
 ## 11 Aug 2026 — three mandates: the Decart pool (live fix), the clone modal, the Health screen
 
 **Task (CEO, verbatim essentials):** confirmed ElevenLabs failover live
