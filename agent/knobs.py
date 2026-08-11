@@ -283,6 +283,12 @@ def metadata(engine=None, voice_choices=None, spend=None):
                               else v.get("name") or v["id"])
                     for v in voice_choices
                 }
+                # The category EXPLICITLY, id → category, so the console can
+                # group the selector ("your voices" vs "system voices")
+                # without parsing it back out of the display label.
+                entry["choice_categories"] = {
+                    v["id"]: v["category"] for v in voice_choices if v.get("category")
+                }
                 entry["dynamic"] = True
             else:
                 entry["choices"] = list(spec["choices"])

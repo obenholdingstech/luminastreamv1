@@ -356,6 +356,13 @@ def test_dynamic_voice_knob_clamp_and_metadata():
     md = {e["name"]: e for e in knobs.metadata("tts", voice_choices=voices)}
     assert md["voice"]["choices"] == ["v1", "v2"]
     assert md["voice"]["choice_labels"]["v1"] == "Amy (cloned)"
+    # categories ride EXPLICITLY (id → category) so the console groups the
+    # selector without parsing display labels; category-less voices are
+    # simply absent from the map, never present-with-junk
+    assert md["voice"]["choice_categories"] == {"v1": "cloned", "v2": "premade"}
+    md_nocat = {e["name"]: e for e in knobs.metadata(
+        "tts", voice_choices=[{"id": "v3", "name": "Bare"}])}
+    assert md_nocat["voice"]["choice_categories"] == {}
     assert md["voice"]["dynamic"] is True
     assert md["voice"]["group"] == "ElevenLabs voice"
     # no voice_choices ⇒ still renders (empty choices), never crashes

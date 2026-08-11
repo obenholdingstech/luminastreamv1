@@ -32,6 +32,7 @@ import {
 } from '@/lib/unifiedLens';
 import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
+import { groupVoices } from '@/lib/voiceGroups';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -234,6 +235,7 @@ export default function Studio() {
   // useMemo so the object is referentially stable for the autosave effect's
   // dependency array (exhaustive-deps: a fresh {} per render re-arms it).
   const voiceLabels = useMemo(() => voiceMeta?.choice_labels ?? {}, [voiceMeta]);
+  const voiceCategories = useMemo(() => voiceMeta?.choice_categories ?? {}, [voiceMeta]);
 
   // Pre-start identity (CEO directive, 3 Aug evening): the voice is chosen
   // BEFORE the lens starts. The selector is populated from the agent's live
@@ -265,6 +267,14 @@ export default function Studio() {
   const effectiveVoiceLabels = liveVoiceList
     ? voiceLabels
     : Object.fromEntries(voiceManifest.voices.map((v) => [v.id, v.label]));
+  // "Your voices" vs "system voices" (CEO, 11 Aug 2026). The live broadcast
+  // carries explicit categories; the manifest (and an older agent's
+  // broadcast) carries them only in the label suffix — groupVoices resolves
+  // both, so the split works pre-connect and across deploy skew.
+  const voiceGroups = useMemo(
+    () => groupVoices(effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList ? voiceCategories : {}),
+    [effectiveVoiceChoices, effectiveVoiceLabels, liveVoiceList, voiceCategories],
+  );
   // A stored choice is only a choice while the current list still offers it.
   // A voice deleted from the account (or absent from the agent's live list)
   // would otherwise leave the controlled <select> with no matching option —
@@ -1298,11 +1308,24 @@ export default function Studio() {
                     choose a voice…
                   </option>
                 )}
-                {effectiveVoiceChoices.map((id) => (
-                  <option key={id} value={id} className="bg-[#08080F]">
-                    {effectiveVoiceLabels[id] ?? id}
-                  </option>
-                ))}
+                {voiceGroups.personal.length > 0 && (
+                  <optgroup label="your voices" className="bg-[#08080F]">
+                    {voiceGroups.personal.map((v) => (
+                      <option key={v.id} value={v.id} className="bg-[#08080F]">
+                        {v.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {voiceGroups.system.length > 0 && (
+                  <optgroup label="system voices" className="bg-[#08080F]">
+                    {voiceGroups.system.map((v) => (
+                      <option key={v.id} value={v.id} className="bg-[#08080F]">
+                        {v.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
             {!isConnected && validChosenVoice && (
