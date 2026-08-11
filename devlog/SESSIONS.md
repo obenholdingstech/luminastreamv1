@@ -4,6 +4,51 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 11 Aug 2026 — three mandates: the Decart pool (live fix), the clone modal, the Health screen
+
+**Task (CEO, verbatim essentials):** confirmed ElevenLabs failover live
+(her wrangler had been authed to a past project — her diagnosis after my
+secret-list pointer); "I want the full vendor-generic pooling and routing
+logic built and wired up for Decart right now" (keys already pushed as a
+pool); "a new dedicated screen … for System Health … API Key Health …
+Server/Agent Health … without ever having to SSH"; "the UX is entirely
+too raw … a clean modal/form … loading state … success toast."
+
+**What shipped:**
+
+1. **#105 — the Decart pool, as a LIVE FIX.** Her pool push preceded the
+   routing code, so production was sending "key1,key2" as a literal key —
+   every video mint 401'd. All eight read sites now route through
+   splitPool; the client-token MINT is the single fall-through point
+   (the minted token carries the whole session, so nothing downstream
+   knows the pool exists); the classifier honours the live-verified 422
+   "Insufficient credits". Zero CodeRabbit findings; merged and deployed
+   within the hour; video restored.
+
+2. **#106 — the clone modal.** Picking a sample opens a form (name
+   pre-filled from the filename stem, editable; language from a curated
+   list), cloning shows progress, failure stays in the modal with the
+   server's words, success closes into a toast. Review rounds moved the
+   workflow into pure src/lib/cloneFlow.js (injected readFile/clone; a
+   REJECTING transport returns a retryable outcome so the modal never
+   wedges) and made language part of the voice's identity: persisted on
+   the row (0007) and REPLAYED BY THE HEALER — a healed clone keeps its
+   conditioning; mutation-verified at the vendor-form level.
+
+3. **#107 — the Health screen (in review).** /api/admin/health probes
+   every pool key live (ElevenLabs subscription endpoint with quota —
+   amber before dead; Decart zero-cost mint where the broke-signal
+   surfaces) and every pool room via LiveKit's own RoomService (an agent
+   is LIVE iff an echo-* participant is present — measuring what users
+   experience). Console gains a health tab: status pills, quota bars,
+   per-room agent rows, 30s auto-refresh. Dead key vs crashed unit, one
+   glance, no SSH.
+
+**Verification:** Worker 279, lib 339, agent 249 — green across all
+three; mutation runs on the labels write, the heal-language replay, and
+the earlier pool predicates all bite.
+
+---
 ## 10 Aug 2026 — the pool behind the key, and voices that follow their owner
 
 **Task (CEO, verbatim essentials):** "we shouldn't change the

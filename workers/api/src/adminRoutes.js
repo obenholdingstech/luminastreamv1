@@ -12,6 +12,7 @@
 // must never invent a second money path.
 
 import { anyVendorKey } from './vendorKeys.js';
+import { probeAgents, probeVendorKeys } from './healthProbes.js';
 
 const USER_PAGE_LIMIT = 50;
 
@@ -123,6 +124,24 @@ export function createAdminRoutes(kit) {
       if (refusal) return refusal;
       const out = await tryJson(callLedger(env, '/settlements'));
       return json({ ok: true, settlements: out?.settlements ?? [] }, { origin });
+    },
+
+    /**
+     * GET /api/admin/health — the dead-key-or-crashed-unit answer, live.
+     * Vendor rows and agent rows probe in parallel; each family degrading
+     * independently so one dead vendor never blanks the screen.
+     */
+    async health(request, env, origin) {
+      const { refusal } = await requireAdmin(request, env, origin);
+      if (refusal) return refusal;
+      const [vendors, agents] = await Promise.all([
+        probeVendorKeys(env).catch(() => null),
+        probeAgents(env).catch(() => null),
+      ]);
+      return json(
+        { ok: true, vendors: vendors ?? [], agents: agents ?? [], checkedAt: Date.now() },
+        { origin },
+      );
     },
 
     /**

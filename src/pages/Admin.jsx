@@ -9,6 +9,8 @@
 
 import {
   Activity,
+  HeartPulse,
+  LayoutDashboard,
   LogOut,
   RefreshCw,
   ShieldCheck,
@@ -20,7 +22,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@/hooks/useAuth';
 import { adminGate } from '@/lib/adminGate';
+import { HEALTH_REFRESH_MS, agentVerdict, formatCheckedAt, formatQuota, statusPill } from '@/lib/adminHealth';
 import {
+  fetchHealth,
   fetchOverview,
   fetchSessions,
   fetchSettlements,
@@ -89,6 +93,116 @@ function Stat({ label, value, tone = 'text-[#E2E8F0]' }) {
   );
 }
 
+function HealthView() {
+  const [health, reloadHealth] = useAdminList(fetchHealth);
+  // The screen answers "dead key or crashed unit" at a glance and stays
+  // current on its own while open — a 30s cadence, cleaned up on unmount.
+  useEffect(() => {
+    const timer = setInterval(reloadHealth, HEALTH_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [reloadHealth]);
+
+  const h = health.items;
+  return (
+    <div className="flex flex-col gap-4">
+      <Panel title="vendor keys" state={health} reload={reloadHealth}>
+        {(h?.vendors ?? []).length === 0 ? (
+          <p className="text-[11px] text-[#64748B]">no vendor keys configured</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead>
+                <tr className="text-[9px] tracking-[0.18em] uppercase text-[#64748B]">
+                  <th className="py-1.5 pr-4 font-normal">vendor</th>
+                  <th className="py-1.5 pr-4 font-normal">key</th>
+                  <th className="py-1.5 pr-4 font-normal">status</th>
+                  <th className="py-1.5 pr-4 font-normal">quota</th>
+                  <th className="py-1.5 font-normal">detail</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#CBD5E1]">
+                {(h?.vendors ?? []).map((v) => {
+                  const pill = statusPill(v.status);
+                  const quota = formatQuota(v.quota);
+                  return (
+                    <tr key={`${v.vendor}:${v.fingerprint}`} className="border-t border-[#14141F]">
+                      <td className="py-2 pr-4">{v.vendor}</td>
+                      <td className="py-2 pr-4 font-mono text-[11px]">{v.fingerprint}</td>
+                      <td className={`py-2 pr-4 ${pill.tone}`}>● {pill.word}</td>
+                      <td className="py-2 pr-4">
+                        {quota ? (
+                          <div className="min-w-[120px]">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#14141F]">
+                              <div
+                                className={`h-full rounded-full ${quota.percent >= 90 ? 'bg-[#FBBF24]' : 'bg-[#6366F1]'}`}
+                                style={{ width: `${quota.percent}%` }}
+                              />
+                            </div>
+                            <span className="mt-1 block text-[10px] tabular-nums text-[#64748B]">{quota.text}</span>
+                          </div>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="py-2 text-[11px] text-[#64748B]">{v.detail ?? ''}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="agents" state={health} reload={reloadHealth}>
+        {(h?.agents ?? []).length === 0 ? (
+          <p className="text-[11px] text-[#64748B]">no rooms configured</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead>
+                <tr className="text-[9px] tracking-[0.18em] uppercase text-[#64748B]">
+                  <th className="py-1.5 pr-4 font-normal">room</th>
+                  <th className="py-1.5 pr-4 font-normal">agent</th>
+                  <th className="py-1.5 pr-4 font-normal">participants</th>
+                  <th className="py-1.5 font-normal">detail</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#CBD5E1]">
+                {(h?.agents ?? []).map((a) => (
+                  <tr key={a.room} className="border-t border-[#14141F]">
+                    <td className="py-2 pr-4">{a.room}</td>
+                    <td className="py-2 pr-4">
+                      {(() => {
+                        const verdict = agentVerdict(a);
+                        const tone =
+                          verdict.state === 'live'
+                            ? 'text-[#34D399]'
+                            : verdict.state === 'down'
+                              ? 'text-[#FCA5A5]'
+                              : 'text-[#64748B]';
+                        return <span className={tone}>● {verdict.text}</span>;
+                      })()}
+                    </td>
+                    <td className="py-2 pr-4 tabular-nums">{a.participants ?? '—'}</td>
+                    <td className="py-2 text-[11px] text-[#64748B]">{a.detail ?? ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {formatCheckedAt(h?.checkedAt) ? (
+        <p className="text-right text-[10px] text-[#3E4A5F] tabular-nums">
+          checked {formatCheckedAt(h?.checkedAt)} UTC · auto-refreshes every {HEALTH_REFRESH_MS / 1000}s
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export default function Admin() {
   const auth = useAuth();
   const gate = adminGate(auth);
@@ -108,6 +222,7 @@ export default function Admin() {
     }
   };
 
+  const [view, setView] = useState('console'); // 'console' | 'health'
   const [overview, reloadOverview] = useAdminList(fetchOverview);
   const [users, reloadUsers] = useAdminList(fetchUsers);
   const [sessions, reloadSessions] = useAdminList(fetchSessions);
@@ -151,6 +266,26 @@ export default function Admin() {
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <nav className="flex rounded-full border border-[#1E1E2E] p-0.5" aria-label="admin views">
+            <button
+              type="button"
+              onClick={() => setView('console')}
+              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[10px] tracking-[0.14em] uppercase transition-colors ${
+                view === 'console' ? 'bg-[#1E1E2E] text-[#E2E8F0]' : 'text-[#64748B] hover:text-[#94A3B8]'
+              }`}
+            >
+              <LayoutDashboard size={10} aria-hidden /> console
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('health')}
+              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[10px] tracking-[0.14em] uppercase transition-colors ${
+                view === 'health' ? 'bg-[#1E1E2E] text-[#E2E8F0]' : 'text-[#64748B] hover:text-[#94A3B8]'
+              }`}
+            >
+              <HeartPulse size={10} aria-hidden /> health
+            </button>
+          </nav>
           {signOutError ? (
             <span role="alert" className="text-[10px] text-[#FCA5A5]">
               {signOutError}
@@ -167,6 +302,10 @@ export default function Admin() {
       </header>
 
       <main className="mx-auto max-w-5xl px-6 pb-16 flex flex-col gap-4">
+        {view === 'health' ? (
+          <HealthView />
+        ) : (
+          <>
         {/* ── overview ─────────────────────────────────────────────── */}
         <Panel title="overview" state={overview} reload={reloadOverview}>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -340,6 +479,8 @@ export default function Admin() {
             </div>
           )}
         </Panel>
+          </>
+        )}
       </main>
     </div>
   );
