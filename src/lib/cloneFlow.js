@@ -21,8 +21,12 @@ export async function runCloneFlow({ file, name, language }, { readFile, clone }
   let sampleData;
   try {
     sampleData = await readFile(file);
-  } catch {
-    return { ok: false, error: 'could not read that file — try picking it again' };
+  } catch (err) {
+    // The extractor's refusals are already sentences ("no audio track
+    // found in that file") — pass them through; anything else gets the
+    // generic read failure.
+    const msg = err instanceof Error && /audio/.test(err.message) ? err.message : null;
+    return { ok: false, error: msg ?? 'could not read that file — try picking it again' };
   }
   const trimmed = name.trim();
   let res;

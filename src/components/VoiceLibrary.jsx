@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { afterDelete, cloneLabel, sampleRefusal } from '@/lib/voiceLibrary';
 import { runCloneFlow } from '@/lib/cloneFlow';
 import { cloneMyVoice, deleteMyVoice, listMyVoices } from '@/lib/voiceLibraryClient';
+import { AUDIO_OR_VIDEO_ACCEPT, browserDecode, extractSample } from '@/lib/audioExtract';
 
 // Curated, honest list — these are conditioning hints for the vendor, not a
 // promise of translation. '' = let the vendor infer.
@@ -83,13 +84,14 @@ export default function VoiceLibrary({ onLibraryChanged }) {
     // The WORKFLOW lives in src/lib/cloneFlow.js (pure, tested); this
     // component only maps its outcome to modal/toast state.
     const outcome = await runCloneFlow(pending, {
-      readFile: (file) =>
-        new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(file);
-        }),
+      // EVERY pick — plain audio or a video container — goes through the
+      // in-browser extractor: the audio track is decoded, trimmed to what
+      // cloning needs, and re-encoded as a compact mono WAV. A 150MB
+      // screen recording becomes a ~9MB sample without leaving the page.
+      readFile: async (file) => {
+        const { sampleData } = await extractSample(file, browserDecode);
+        return sampleData;
+      },
       clone: cloneMyVoice,
     });
     if (outcome.ok) {
@@ -133,7 +135,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
         <input
           ref={fileRef}
           type="file"
-          accept="audio/*"
+          accept={AUDIO_OR_VIDEO_ACCEPT}
           className="hidden"
           onChange={onPick}
           aria-label="upload a voice sample"
@@ -203,6 +205,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
             </div>
             <p className="mt-2 truncate text-[11px] text-[#64748B]">
               sample: {pending.file.name}
+              {/^video\//.test(pending.file.type ?? '') ? ' — the audio track will be extracted' : ''}
             </p>
 
             <label className="mt-4 block text-[10px] tracking-[0.14em] uppercase text-[#64748B]">
@@ -251,7 +254,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
             >
               {cloning ? (
                 <>
-                  <Loader2 size={12} className="animate-spin" aria-hidden /> cloning in progress…
+                  <Loader2 size={12} className="animate-spin" aria-hidden /> extracting &amp; cloning…
                 </>
               ) : (
                 'clone voice'

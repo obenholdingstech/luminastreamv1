@@ -8,6 +8,7 @@ import { AccountPanel } from '@/components/AccountPanel';
 import AvatarLibrary from '@/components/AvatarLibrary';
 import VoiceLibrary from '@/components/VoiceLibrary';
 import { uploadAvatar } from '@/lib/avatarClient';
+import { AVATAR_PICK_MAX_BYTES, browserCompressImage } from '@/lib/imageCompress';
 import { createAvatarSelection } from '@/lib/avatarSelection';
 import { SURFACE_URLS } from '@/lib/surface';
 import { useLiveKitVoice } from '@/hooks/useLiveKitVoice';
@@ -401,17 +402,19 @@ export default function Studio() {
         setAvatarError('use a JPEG, PNG, or WebP image');
         return;
       }
-      // The vendor wants the reference under ~5 MB as base64; 3.5 MB of file
-      // inflates to just under that. Refused here so a too-big pick is a
-      // message, never a failed session start.
-      if (file.size > 3.5 * 1024 * 1024) {
-        setAvatarError('keep the image under 3.5 MB');
+      // Picks up to 15MB are welcome (CEO, 11 Aug 2026); the browser walks
+      // a compression ladder down to the vendor's reference wall
+      // (~3.5MB → <5MB as base64), so what rides the session and the vault
+      // is always vendor-usable.
+      if (file.size > AVATAR_PICK_MAX_BYTES) {
+        setAvatarError('keep the image under 15 MB');
         return;
       }
       const pickRev = avatarSelSeq.begin();
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const dataUrl = String(reader.result ?? '');
+      const applyPick = async () => {
+        const out = await browserCompressImage(file);
+        if (!out?.dataUrl) throw new Error('could not process that image');
+        const dataUrl = out.dataUrl;
         // The pick always sticks — it rides the next start regardless. What
         // must NOT be silent is the live swap's outcome: a refused swap means
         // the stream keeps animating the PREVIOUS identity, and saying
@@ -446,14 +449,13 @@ export default function Studio() {
           }
         }
       };
-      // A failed read MUST clear the flag, or the video leg waits forever
-      // for an identity that is never coming.
-      reader.onerror = () => {
+      // A failed compress MUST clear the flag, or the video leg waits
+      // forever for an identity that is never coming.
+      setAvatarReading(true);
+      applyPick().catch(() => {
         setAvatarReading(false);
         setAvatarError('the image could not be read — try picking it again');
-      };
-      setAvatarReading(true);
-      reader.readAsDataURL(file);
+      });
     },
     [video, avatarSelSeq],
   );
