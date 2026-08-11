@@ -180,3 +180,28 @@ test('fetchHealth: validated rows or a FAILED read — the health screen never r
     }
   }
 });
+
+test('fetchHealth: rendered-field junk — object quota/detail/participants — is a FAILED read', async () => {
+  const GOOD = {
+    ok: true,
+    checkedAt: 1754900000000,
+    vendors: [{ vendor: 'elevenlabs', fingerprint: 'k1', status: 'ok', quota: null, detail: null }],
+    agents: [{ room: 'r1', agentLive: null, participants: null, detail: null }],
+  };
+  assert.notEqual(await (async () => { const s = stub(200, GOOD); try { return await fetchHealth(BASE); } finally { s.restore(); } })(), null, 'nullables are fine');
+  for (const bad of [
+    { ...GOOD, vendors: [{ ...GOOD.vendors[0], quota: {} }] },
+    { ...GOOD, vendors: [{ ...GOOD.vendors[0], quota: { used: 1, limit: 0 } }] },
+    { ...GOOD, vendors: [{ ...GOOD.vendors[0], detail: { msg: 'obj' } }] },
+    { ...GOOD, agents: [{ ...GOOD.agents[0], participants: {} }] },
+    { ...GOOD, agents: [{ ...GOOD.agents[0], agentLive: 'yes' }] },
+    { ...GOOD, agents: [{ ...GOOD.agents[0], agentIdentity: 42 }] },
+  ]) {
+    const s = stub(200, bad);
+    try {
+      assert.equal(await fetchHealth(BASE), null, JSON.stringify(bad).slice(0, 80));
+    } finally {
+      s.restore();
+    }
+  }
+});

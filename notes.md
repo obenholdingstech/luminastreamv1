@@ -2,7 +2,7 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
-## 11 August 2026 (later) — three mandates closed
+## 11 August 2026 (later) — three mandates: two closed, one in review
 
 - **#105 Decart pool (live fix, zero findings):** her pool push predated the code — mints were 401ing; now the mint falls through payment refusals and downstream rides the minted token.
 - **#106 clone modal:** pure cloneFlow module; language persists (0007) and the HEALER replays it; toast/progress/retryable failures.

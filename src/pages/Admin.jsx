@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@/hooks/useAuth';
 import { adminGate } from '@/lib/adminGate';
+import { HEALTH_REFRESH_MS, agentVerdict, formatCheckedAt, formatQuota, statusPill } from '@/lib/adminHealth';
 import {
   fetchHealth,
   fetchOverview,
@@ -92,19 +93,12 @@ function Stat({ label, value, tone = 'text-[#E2E8F0]' }) {
   );
 }
 
-const STATUS_PILLS = {
-  ok: ['text-[#34D399]', 'ok'],
-  payment: ['text-[#FBBF24]', 'payment issue'],
-  rejected: ['text-[#FCA5A5]', 'key rejected'],
-  unreachable: ['text-[#64748B]', 'unreachable'],
-};
-
 function HealthView() {
   const [health, reloadHealth] = useAdminList(fetchHealth);
   // The screen answers "dead key or crashed unit" at a glance and stays
   // current on its own while open — a 30s cadence, cleaned up on unmount.
   useEffect(() => {
-    const timer = setInterval(reloadHealth, 30_000);
+    const timer = setInterval(reloadHealth, HEALTH_REFRESH_MS);
     return () => clearInterval(timer);
   }, [reloadHealth]);
 
@@ -128,16 +122,27 @@ function HealthView() {
               </thead>
               <tbody className="text-[#CBD5E1]">
                 {(h?.vendors ?? []).map((v) => {
-                  const [tone, word] = STATUS_PILLS[v.status] ?? ['text-[#64748B]', v.status];
+                  const pill = statusPill(v.status);
+                  const quota = formatQuota(v.quota);
                   return (
                     <tr key={`${v.vendor}:${v.fingerprint}`} className="border-t border-[#14141F]">
                       <td className="py-2 pr-4">{v.vendor}</td>
                       <td className="py-2 pr-4 font-mono text-[11px]">{v.fingerprint}</td>
-                      <td className={`py-2 pr-4 ${tone}`}>● {word}</td>
-                      <td className="py-2 pr-4 tabular-nums">
-                        {v.quota
-                          ? `${Math.round((v.quota.used / v.quota.limit) * 100)}% of ${v.quota.limit.toLocaleString()}`
-                          : '—'}
+                      <td className={`py-2 pr-4 ${pill.tone}`}>● {pill.word}</td>
+                      <td className="py-2 pr-4">
+                        {quota ? (
+                          <div className="min-w-[120px]">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#14141F]">
+                              <div
+                                className={`h-full rounded-full ${quota.percent >= 90 ? 'bg-[#FBBF24]' : 'bg-[#6366F1]'}`}
+                                style={{ width: `${quota.percent}%` }}
+                              />
+                            </div>
+                            <span className="mt-1 block text-[10px] tabular-nums text-[#64748B]">{quota.text}</span>
+                          </div>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="py-2 text-[11px] text-[#64748B]">{v.detail ?? ''}</td>
                     </tr>
@@ -168,13 +173,16 @@ function HealthView() {
                   <tr key={a.room} className="border-t border-[#14141F]">
                     <td className="py-2 pr-4">{a.room}</td>
                     <td className="py-2 pr-4">
-                      {a.agentLive === true ? (
-                        <span className="text-[#34D399]">● live{a.agentIdentity ? ` — ${a.agentIdentity}` : ''}</span>
-                      ) : a.agentLive === false ? (
-                        <span className="text-[#FCA5A5]">● not serving</span>
-                      ) : (
-                        <span className="text-[#64748B]">● unknown</span>
-                      )}
+                      {(() => {
+                        const verdict = agentVerdict(a);
+                        const tone =
+                          verdict.state === 'live'
+                            ? 'text-[#34D399]'
+                            : verdict.state === 'down'
+                              ? 'text-[#FCA5A5]'
+                              : 'text-[#64748B]';
+                        return <span className={tone}>● {verdict.text}</span>;
+                      })()}
                     </td>
                     <td className="py-2 pr-4 tabular-nums">{a.participants ?? '—'}</td>
                     <td className="py-2 text-[11px] text-[#64748B]">{a.detail ?? ''}</td>
@@ -186,9 +194,9 @@ function HealthView() {
         )}
       </Panel>
 
-      {h?.checkedAt ? (
+      {formatCheckedAt(h?.checkedAt) ? (
         <p className="text-right text-[10px] text-[#3E4A5F] tabular-nums">
-          checked {new Date(h.checkedAt).toISOString().replace('T', ' ').slice(0, 19)} UTC · auto-refreshes every 30s
+          checked {formatCheckedAt(h?.checkedAt)} UTC · auto-refreshes every {HEALTH_REFRESH_MS / 1000}s
         </p>
       ) : null}
     </div>

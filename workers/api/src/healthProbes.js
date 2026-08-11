@@ -36,7 +36,16 @@ async function probeElevenLabsKey(env, cand) {
     }
     const body = await res.json().catch(() => null);
     if (!res.ok) {
-      return { ...row, status: 'payment', detail: `subscription endpoint answered HTTP ${res.status}` };
+      // Only an EXPLICIT billing signal reads as payment — a vendor 500 or
+      // 429 shown as a payment issue would send the operator to the wrong
+      // fix (CodeRabbit, PR 107).
+      const text = JSON.stringify(body ?? '').toLowerCase();
+      const billing = res.status === 402 || ['payment', 'billing', 'quota_exceeded'].some((m) => text.includes(m));
+      return {
+        ...row,
+        status: billing ? 'payment' : 'unreachable',
+        detail: `subscription endpoint answered HTTP ${res.status}`,
+      };
     }
     const subStatus = body?.status ?? 'unknown';
     const used = body?.character_count;

@@ -138,3 +138,22 @@ test('/api/admin/health: role-walled like every admin route', async () => {
   );
   assert.equal(asUser.status, 403);
 });
+
+test('vendor probe: an ElevenLabs 500/429 is UNREACHABLE, never a payment misdiagnosis', async () => {
+  const s = stubWorld([
+    ['api.elevenlabs.io', (u, opts) => {
+      const key = opts.headers['xi-api-key'];
+      if (key === 'el-500') return jsonRes({ detail: 'internal' }, 500);
+      if (key === 'el-429') return jsonRes({ detail: 'slow down' }, 429);
+      return jsonRes({ detail: { status: 'quota_exceeded' } }, 429);
+    }],
+  ]);
+  try {
+    const rows = await probeVendorKeys({ ELEVENLABS_API_KEY: 'el-500,el-429,el-quota' });
+    assert.equal(rows[0].status, 'unreachable', 'a 500 is their outage, not our invoice');
+    assert.equal(rows[1].status, 'unreachable', 'a bare 429 is rate limiting');
+    assert.equal(rows[2].status, 'payment', 'an explicit billing signal still reads payment');
+  } finally {
+    s.restore();
+  }
+});

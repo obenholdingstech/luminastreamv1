@@ -141,14 +141,36 @@ export async function fetchHealth(base = API_BASE) {
   if (res?.status !== 200 || !res.data?.ok) return null;
   const { vendors, agents, checkedAt } = res.data;
   if (!Array.isArray(vendors) || !Array.isArray(agents) || !Number.isFinite(checkedAt)) return null;
+  // Every field the tables RENDER is validated (CodeRabbit, PR 107):
+  // quota: {} would crash toLocaleString; an object detail would render as
+  // a React child. Malformed rows make the whole read FAIL (retry state).
+  const isQuota = (q) =>
+    q === null ||
+    q === undefined ||
+    (typeof q === 'object' &&
+      q !== null &&
+      Number.isFinite(q.used) &&
+      Number.isFinite(q.limit) &&
+      q.limit > 0);
+  const optStr = (v) => v === null || v === undefined || typeof v === 'string';
   const vendorOk = vendors.every(
     (v) =>
       v && typeof v === 'object' &&
       typeof v.vendor === 'string' &&
       typeof v.fingerprint === 'string' &&
-      typeof v.status === 'string',
+      typeof v.status === 'string' &&
+      isQuota(v.quota) &&
+      optStr(v.detail),
   );
-  const agentOk = agents.every((a) => a && typeof a === 'object' && typeof a.room === 'string');
+  const agentOk = agents.every(
+    (a) =>
+      a && typeof a === 'object' &&
+      typeof a.room === 'string' &&
+      (a.agentLive === null || a.agentLive === undefined || typeof a.agentLive === 'boolean') &&
+      optStr(a.agentIdentity) &&
+      (a.participants === null || a.participants === undefined || Number.isFinite(a.participants)) &&
+      optStr(a.detail),
+  );
   if (!vendorOk || !agentOk) return null;
   return { vendors, agents, checkedAt };
 }
