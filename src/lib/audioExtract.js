@@ -27,6 +27,28 @@ export function downmixToMono(channels, sampleRate, maxSeconds = EXTRACT_MAX_SEC
   return mono;
 }
 
+/**
+ * Linear-interpolation resample of a mono signal. The browser decoder below
+ * already decodes AT the target rate (the context's rate), so in the product
+ * this is normally an identity pass — it exists so the PIPELINE enforces the
+ * declared output rate no matter what a decoder hands back (a 96kHz source
+ * must never produce a WAV twice the stated size).
+ */
+export function resampleLinearMono(samples, fromRate, toRate) {
+  if (fromRate === toRate || samples.length === 0) return samples;
+  const outLen = Math.max(1, Math.round((samples.length * toRate) / fromRate));
+  const out = new Float32Array(outLen);
+  const step = outLen > 1 ? (samples.length - 1) / (outLen - 1) : 0;
+  for (let i = 0; i < outLen; i += 1) {
+    const pos = i * step;
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(samples.length - 1, i0 + 1);
+    const frac = pos - i0;
+    out[i] = samples[i0] * (1 - frac) + samples[i1] * frac;
+  }
+  return out;
+}
+
 /** Mono Float32 → 16-bit PCM WAV bytes. Pure, testable, no browser APIs. */
 export function encodeWavMono16(samples, sampleRate) {
   const dataBytes = samples.length * 2;
@@ -76,20 +98,40 @@ export async function extractSample(file, decode, maxSeconds = EXTRACT_MAX_SECON
     throw new Error('no audio track found in that file');
   }
   const mono = downmixToMono(decoded.channels, decoded.sampleRate, maxSeconds);
-  const wav = encodeWavMono16(mono, decoded.sampleRate);
-  return { sampleData: wavToDataUrl(wav), seconds: mono.length / decoded.sampleRate };
+  const seconds = mono.length / decoded.sampleRate;
+  const atRate = resampleLinearMono(mono, decoded.sampleRate, EXTRACT_SAMPLE_RATE);
+  const wav = encodeWavMono16(atRate, EXTRACT_SAMPLE_RATE);
+  return { sampleData: wavToDataUrl(wav), seconds };
 }
 
-/** The browser decoder for the pipeline above — AudioContext-backed. */
+/**
+ * The browser decoder for the pipeline above — AudioContext-backed.
+ * The context is created AT the target rate: per spec, decodeAudioData
+ * resamples into the context's rate, so decoded PCM is bounded by the
+ * track's DURATION (44.1k × channels × seconds), never by an exotic
+ * source rate — a 192kHz master costs the same memory as a 44.1kHz one.
+ */
 export async function browserDecode(arrayBuffer) {
   const Ctx = globalThis.AudioContext ?? globalThis.webkitAudioContext;
   if (!Ctx) throw new Error('this browser cannot decode audio');
-  const ctx = new Ctx();
+  let ctx;
+  try {
+    ctx = new Ctx({ sampleRate: EXTRACT_SAMPLE_RATE });
+  } catch {
+    ctx = new Ctx(); // older engines refuse the option; the pipeline resamples
+  }
   try {
     const audio = await ctx.decodeAudioData(arrayBuffer);
     const channels = [];
     for (let c = 0; c < audio.numberOfChannels; c += 1) channels.push(audio.getChannelData(c));
     return { sampleRate: audio.sampleRate, channels };
+  } catch {
+    // Corrupt file, unsupported codec, or a device that ran out of memory
+    // decoding a big track — all land here. A sentence, not a hang; it
+    // contains "audio" so cloneFlow passes it through verbatim.
+    throw new Error(
+      'the audio in that file could not be decoded — it may use an unsupported codec or be too large for this device; trim it and try again',
+    );
   } finally {
     ctx.close?.().catch?.(() => {});
   }

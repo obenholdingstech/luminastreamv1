@@ -3,9 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EXTRACT_MAX_SECONDS,
+  EXTRACT_SAMPLE_RATE,
   downmixToMono,
   encodeWavMono16,
   extractSample,
+  resampleLinearMono,
   wavToDataUrl,
 } from './audioExtract.js';
 
@@ -47,6 +49,33 @@ test('extractSample: video-with-audio decodes to a data URL; silent containers r
     () => extractSample({ arrayBuffer: async () => new ArrayBuffer(0) }, async () => ({ sampleRate: 4, channels: [] })),
     /no audio track/,
   );
+});
+
+test('resample: identity at same rate, interpolation across rates, empty stays empty', () => {
+  const same = new Float32Array([0.1, 0.2]);
+  assert.equal(resampleLinearMono(same, 44100, 44100), same, 'same rate = same array, no copy');
+  assert.equal(resampleLinearMono(new Float32Array(0), 96000, 44100).length, 0);
+  // 4 samples at 2Hz → 2 samples at 1Hz: endpoints preserved
+  const down = resampleLinearMono(new Float32Array([0, 1, 2, 3]), 2, 1);
+  assert.equal(down.length, 2);
+  assert.equal(down[0], 0);
+  assert.equal(down[1], 3);
+});
+
+test('a 96kHz source still lands at the declared rate and under the caps', async () => {
+  // A full-length capped extract from a high-rate master: the WAV must be
+  // encoded at EXTRACT_SAMPLE_RATE, not the source rate — at 96kHz the
+  // unresampled encoding would be ~19MB, straight through the vendor cap.
+  const srcRate = 96_000;
+  const channel = new Float32Array(srcRate * (EXTRACT_MAX_SECONDS + 5));
+  const decode = async () => ({ sampleRate: srcRate, channels: [channel] });
+  const out = await extractSample({ arrayBuffer: async () => new ArrayBuffer(0) }, decode);
+  assert.equal(out.seconds, EXTRACT_MAX_SECONDS, 'trimmed to the cap in source time');
+  const wav = Buffer.from(out.sampleData.split(',')[1], 'base64');
+  const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  assert.equal(view.getUint32(24, true), EXTRACT_SAMPLE_RATE, 'header carries the declared rate');
+  assert.ok(wav.byteLength < 10 * 1024 * 1024, 'under the vendor file cap');
+  assert.ok(out.sampleData.length < 14_000_000, 'under our sample wall as base64');
 });
 
 test('the cap keeps the extracted WAV under both walls', () => {

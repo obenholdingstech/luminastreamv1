@@ -16,12 +16,23 @@ test('the ladder walks largest-first and stops at the first rung that fits', asy
 });
 
 test('nothing fits → the SMALLEST attempt comes back, marked unfitted', async () => {
-  const out = await compressToTarget(async (rung) => ({
-    bytes: 5_000_000 + rung.maxDim, // all over target; smallest dim wins
-    dataUrl: `u-${rung.maxDim}-${rung.quality}`,
-  }));
+  // The smallest output is deliberately NOT the final rung (JPEG at a low
+  // dimension but higher quality can outweigh a mid rung) — so returning
+  // "whatever was tried last" instead of the true minimum fails here.
+  const sizes = {
+    '4096-0.92': 9_000_000,
+    '2048-0.9': 8_000_000,
+    '2048-0.8': 7_000_000,
+    '1600-0.8': 6_000_000,
+    '1280-0.75': 5_000_000,
+    '1024-0.7': 5_500_000,
+  };
+  const out = await compressToTarget(async (rung) => {
+    const key = `${rung.maxDim}-${rung.quality}`;
+    return { bytes: sizes[key], dataUrl: `u-${key}` };
+  });
   assert.equal(out.fitted, false);
-  assert.equal(out.dataUrl, 'u-1024-0.7', 'the smallest attempt, so the server wall gets our best');
+  assert.equal(out.dataUrl, 'u-1280-0.75', 'the smallest attempt, not the final rung');
 });
 
 test('the ladder ends small enough that photos realistically fit', () => {
