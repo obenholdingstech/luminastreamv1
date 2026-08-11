@@ -689,3 +689,32 @@ test('HEAL race: a losing compensation that answers HTTP 500 is SAID as VOICE-OR
     globalThis.fetch = originalFetch;
   }
 });
+
+// ── the clone modal's language field (11 Aug 2026) ────────────────────────
+
+test('clone: language rides to the vendor as labels; junk languages refuse before any spend', async () => {
+  const vendor = stubVendorPool({ 'xi-unit-test': { addStatus: 200 } });
+  try {
+    const { cookie, env } = await userEnv({});
+    const res = await worker.fetch(
+      req('/api/me/voices', { method: 'POST', cookie, body: { sampleData: SAMPLE_B64, name: 'Me', language: 'pt-BR' } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+  } finally {
+    vendor.restore();
+  }
+  const vendor2 = stubVendorPool({ 'xi-unit-test': { addStatus: 200 } });
+  try {
+    const { cookie, env } = await userEnv({});
+    const bad = await worker.fetch(
+      req('/api/me/voices', { method: 'POST', cookie, body: { sampleData: SAMPLE_B64, language: 'English!!' } }),
+      env,
+    );
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).error, 'language_invalid');
+    assert.equal(vendor2.calls.length, 0, 'refused before the vendor');
+  } finally {
+    vendor2.restore();
+  }
+});

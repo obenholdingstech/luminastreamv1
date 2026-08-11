@@ -16,6 +16,7 @@ const CLONE_MESSAGES = {
   verification_required: 'verify your email first — cloning spends real quota',
   sample_invalid: 'that file could not be read as audio — try an MP3 or WAV under 10MB',
   voice_clone_rejected: 'the voice provider refused this sample — longer, cleaner speech works best',
+  language_invalid: 'that language code was not recognised',
   vendor_unreachable: 'the voice provider did not answer — try again in a moment',
   rate_limited: 'too many attempts — wait a minute',
   unauthenticated: 'sign in to manage your voices',
@@ -63,7 +64,7 @@ export async function listMyVoices(base = API_BASE) {
 }
 
 /**
- * @param {{ name: string, sampleData: string, mimeType?: string }} args
+ * @param {{ name: string, sampleData: string, mimeType?: string, language?: string }} args
  * @returns {Promise<{ ok: boolean, voiceId?: string, message?: string }>}
  */
 export async function cloneMyVoice(args, base = API_BASE) {

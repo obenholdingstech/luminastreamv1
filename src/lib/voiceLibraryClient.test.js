@@ -106,3 +106,15 @@ test('a malformed ok response (voices not an array) is a FAILED list, never a cr
     }
   }
 });
+
+test('cloneMyVoice: the language field rides the body when present, and only then', async () => {
+  const s = stub(200, { ok: true, id: 'row', voiceId: 'v-1', label: 'x' });
+  try {
+    await cloneMyVoice({ name: 'x', sampleData: 'AAAA', language: 'pt-BR' }, BASE);
+    assert.equal(JSON.parse(s.calls[0].opts.body).language, 'pt-BR');
+    await cloneMyVoice({ name: 'x', sampleData: 'AAAA' }, BASE);
+    assert.equal('language' in JSON.parse(s.calls[1].opts.body), false);
+  } finally {
+    s.restore();
+  }
+});
