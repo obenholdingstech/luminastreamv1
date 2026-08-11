@@ -130,3 +130,25 @@ export async function setUserStatus(userId, status, base = API_BASE) {
   if (res?.status === 200 && res.data?.ok) return { ok: true };
   return { ok: false, message: refusal(res) };
 }
+
+/**
+ * The health screen's read: vendor-key rows + agent rows, validated to the
+ * fields the tables render. null = FAILED read (error state + retry).
+ * @returns {Promise<{vendors: Array, agents: Array, checkedAt: number}|null>}
+ */
+export async function fetchHealth(base = API_BASE) {
+  const res = await jsonFetch('/api/admin/health', {}, base);
+  if (res?.status !== 200 || !res.data?.ok) return null;
+  const { vendors, agents, checkedAt } = res.data;
+  if (!Array.isArray(vendors) || !Array.isArray(agents) || !Number.isFinite(checkedAt)) return null;
+  const vendorOk = vendors.every(
+    (v) =>
+      v && typeof v === 'object' &&
+      typeof v.vendor === 'string' &&
+      typeof v.fingerprint === 'string' &&
+      typeof v.status === 'string',
+  );
+  const agentOk = agents.every((a) => a && typeof a === 'object' && typeof a.room === 'string');
+  if (!vendorOk || !agentOk) return null;
+  return { vendors, agents, checkedAt };
+}

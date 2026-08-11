@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  fetchHealth,
   fetchOverview,
   fetchSessions,
   fetchSettlements,
@@ -147,5 +148,35 @@ test('a dead network is a null read / refusal, never a crash', async () => {
     assert.equal((await setUserStatus('u1', 'active', BASE)).ok, false);
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test('fetchHealth: validated rows or a FAILED read — the health screen never renders junk', async () => {
+  const GOOD = {
+    ok: true,
+    checkedAt: 1754900000000,
+    vendors: [{ vendor: 'elevenlabs', fingerprint: 'kabc12345', status: 'ok', quota: { used: 1, limit: 2 } }],
+    agents: [{ room: 'r1', agentLive: true, participants: 2 }],
+  };
+  const s = stub(200, GOOD);
+  try {
+    const h = await fetchHealth(BASE);
+    assert.equal(h.vendors[0].status, 'ok');
+    assert.equal(h.agents[0].room, 'r1');
+  } finally {
+    s.restore();
+  }
+  for (const bad of [
+    { ...GOOD, vendors: 'nope' },
+    { ...GOOD, vendors: [null] },
+    { ...GOOD, agents: [{ noRoom: true }] },
+    { ...GOOD, checkedAt: 'now' },
+  ]) {
+    const s2 = stub(200, bad);
+    try {
+      assert.equal(await fetchHealth(BASE), null, JSON.stringify(bad).slice(0, 60));
+    } finally {
+      s2.restore();
+    }
   }
 });
