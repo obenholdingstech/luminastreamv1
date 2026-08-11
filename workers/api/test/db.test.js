@@ -120,7 +120,8 @@ test('addUserVoice: count-and-insert is ONE statement, and a cap refusal returns
   const insert = granted.executed[0];
   assert.match(insert.sql, /SELECT COUNT\(\*\) FROM user_voices WHERE user_id/, 'the guard lives IN the insert');
   assert.equal(insert.binds[4], 'kabc12345', 'the creating account fingerprint rides the row');
-  assert.equal(insert.binds[6], 3, 'the cap travels as a bind');
+  assert.equal(insert.binds[5], null, 'language rides the row — null = let the vendor infer');
+  assert.equal(insert.binds[7], 3, 'the cap travels as a bind');
   // The clone flow mints the id BEFORE the vendor call so the sample and
   // the row share one identity — the override must be honoured.
   const explicit = await db.addUserVoice('u1', { id: 'row-fixed', vendorVoiceId: 'v-2', label: 'X', cap: 3 });

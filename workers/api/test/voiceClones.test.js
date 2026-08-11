@@ -67,13 +67,13 @@ async function userEnv({ verified = 1, voices = [], hasKey = true, runMeta, prof
       if (/FROM user_voices WHERE id/.test(sql)) {
         const [id, userId] = binds;
         const hit = voices.find((v) => v.rowId === id && userId === 'u1');
-        return hit ? { id: hit.rowId, vendor_voice_id: hit.vendorId, label: hit.label ?? 'x', vendor_account: hit.account ?? FP1 } : null;
+        return hit ? { id: hit.rowId, vendor_voice_id: hit.vendorId, label: hit.label ?? 'x', vendor_account: hit.account ?? FP1, language: hit.language ?? null } : null;
       }
       if (/FROM lens_profiles/.test(sql) && binds[0] === 'u1') {
         return profileVoiceId ? { user_id: 'u1', voice_id: profileVoiceId } : null;
       }
       if (/FROM user_voices WHERE user_id/.test(sql) && binds[0] === 'u1') {
-        return voices.map((v) => ({ id: v.rowId, vendor_voice_id: v.vendorId, label: v.label ?? 'x', vendor_account: v.account ?? FP1, created_at: 1 }));
+        return voices.map((v) => ({ id: v.rowId, vendor_voice_id: v.vendorId, label: v.label ?? 'x', vendor_account: v.account ?? FP1, language: v.language ?? null, created_at: 1 }));
       }
       return null;
     },
@@ -342,7 +342,7 @@ function stubVendorPool(byKey) {
     const u = String(url);
     if (!u.includes('api.elevenlabs.io')) return original(url, opts);
     const key = opts.headers?.['xi-api-key'];
-    calls.push({ url: u, method: opts.method ?? 'GET', key });
+    calls.push({ url: u, method: opts.method ?? 'GET', key, body: opts.body });
     const plan = byKey[key] ?? { addStatus: 500, addBody: { detail: 'unknown key in stub' } };
     if (u.endsWith('/v1/voices/add')) {
       return new Response(
@@ -429,7 +429,7 @@ test('HEAL on list: an orphaned row with a sample is re-cloned on the active key
   try {
     const rowId = 'a'.repeat(32);
     const { cookie, env, d1, r2 } = await userEnv({
-      voices: [{ rowId, vendorId: 'v-old', label: 'Me', account: 'kDEADDEAD' }],
+      voices: [{ rowId, vendorId: 'v-old', label: 'Me', account: 'kDEADDEAD', language: 'pt-BR' }],
     });
     env.ELEVENLABS_API_KEY = 'sk-live'; // the dead account's key was REMOVED — the operator's signal
     await r2.put(`voice-samples/u1/${rowId}`, new Uint8Array([1, 2, 3]), {
@@ -448,6 +448,9 @@ test('HEAL on list: an orphaned row with a sample is re-cloned on the active key
     assert.ok(remap, 'the saved selection follows the voice');
     assert.equal(remap.binds[1], 'v-old');
     assert.equal(remap.binds[2], 'v-healed');
+    const healAdd = vendor.calls.find((c) => c.url.endsWith('/voices/add'));
+    assert.deepEqual(JSON.parse(healAdd.body.get('labels')), { language: 'pt-BR' },
+      'the healed clone KEEPS its language conditioning — same voice, new account');
   } finally {
     vendor.restore();
   }
@@ -701,6 +704,10 @@ test('clone: language rides to the vendor as labels; junk languages refuse befor
       env,
     );
     assert.equal(res.status, 200);
+    const add = vendor.calls.find((c) => c.url.endsWith('/voices/add'));
+    assert.ok(add.body instanceof FormData, 'the clone travels as multipart');
+    assert.deepEqual(JSON.parse(add.body.get('labels')), { language: 'pt-BR' },
+      'the selected language reached the VENDOR as labels — not just our row');
   } finally {
     vendor.restore();
   }

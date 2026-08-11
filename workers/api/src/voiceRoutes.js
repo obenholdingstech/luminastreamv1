@@ -214,6 +214,7 @@ export function createVoiceRoutes(kit) {
           label,
           cap: MAX_VOICES_PER_USER,
           vendorAccount: created.fingerprint,
+          language: language ?? null,
         });
       } catch (err) {
         console.error('clone registration failed after vendor create:', err);

@@ -96,6 +96,9 @@ export async function healUserVoice(env, db, userId, row) {
       bytes,
       mimeType: sample.httpMetadata?.contentType,
       vendorName: `lumina-${userId.slice(0, 8)}-${row.label}`.slice(0, 90),
+      // The conditioning hint survives the account move — a healed clone
+      // without its language would be a subtly different voice.
+      language: row.language ?? undefined,
     });
     if (!healed) return row;
     // Compare-and-swap: only the FIRST heal of this row wins; a concurrent

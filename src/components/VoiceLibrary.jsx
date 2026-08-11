@@ -9,7 +9,8 @@
 import { Loader2, Mic2, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { afterClone, afterDelete, cloneLabel, sampleRefusal } from '@/lib/voiceLibrary';
+import { afterDelete, cloneLabel, sampleRefusal } from '@/lib/voiceLibrary';
+import { runCloneFlow } from '@/lib/cloneFlow';
 import { cloneMyVoice, deleteMyVoice, listMyVoices } from '@/lib/voiceLibraryClient';
 
 // Curated, honest list — these are conditioning hints for the vendor, not a
@@ -77,40 +78,29 @@ export default function VoiceLibrary({ onLibraryChanged }) {
 
   const onConfirmClone = async () => {
     if (!pending || cloning) return;
-    const name = pending.name.trim();
-    if (!name) {
-      setModalError('give the voice a name');
-      return;
-    }
     setCloning(true);
     setModalError('');
-    try {
-      const sampleData = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(pending.file);
-      });
-      const res = await cloneMyVoice({
-        name,
-        sampleData,
-        mimeType: pending.file.type || undefined,
-        ...(pending.language ? { language: pending.language } : {}),
-      });
-      const outcome = afterClone(res);
-      if (outcome.changed) {
-        setPending(null);
-        setToast(`“${name}” is ready — it's in your voice selector`);
-        await reload();
-        onLibraryChanged?.();
-      } else {
-        setModalError(outcome.notice);
-      }
-    } catch {
-      setModalError('could not read that file — try picking it again');
-    } finally {
-      setCloning(false);
+    // The WORKFLOW lives in src/lib/cloneFlow.js (pure, tested); this
+    // component only maps its outcome to modal/toast state.
+    const outcome = await runCloneFlow(pending, {
+      readFile: (file) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        }),
+      clone: cloneMyVoice,
+    });
+    if (outcome.ok) {
+      setPending(null);
+      setToast(outcome.toast ?? '');
+      await reload();
+      onLibraryChanged?.();
+    } else {
+      setModalError(outcome.error ?? '');
     }
+    setCloning(false);
   };
 
   const onDelete = async (id) => {
