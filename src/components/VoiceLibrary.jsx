@@ -165,7 +165,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
                 disabled={busy || cloning}
                 onClick={() => onDelete(v.id)}
                 title={`delete ${v.label}`}
-                className="text-[#64748B] hover:text-[#FCA5A5] transition-colors disabled:opacity-50"
+                className="p-2 -m-2 text-[#64748B] hover:text-[#FCA5A5] transition-colors disabled:opacity-50"
               >
                 <Trash2 size={12} aria-hidden />
               </button>
