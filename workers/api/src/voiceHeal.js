@@ -44,11 +44,12 @@ export function isOrphan(row, pool) {
  * null. Shared by the clone route and the healer so there is ONE definition
  * of "the active account took it".
  */
-export async function cloneOnPool(env, pool, { bytes, mimeType, vendorName }) {
+export async function cloneOnPool(env, pool, { bytes, mimeType, vendorName, language }) {
   const base = env.ELEVENLABS_API_BASE ?? ELEVENLABS_API_BASE;
   for (const cand of pool) {
     const form = new FormData();
     form.set('name', vendorName);
+    if (language) form.set('labels', JSON.stringify({ language }));
     form.append('files', new Blob([bytes], { type: mimeType || 'audio/mpeg' }), 'sample');
     let res;
     try {
@@ -95,6 +96,9 @@ export async function healUserVoice(env, db, userId, row) {
       bytes,
       mimeType: sample.httpMetadata?.contentType,
       vendorName: `lumina-${userId.slice(0, 8)}-${row.label}`.slice(0, 90),
+      // The conditioning hint survives the account move — a healed clone
+      // without its language would be a subtly different voice.
+      language: row.language ?? undefined,
     });
     if (!healed) return row;
     // Compare-and-swap: only the FIRST heal of this row wins; a concurrent

@@ -163,6 +163,16 @@ export function createVoiceRoutes(kit) {
           ? body.name.trim().slice(0, 60)
           : 'My voice';
       const mimeType = typeof body?.mimeType === 'string' ? body.mimeType : 'audio/mpeg';
+      // Language/accent (clone modal, 11 Aug 2026): optional, validated,
+      // and forwarded to the vendor as voice labels — vendor-side metadata
+      // that improves clone conditioning and shows in the dashboard.
+      let language;
+      if (body?.language !== undefined && body?.language !== '') {
+        if (typeof body.language !== 'string' || !/^[a-z]{2}(-[a-zA-Z]{2,8})?$/.test(body.language)) {
+          return json({ ok: false, error: 'language_invalid' }, { status: 400, origin });
+        }
+        language = body.language;
+      }
 
       // The row id is minted BEFORE the vendor call so the stored sample and
       // the row share one identity from birth; the sample lands FIRST —
@@ -184,6 +194,7 @@ export function createVoiceRoutes(kit) {
         bytes,
         mimeType,
         vendorName: `lumina-${session.userId.slice(0, 8)}-${label}`.slice(0, 90),
+        language,
       });
       if (!created) {
         await env.AVATARS.delete(skey).catch((err) =>
@@ -203,6 +214,7 @@ export function createVoiceRoutes(kit) {
           label,
           cap: MAX_VOICES_PER_USER,
           vendorAccount: created.fingerprint,
+          language: language ?? null,
         });
       } catch (err) {
         console.error('clone registration failed after vendor create:', err);
