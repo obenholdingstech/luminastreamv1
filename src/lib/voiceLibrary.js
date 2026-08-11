@@ -7,13 +7,16 @@
 // the status line verbatim, `changed` decides whether to reload the list
 // and fire refresh_voices at the agent.
 
-export const SAMPLE_LIMIT_BYTES = 10 * 1024 * 1024; // the server's decoded wall
+// The PICK gate (11 Aug 2026): big audio and video containers are welcome —
+// the browser extracts a compact mono WAV before anything crosses the wire,
+// so the server's sample wall is a property of the EXTRACTION, not the pick.
+export const SAMPLE_LIMIT_BYTES = 150 * 1024 * 1024;
 
 /** Why this file cannot be a sample — or null when it can. */
 export function sampleRefusal(file) {
   if (!file) return 'no file chosen';
   if (file.size > SAMPLE_LIMIT_BYTES) {
-    return 'that file is over 10MB — a minute of clean speech is plenty';
+    return 'that file is over 150MB — trim it down first';
   }
   return null;
 }

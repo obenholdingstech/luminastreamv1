@@ -9,9 +9,9 @@ import {
   sampleRefusal,
 } from './voiceLibrary.js';
 
-test('sampleRefusal: the boundary is the server wall — at it passes, over it refuses, absent refuses', () => {
-  assert.equal(sampleRefusal({ size: SAMPLE_LIMIT_BYTES }), null, 'exactly at the wall is fine');
-  assert.match(sampleRefusal({ size: SAMPLE_LIMIT_BYTES + 1 }), /over 10MB/);
+test('sampleRefusal: the PICK gate is 150MB (extraction shrinks it) — at it passes, over refuses, absent refuses', () => {
+  assert.equal(sampleRefusal({ size: SAMPLE_LIMIT_BYTES }), null, 'exactly at the gate is fine');
+  assert.match(sampleRefusal({ size: SAMPLE_LIMIT_BYTES + 1 }), /over 150MB/);
   assert.match(sampleRefusal(null), /no file/);
 });
 
