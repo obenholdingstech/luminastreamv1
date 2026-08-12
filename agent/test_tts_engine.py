@@ -1081,6 +1081,88 @@ def test_agent_voice_switch_validates_loads_settings_and_resets_continuity(monke
     assert snap["voice"] == "v_new" and snap["voice_name"] == "Bright Clone"
 
 
+def test_agent_voice_switch_relists_on_cache_miss(monkeypatch):
+    """A voice cloned AFTER startup is applied on first request: the agent
+    re-lists once on cache miss instead of rejecting (CEO, 12 Aug 2026 —
+    clone it, then speak in it, no reconnect)."""
+    import convert_agent
+
+    async def fake_fetch_voice(session, api_key, voice_id):
+        return {"name": "Fresh Clone", "category": "cloned",
+                "settings": {"stability": 0.3, "similarity_boost": 0.6}}
+    monkeypatch.setattr(convert_agent, "fetch_voice", fake_fetch_voice)
+    listed = {"calls": 0}
+
+    async def fake_list(session, api_key):
+        listed["calls"] += 1
+        return [{"voice_id": "v_fresh", "name": "Fresh Clone", "category": "cloned"}]
+    monkeypatch.setattr(convert_agent, "list_voices", fake_list)
+
+    async def run():
+        agent, engine, _ = _tts_agent()
+        engine.voices = [{"voice_id": "v_old", "name": "Old", "category": "premade"}]
+        await agent._apply_config({"voice": "v_fresh"}, "test")
+        return agent, engine
+
+    agent, engine = asyncio.run(run())
+    assert engine.tts.voice_id == "v_fresh"
+    assert listed["calls"] == 1
+    assert any(v["voice_id"] == "v_fresh" for v in engine.voices)  # cache adopted
+
+
+def test_agent_voice_switch_refresh_does_not_bypass_policy(monkeypatch):
+    """The re-list serves freshness, not privilege: an 'own'-restricted
+    session still cannot switch to a clone outside its stamped ids — the
+    fresh list is consulted, the policy wall stands."""
+    import convert_agent
+
+    async def fake_list(session, api_key):
+        return [{"voice_id": "v_other", "name": "Someone Else", "category": "cloned"}]
+    monkeypatch.setattr(convert_agent, "list_voices", fake_list)
+
+    async def run():
+        agent, engine, _ = _tts_agent()
+        engine.voices = []
+        captured = {}
+
+        async def cap(adjusted=None, rejected=None):
+            captured["rejected"] = rejected
+
+        agent._publish_config = cap
+        await agent._apply_config({"voice": "v_other"}, "test", policy=("own", set()))
+        return engine, captured
+
+    engine, captured = asyncio.run(run())
+    assert engine.tts.voice_id == "mock_voice_id"                 # unchanged
+    assert "unknown voice_id" in captured["rejected"]["voice"]
+
+
+def test_agent_voice_switch_empty_relist_keeps_cache_and_rejects(monkeypatch):
+    """A transient listing failure (empty answer) must not blank the known
+    list — the cache stays, the request is rejected, nothing crashes."""
+    import convert_agent
+
+    async def fake_list(session, api_key):
+        return []
+    monkeypatch.setattr(convert_agent, "list_voices", fake_list)
+
+    async def run():
+        agent, engine, _ = _tts_agent()
+        engine.voices = [{"voice_id": "v_ok", "name": "OK", "category": "premade"}]
+        captured = {}
+
+        async def cap(adjusted=None, rejected=None):
+            captured["rejected"] = rejected
+
+        agent._publish_config = cap
+        await agent._apply_config({"voice": "v_ghost"}, "test")
+        return engine, captured
+
+    engine, captured = asyncio.run(run())
+    assert [v["voice_id"] for v in engine.voices] == ["v_ok"]     # cache kept
+    assert "unknown voice_id" in captured["rejected"]["voice"]
+
+
 def test_agent_rejects_unknown_voice(monkeypatch):
     import convert_agent
 

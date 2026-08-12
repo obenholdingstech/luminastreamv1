@@ -180,7 +180,11 @@ async def list_voices_strict(session, api_key):
             continue
         out.append({"voice_id": vid,
                     "name": v.get("name") or vid,
-                    "category": v.get("category") or "voice"})
+                    "category": v.get("category") or "voice",
+                    # the vendor's sample clip — rides the broadcast as
+                    # choice_previews so the studio's preview button works
+                    # for system voices (clones preview from OUR vault)
+                    "preview_url": v.get("preview_url")})
     log.info("listed %d account voices", len(out))
     return out
 

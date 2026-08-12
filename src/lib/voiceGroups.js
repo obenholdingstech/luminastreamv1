@@ -33,6 +33,20 @@ export function splitVoiceLabel(label) {
 }
 
 /**
+ * The voice knob's entry from the agent's broadcast metadata. The wire
+ * shape is an ORDERED LIST of knob entries (knobs.metadata — the console
+ * renders groups from it); reading `.voice` off it silently yields
+ * nothing, which is exactly the bug that kept the LIVE broadcast from
+ * ever driving the studio's selector (12 Aug 2026). Null for anything
+ * that is not a list or has no voice entry — the manifest fallback then
+ * carries the pre-connect view, as designed.
+ */
+export function voiceKnobEntry(metadata) {
+  if (!Array.isArray(metadata)) return null;
+  return metadata.find((entry) => entry && entry.name === 'voice') ?? null;
+}
+
+/**
  * Fold the signed-in user's OWN library (GET /api/me/voices rows) into the
  * selector's inputs. The agent's broadcast remains its truth about what it
  * offers — but a voice the user just cloned exists in OUR system the moment

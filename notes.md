@@ -2,6 +2,15 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 12 August 2026 (day) — the "destroyed pipeline" was linger
+
+- Decisions: no-SSH wall HELD (offer to lift it declined); linger fixed
+  via her hands (enable-linger verified) + manual deploy to 4b2fa6d.
+- State: both agents gated green, CEO confirms audio crystal clear;
+  clone-fallback + dead-broadcast-shape + preview_url escapes fixed in
+  the open PR; runbook carries a Linger VERIFY line.
+- Next: land the PR, then Advanced Voice Settings sliders.
+
 ## 12 August 2026 — the premium overhaul, shipped in three
 
 - **#111 merged:** the selector reads OUR library too — a fresh clone

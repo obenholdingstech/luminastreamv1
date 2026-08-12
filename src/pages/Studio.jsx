@@ -32,7 +32,7 @@ import {
 } from '@/lib/unifiedLens';
 import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
-import { groupVoices, mergeLibraryVoices } from '@/lib/voiceGroups';
+import { groupVoices, mergeLibraryVoices, voiceKnobEntry } from '@/lib/voiceGroups';
 import { listMyVoices } from '@/lib/voiceLibraryClient';
 import { createReloadSequence, foldListResponse } from '@/lib/listReload';
 import { previewSource } from '@/lib/previewPlayer';
@@ -237,7 +237,7 @@ export default function Studio() {
   // here is wiring and rendering, per AGENTS.md. The browser never holds
   // the vendor key; ids and labels arrive in the agent's own broadcast.
   const confirmedVoice = agentConfig?.config?.voice ?? null;
-  const voiceMeta = agentConfig?.metadata?.voice ?? null;
+  const voiceMeta = useMemo(() => voiceKnobEntry(agentConfig?.metadata), [agentConfig]);
   const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
   // useMemo so the object is referentially stable for the autosave effect's
   // dependency array (exhaustive-deps: a fresh {} per render re-arms it).
@@ -352,15 +352,14 @@ export default function Studio() {
   // The stored value itself is kept: the list in view changes (manifest
   // pre-connect, broadcast after), and a choice invalid against one may be
   // perfectly valid against the next.
-  // TWO validities, deliberately: the SELECT offers everything we can
-  // honestly display (broadcast ∪ library — a fresh clone is real the
-  // moment our server registered it), but the auto-apply effect below only
-  // SENDS ids the agent's own live list contains — requesting a voice the
-  // agent hasn't listed yet would earn a rejection, not a stream.
+  // ONE validity: broadcast ∪ library. A voice OUR server registered is
+  // real and sendable — the agent re-lists its account voices on a cache
+  // miss (12 Aug 2026, the clone-fallback fix), so a clone made seconds
+  // ago applies on the first request instead of silently falling back to
+  // the default. A genuinely unknown id still earns the agent's named
+  // rejection, surfaced below the picker.
   const validChosenVoice =
     chosenVoice && mergedVoices.choices.includes(chosenVoice) ? chosenVoice : null;
-  const broadcastChosenVoice =
-    chosenVoice && voiceChoices.includes(chosenVoice) ? chosenVoice : null;
   const [voicePref] = useState(() => createVoicePreference());
 
   const voiceSelector = useMemo(
@@ -692,17 +691,17 @@ export default function Studio() {
       voicePref.shouldApply({
         sessionId: allocation?.identity ?? null,
         connected: isConnected,
-        // The BROADCAST-validated choice: by this point the agent's list
-        // has arrived (confirmedVoice gates shouldApply), and only ids that
-        // list contains are sent — a library-merged clone the agent hasn't
-        // picked up yet stays selectable in the UI but is not auto-pushed.
-        chosen: broadcastChosenVoice,
+        // The MERGED-validated choice: a library clone the agent hasn't
+        // listed yet is still sent — the agent re-lists on cache miss and
+        // applies it (the 12 Aug clone-fallback fix); a genuinely unknown
+        // id comes back as the agent's named rejection, not silence.
+        chosen: validChosenVoice,
         confirmedVoice,
       })
     ) {
-      requestVoice(broadcastChosenVoice);
+      requestVoice(validChosenVoice);
     }
-  }, [allocation, isConnected, broadcastChosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
+  }, [allocation, isConnected, validChosenVoice, confirmedVoice, voicePref, requestVoice, agentMode]);
   const hasCredentials = Boolean(url && token);
 
   // The invariant behind the fix above, enforced structurally: NO audio
