@@ -79,6 +79,22 @@ mandate re-confirmed to the CEO with receipts — no code change needed
 policy stamp, user-clone rows only; dashboard-era clones without a
 vaulted sample remain the named exception).
 
+**Addendum — #115, Advanced Voice Settings (same session):** the taste
+sliders (stability / similarity / style) as a disclosure under the
+voice row, bound to the agent's EXISTING knob registry (nothing was
+hardcoded; the studio surface was the missing piece). Pure libs:
+voiceTuning.js (which entries become sliders; applied-truth-first
+values; a model's refusal renders as a disabled slider WITH the
+reason) and tuningRequests.js (a commit is a REQUEST — amber until the
+broadcast answers with applied/adjusted/rejected; failed publish
+clears with words). CodeRabbit rounds: (1) pending lifecycle extracted
+to the lib — a commit no longer snaps back to stale truth; (2) the
+no-request-id race — closed by a SINGLE-FLIGHT invariant (beginRequest
+refuses to stack + the slider disables while pending), making
+name-match correlation sound; request-id correlation named as the
+follow-up if per-knob queuing is ever needed. 380 lib tests; all
+mutations verified.
+
 ## 12 Aug 2026 — the premium block: agent triage, the selector owns the library, the studio overhaul
 
 **Task (CEO, verbatim essentials):** "Agent Offline: The video feed is
