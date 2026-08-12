@@ -2,6 +2,20 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 12 August 2026 (day) — the "destroyed pipeline" was linger
+
+- INCIDENT closed: linger off since the 7 Aug reboot — agent + deploy
+  timer died with her last SSH logout. Fix: enable-linger (verified) +
+  manual deploy to 4b2fa6d; both agents gated green; CEO confirms audio
+  crystal clear. No-SSH wall held; paste-backs found it in minutes.
+- Runbook now has a Linger VERIFY line + hazard note (rides the PR).
+- Clone-fallback bug diagnosed and fixed: agent re-lists on voice cache
+  miss (clone → speak in 5s, no reconnect); studio sends merged choice.
+- #113 escape fixed in same PR: listing dropped preview_url — system-
+  voice previews were silently empty.
+- Healer mandate re-confirmed to CEO (no code change; receipts cited).
+- Next: PR for Advanced Voice Settings sliders (knob path exists).
+
 ## 12 August 2026 — the premium overhaul, shipped in three
 
 - **#111 merged:** the selector reads OUR library too — a fresh clone

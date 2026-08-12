@@ -4,6 +4,42 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 12 Aug 2026 (day) — INCIDENT: linger was off — production existed only while the CEO was SSH'd in
+
+**Report (CEO):** "massive crisis … agent stalling out in a zombie state
+… audio pipeline completely destroyed … passthrough pure gibberish …
+convert completely dead … studio stuck on Waiting for agent." She
+offered to lift the no-SSH rule; the offer was DECLINED — the wall held,
+and three paste-back blocks found the cause in minutes.
+
+**Root cause:** `Linger` was not in effect after the 7 Aug ~20:01 VPS
+reboot (boot marker in the deploy journal; the timer's last run was
+7 Aug 20:46). With linger off, the systemd USER MANAGER — and with it
+lumina-agent, the template instance, AND lumina-deploy.timer — died
+whenever her last SSH session closed. Every "agent death" in the journal
+aligns with a session teardown (15:12:55 stop = logout; 22:56:29 start =
+login). The studio waited for an agent that only existed while she was
+logged in, and deploys silently stopped: the box sat on d121c95 while
+five PRs merged.
+
+**What the evidence ruled OUT:** no zombie (SIGTERM honored instantly at
+15:12:55 with a clean SPIKE RESULT: tail p50/p95 1467/1928ms, ttfb p50
+775ms, refusals=0); no destroyed pipeline (fresh process walked all
+four gates); no stray agents (pgrep matched unit MainPIDs exactly); no
+vendor/payment involvement. The frozen stats (frames +0, speaking=True)
+were an empty-room idle with a cosmetic state wart, noted for later.
+
+**Fix (CEO's hands, ~4 commands):** `sudo loginctl enable-linger lumina`
+(verified `Linger=yes`) → manual `deploy-agent.sh` → d121c95→4b2fa6d,
+venv built, BOTH units gated green (STT/TTS READY, PREFLIGHT OK) →
+timer cadence re-armed. **CEO verdict: passthrough and convert crystal
+clear.** Runbook hardened this PR: a `loginctl show-user lumina -p
+Linger` VERIFY line + a "linger is load-bearing" hazard note.
+
+**Also surfaced:** startup-voice warning (profile pins the dashboard-era
+clone id not on the active account → falls back to Roger) — the known
+one-time re-clone; and the clone-fallback bug fixed in this PR (below).
+
 ## 12 Aug 2026 — the premium block: agent triage, the selector owns the library, the studio overhaul
 
 **Task (CEO, verbatim essentials):** "Agent Offline: The video feed is

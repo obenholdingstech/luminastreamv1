@@ -697,6 +697,18 @@ class ConvertAgent:
         what is in effect for it (never stale sliders), and resets request
         continuity so delivery doesn't stitch across voices."""
         match = next((v for v in self.tts.voices if v["voice_id"] == voice_id), None)
+        if match is None:
+            # A voice cloned — or healed — seconds ago is real at the vendor
+            # but absent from this cache, which was listed at startup. Re-list
+            # ONCE before rejecting, so "clone it, then speak in it" needs no
+            # reconnect (CEO, 12 Aug 2026: the agent must recognize new
+            # clones immediately). Failure-silent listing: an empty answer is
+            # a transient vendor problem and must not blank the known list.
+            fresh = await list_voices(self.tts.tts.session, self.tts.tts.api_key)
+            if fresh:
+                self.tts.voices = fresh
+                log.info("voice list refreshed on cache miss (%d voices)", len(fresh))
+                match = next((v for v in self.tts.voices if v["voice_id"] == voice_id), None)
         if match is None or not voice_allowed(policy, match):
             # ONE message for both unknown and disallowed: a rejection that
             # distinguished them would be an existence oracle for other
