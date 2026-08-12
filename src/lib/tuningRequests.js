@@ -7,8 +7,24 @@
 // failed publish clears immediately (with a visible error, component-
 // side): nothing was asked, so nothing is pending.
 
-/** A new request begins (after a SUCCESSFUL publish). */
+// SINGLE-FLIGHT INVARIANT (CodeRabbit, PR 115 round 2): the protocol
+// carries no request id, so name-match is the only correlation — which
+// is only sound if at most ONE request per knob is ever in flight. The
+// component enforces it (the slider disables while its knob is pending,
+// and commit() refuses a begin over an existing pending); under that
+// invariant a stale adjusted/rejected/failed-publish can only refer to
+// the one outstanding request, never clear a newer one.
+
+/** Is a request for this knob already in flight? */
+export function hasPending(pending, name) {
+  return Boolean(pending) && name in pending;
+}
+
+/** A new request begins (after a SUCCESSFUL publish). Refuses to stack:
+ * a second same-knob request while one is in flight returns the map
+ * UNCHANGED — the caller must wait for the answer (single-flight). */
 export function beginRequest(pending, name, value) {
+  if (hasPending(pending, name)) return pending;
   return { ...pending, [name]: value };
 }
 

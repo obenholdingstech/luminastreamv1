@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react';
 
 import { knobDisplay } from '@/lib/knobState';
 import { tuningSliders } from '@/lib/voiceTuning';
-import { beginRequest, clearRequest, resolveRequests } from '@/lib/tuningRequests';
+import { beginRequest, clearRequest, hasPending, resolveRequests } from '@/lib/tuningRequests';
 
 const COMMIT_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
 
@@ -35,6 +35,11 @@ export default function VoiceTuning({ metadata, config, adjusted, rejected, requ
   if (sliders.length === 0) return null;
 
   const commit = async (name, value) => {
+    // SINGLE-FLIGHT: one request per knob. The slider is disabled while
+    // its knob is pending, and this guard covers the same-tick race —
+    // without it, a stale answer to the first request could clear a
+    // newer one the protocol has no id to distinguish.
+    if (hasPending(pending, name)) return;
     setEdits((prev) => {
       const next = { ...prev };
       delete next[name];
@@ -64,9 +69,11 @@ export default function VoiceTuning({ metadata, config, adjusted, rejected, requ
       <DisclosurePanel className="mt-2 w-full max-w-xs rounded-xl border border-[#1E1E2E] bg-[#0B0B14]/95 px-4 py-3 backdrop-blur-md">
         <div className="space-y-3">
           {sliders.map((s) => {
-            const isPending = s.name in pending;
+            const isPending = hasPending(pending, s.name);
             const shown = edits[s.name] ?? pending[s.name] ?? s.value;
-            const disabled = Boolean(s.disabledReason);
+            // disabled while in flight too — one request per knob is what
+            // makes name-match correlation sound (see tuningRequests.js)
+            const disabled = Boolean(s.disabledReason) || isPending;
             return (
               <div key={s.name}>
                 <div className="flex items-baseline justify-between gap-2">
