@@ -35,6 +35,7 @@ import voiceManifest from '@/lib/voiceManifest.json';
 import { groupVoices, mergeLibraryVoices } from '@/lib/voiceGroups';
 import { listMyVoices } from '@/lib/voiceLibraryClient';
 import { createReloadSequence, foldListResponse } from '@/lib/listReload';
+import { previewSource } from '@/lib/previewPlayer';
 import VoicePicker from '@/components/VoicePicker';
 import { PulseDot } from '@/components/ui/loading';
 import { statChip, statLines } from '@/lib/streamStats';
@@ -242,6 +243,7 @@ export default function Studio() {
   // dependency array (exhaustive-deps: a fresh {} per render re-arms it).
   const voiceLabels = useMemo(() => voiceMeta?.choice_labels ?? {}, [voiceMeta]);
   const voiceCategories = useMemo(() => voiceMeta?.choice_categories ?? {}, [voiceMeta]);
+  const voicePreviews = useMemo(() => voiceMeta?.choice_previews ?? {}, [voiceMeta]);
 
   // The user's OWN library, from our API — the selector's second source.
   // A fresh clone must appear the moment the server confirms it, with no
@@ -319,6 +321,29 @@ export default function Studio() {
   const voiceGroups = useMemo(
     () => groupVoices(mergedVoices.choices, mergedVoices.labels, mergedVoices.categories),
     [mergedVoices],
+  );
+  // The picker's extras, both keyed by VENDOR voice id: the language tag
+  // (our row's clone-time language) and the preview source — OUR vaulted
+  // sample for the user's own voices, the vendor's clip for system ones.
+  const voiceTags = useMemo(
+    () =>
+      Object.fromEntries(
+        libraryVoices.filter((v) => v.language).map((v) => [v.voiceId, v.language]),
+      ),
+    [libraryVoices],
+  );
+  const sampleRowByVoiceId = useMemo(
+    () => Object.fromEntries(libraryVoices.map((v) => [v.voiceId, v.id])),
+    [libraryVoices],
+  );
+  const previewForVoice = useCallback(
+    (voiceId) =>
+      previewSource({
+        rowId: sampleRowByVoiceId[voiceId] ?? null,
+        previewUrl: voicePreviews[voiceId],
+        apiBase: API_BASE ?? '',
+      }),
+    [sampleRowByVoiceId, voicePreviews],
   );
   // A stored choice is only a choice while the current list still offers it.
   // A voice deleted from the account (or absent from the agent's live list)
@@ -1374,6 +1399,8 @@ export default function Studio() {
                 }}
                 groups={voiceGroups}
                 labels={mergedVoices.labels}
+                tags={voiceTags}
+                previewFor={previewForVoice}
               />
             </div>
             {!isConnected && validChosenVoice && (

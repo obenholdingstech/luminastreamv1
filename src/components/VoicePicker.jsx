@@ -20,12 +20,13 @@ import {
   ComboboxOption,
   ComboboxOptions,
 } from '@headlessui/react';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, Play, Square } from 'lucide-react';
 import { useState } from 'react';
 
 import { PICKER_TABS, filterVoiceGroups, pickerEmptyLine } from '@/lib/voicePicker';
+import { usePreviewPlayer } from '@/hooks/usePreviewPlayer';
 
-function OptionRow({ voice, personal }) {
+function OptionRow({ voice, personal, tag }) {
   return (
     <ComboboxOption
       value={voice.id}
@@ -39,6 +40,11 @@ function OptionRow({ voice, personal }) {
       <span className="min-w-0 flex-1 truncate text-[12px] normal-case tracking-normal text-[#E2E8F0]">
         {voice.label}
       </span>
+      {tag && (
+        <span className="shrink-0 rounded-full border border-[#1E1E2E] px-1.5 py-0.5 text-[8px] tracking-[0.14em] uppercase text-[#64748B]">
+          {tag}
+        </span>
+      )}
       <span
         className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[8px] tracking-[0.14em] uppercase ${
           personal
@@ -52,7 +58,7 @@ function OptionRow({ voice, personal }) {
   );
 }
 
-function GroupSection({ heading, voices, personal }) {
+function GroupSection({ heading, voices, personal, tags }) {
   if (voices.length === 0) return null;
   return (
     <div role="group" aria-label={heading}>
@@ -60,17 +66,34 @@ function GroupSection({ heading, voices, personal }) {
         {heading}
       </p>
       {voices.map((v) => (
-        <OptionRow key={v.id} voice={v} personal={personal} />
+        <OptionRow key={v.id} voice={v} personal={personal} tag={tags[v.id]} />
       ))}
     </div>
   );
 }
 
-export default function VoicePicker({ id, value, onChange, groups, labels, disabled = false }) {
+export default function VoicePicker({
+  id,
+  value,
+  onChange,
+  groups,
+  labels,
+  disabled = false,
+  // id → short tag (language) rendered on the option row; static text,
+  // so it is a permitted listbox descendant.
+  tags = {},
+  // id → { kind, src } | null (src/lib/previewPlayer.previewSource).
+  // The preview CONTROL lives in the panel footer, outside the listbox —
+  // a button inside an option would break the ARIA pattern (this PR's
+  // tab-row lesson, applied in advance).
+  previewFor = null,
+}) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState('all');
   const filtered = filterVoiceGroups(groups, { tab, query });
   const empty = pickerEmptyLine(filtered, { tab, query });
+  const { playingId, toggle } = usePreviewPlayer();
+  const selectedPreview = previewFor && value ? previewFor(value) : null;
 
   return (
     <Combobox
@@ -123,12 +146,34 @@ export default function VoicePicker({ id, value, onChange, groups, labels, disab
               </div>
 
               <ComboboxOptions static className="max-h-72 overflow-y-auto custom-scrollbar">
-                <GroupSection heading="your voices" voices={filtered.personal} personal />
-                <GroupSection heading="system voices" voices={filtered.system} personal={false} />
+                <GroupSection heading="your voices" voices={filtered.personal} personal tags={tags} />
+                <GroupSection heading="system voices" voices={filtered.system} personal={false} tags={tags} />
               </ComboboxOptions>
 
               {empty && (
                 <p className="px-3 py-4 text-center text-[11px] text-[#64748B]">{empty}</p>
+              )}
+
+              {/* the preview control — in the panel FOOTER, outside the
+                  listbox subtree, for the currently selected voice */}
+              {selectedPreview && (
+                <div className="border-t border-[#14141F] px-1.5 pt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => toggle(value, selectedPreview)}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[9px] tracking-[0.16em] uppercase text-[#94A3B8] transition-colors hover:bg-[#161626] hover:text-[#E2E8F0]"
+                  >
+                    {playingId === value ? (
+                      <>
+                        <Square size={9} aria-hidden /> stop preview
+                      </>
+                    ) : (
+                      <>
+                        <Play size={9} aria-hidden /> preview {labels[value] ?? 'this voice'}
+                      </>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           )}

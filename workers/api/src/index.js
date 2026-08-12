@@ -143,6 +143,7 @@ const voiceRoutes = createVoiceRoutes({
   createDb,
   resolveUserSession,
   mayStartSession,
+  corsHeaders,
 });
 
 // P8 (pulled forward): the admin API — role-walled people/ops reads plus
@@ -1268,6 +1269,11 @@ export default {
       if (pathname === '/api/me/voices') {
         if (method === 'GET') return voiceRoutes.list(request, env, origin);
         if (method === 'POST') return voiceRoutes.clone(request, env, origin);
+        return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
+      }
+      const vs = pathname.match(/^\/api\/me\/voices\/([0-9a-fA-F-]{1,64})\/sample$/);
+      if (vs) {
+        if (method === 'GET') return voiceRoutes.sample(request, env, origin, vs[1]);
         return json({ ok: false, error: 'method_not_allowed' }, { status: 405, origin });
       }
       const vm = pathname.match(/^\/api\/me\/voices\/([0-9a-fA-F-]{1,64})$/);

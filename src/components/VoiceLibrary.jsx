@@ -6,10 +6,13 @@
 // while the new voice appears in the selector. Decisions stay in
 // src/lib/voiceLibrary.js; refusals still speak the server's words.
 
-import { Mic2, RefreshCw, Trash2, Upload, X } from 'lucide-react';
+import { Mic2, Play, RefreshCw, Square, Trash2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { PulseDot, Shimmer } from '@/components/ui/loading';
+import { usePreviewPlayer } from '@/hooks/usePreviewPlayer';
+import { previewSource } from '@/lib/previewPlayer';
+import { API_BASE } from '@/lib/apiBase';
 
 import { afterDelete, cloneLabel, sampleRefusal } from '@/lib/voiceLibrary';
 import { runCloneFlow } from '@/lib/cloneFlow';
@@ -37,6 +40,7 @@ const LANGUAGES = [
 export default function VoiceLibrary({ onLibraryChanged }) {
   // phase: 'loading' | 'error' | 'ready'
   const [list, setList] = useState({ phase: 'loading', items: [] });
+  const { playingId, toggle: togglePreview } = usePreviewPlayer();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [toast, setToast] = useState('');
@@ -161,21 +165,51 @@ export default function VoiceLibrary({ onLibraryChanged }) {
           no cloned voices yet — upload a minute of clean speech to create one
         </p>
       ) : (
-        <ul className="mt-2 space-y-1">
-          {list.items.map((v) => (
-            <li key={v.id} className="flex items-center justify-between gap-2 text-[12px] text-[#E2E8F0]">
-              <span className="truncate">{v.label}</span>
-              <button
-                type="button"
-                disabled={busy || cloning}
-                onClick={() => onDelete(v.id)}
-                title={`delete ${v.label}`}
-                className="p-2 -m-2 text-[#64748B] hover:text-[#FCA5A5] transition-colors disabled:opacity-50"
+        /* Visual cards, not text rows (CEO, 12 Aug): name, language tag,
+           a preview of the ACTUAL uploaded sample, delete. The preview
+           source is our vault — src/lib/previewPlayer decides. */
+        <ul className="mt-2 grid grid-cols-2 gap-2">
+          {list.items.map((v) => {
+            const source = previewSource({ rowId: v.id, apiBase: API_BASE ?? '' });
+            const playing = playingId === `lib-${v.id}`;
+            return (
+              <li
+                key={v.id}
+                className="group rounded-lg border border-[#1E1E2E] bg-[#08080F] p-2.5 transition-colors hover:border-[#475569]"
               >
-                <Trash2 size={12} aria-hidden />
-              </button>
-            </li>
-          ))}
+                <div className="flex items-start justify-between gap-1.5">
+                  <span className="min-w-0 truncate text-[12px] text-[#E2E8F0]" title={v.label}>
+                    {v.label}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy || cloning}
+                    onClick={() => onDelete(v.id)}
+                    title={`delete ${v.label}`}
+                    className="p-2 -m-2 shrink-0 text-[#3E4A5F] hover:text-[#FCA5A5] transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 size={11} aria-hidden />
+                  </button>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-1.5">
+                  <span className="rounded-full border border-[#1E1E2E] px-1.5 py-0.5 text-[8px] tracking-[0.14em] uppercase text-[#64748B]">
+                    {v.language || 'auto'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => togglePreview(`lib-${v.id}`, source)}
+                    title={playing ? 'stop the preview' : `play ${v.label}'s sample`}
+                    className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[8px] tracking-[0.14em] uppercase transition-colors ${
+                      playing ? 'text-[#A5B4FC]' : 'text-[#4A5568] hover:text-[#94A3B8]'
+                    }`}
+                  >
+                    {playing ? <Square size={8} aria-hidden /> : <Play size={8} aria-hidden />}
+                    {playing ? 'stop' : 'preview'}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
 
