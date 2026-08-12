@@ -1430,6 +1430,8 @@ export default function Studio() {
               <VoiceTuning
                 metadata={agentConfig?.metadata}
                 config={agentConfig?.config}
+                adjusted={agentConfig?.adjusted}
+                rejected={agentConfig?.rejected}
                 requestAgentConfig={requestAgentConfig}
               />
             )}

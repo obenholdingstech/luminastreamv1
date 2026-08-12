@@ -1,34 +1,53 @@
 // Advanced Voice Settings (CEO mandate, 12 Aug 2026): the taste controls
 // — stability, similarity, style — as studio sliders. WHAT renders is
 // decided in src/lib/voiceTuning.js (pure, tested) from the agent's own
-// broadcast; this component draws, edits locally while dragging, and
-// COMMITS on release (the console's proven pointer-up/key-up pattern —
-// a drag must not spray the data channel). The value shown between
-// edits is the agent's APPLIED truth; a mid-drag edit is local until
-// the commit answers.
+// broadcast; the REQUEST lifecycle is src/lib/tuningRequests.js
+// (CodeRabbit, this PR): a committed value stays visibly pending until
+// the agent's broadcast answers it — applied, adjusted, or rejected —
+// because snapping back to stale truth would misreport the user's own
+// action. A failed publish clears immediately with a visible error.
+// Commits happen on release (the console's proven pointer-up/key-up
+// pattern — a drag must not spray the data channel).
 
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import { ChevronDown, SlidersHorizontal } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { knobDisplay } from '@/lib/knobState';
 import { tuningSliders } from '@/lib/voiceTuning';
+import { beginRequest, clearRequest, resolveRequests } from '@/lib/tuningRequests';
 
 const COMMIT_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
 
-export default function VoiceTuning({ metadata, config, requestAgentConfig }) {
-  // name → in-drag value; cleared on commit so the applied truth resumes
+export default function VoiceTuning({ metadata, config, adjusted, rejected, requestAgentConfig }) {
+  // name → in-drag value (local, uncommitted)
   const [edits, setEdits] = useState({});
+  // name → requested value, awaiting the agent's answer
+  const [pending, setPending] = useState({});
+  const [sendError, setSendError] = useState('');
+
+  // Every fresh broadcast settles what it answers; the rest stays pending.
+  useEffect(() => {
+    setPending((prev) => resolveRequests(prev, { config, adjusted, rejected }));
+  }, [config, adjusted, rejected]);
+
   const sliders = tuningSliders(metadata, config);
   if (sliders.length === 0) return null;
 
-  const commit = (name, value) => {
+  const commit = async (name, value) => {
     setEdits((prev) => {
       const next = { ...prev };
       delete next[name];
       return next;
     });
-    requestAgentConfig({ [name]: value });
+    setSendError('');
+    setPending((prev) => beginRequest(prev, name, value));
+    const ok = await requestAgentConfig({ [name]: value });
+    if (!ok) {
+      // nothing was asked — pending clears NOW, with words, not silence
+      setPending((prev) => clearRequest(prev, name));
+      setSendError('that change did not reach the agent — try again');
+    }
   };
 
   return (
@@ -45,7 +64,8 @@ export default function VoiceTuning({ metadata, config, requestAgentConfig }) {
       <DisclosurePanel className="mt-2 w-full max-w-xs rounded-xl border border-[#1E1E2E] bg-[#0B0B14]/95 px-4 py-3 backdrop-blur-md">
         <div className="space-y-3">
           {sliders.map((s) => {
-            const shown = edits[s.name] ?? s.value;
+            const isPending = s.name in pending;
+            const shown = edits[s.name] ?? pending[s.name] ?? s.value;
             const disabled = Boolean(s.disabledReason);
             return (
               <div key={s.name}>
@@ -56,8 +76,13 @@ export default function VoiceTuning({ metadata, config, requestAgentConfig }) {
                   >
                     {s.label}
                   </label>
-                  <span className="text-[10px] tabular-nums text-[#E2E8F0]">
+                  {/* amber while the request is in flight — the number shown
+                      is what was ASKED, and the tint says "not yet truth" */}
+                  <span
+                    className={`text-[10px] tabular-nums ${isPending ? 'text-[#FBBF24]' : 'text-[#E2E8F0]'}`}
+                  >
                     {knobDisplay(shown)}
+                    {isPending && '…'}
                   </span>
                 </div>
                 <input
@@ -87,6 +112,11 @@ export default function VoiceTuning({ metadata, config, requestAgentConfig }) {
             );
           })}
         </div>
+        {sendError && (
+          <p role="alert" className="mt-2 text-[9px] text-[#FCA5A5]">
+            {sendError}
+          </p>
+        )}
         <p className="mt-3 text-[8px] tracking-[0.14em] uppercase text-[#3E4A5F]">
           changes apply from the next utterance
         </p>
