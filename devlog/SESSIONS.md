@@ -40,6 +40,45 @@ Linger` VERIFY line + a "linger is load-bearing" hazard note.
 clone id not on the active account → falls back to Roger) — the known
 one-time re-clone; and the clone-fallback bug fixed in this PR (below).
 
+**Task (CEO, verbatim essentials):** "we have a massive crisis with the
+agent … I am lifting the 'No SSH' rule so you can diagnose … how do i
+get you into the vps"; then, after resolution: "The Clone Fallback Bug …
+the agent ignored my selection and fell back to the default voice
+(Roger). The running agent must dynamically recognize newly cloned
+voices immediately … Ensure this vendor failover logic applies strictly
+to user-cloned voices … build UI sliders for Stability, Similarity
+(Clarity), Style Exaggeration."
+
+**What was done (this PR, after the ops fix above):**
+1. Agent re-lists on voice cache miss: _switch_voice re-lists the
+   account ONCE before rejecting (failure-silent; empty answer keeps the
+   known list; policy re-checked against the fresh list — freshness,
+   never privilege). Clone → start → speaking in it, no reconnect.
+2. Studio auto-apply sends the merged (broadcast ∪ library) choice again.
+3. #113 escape: the vendor listing dropped preview_url → choice_previews
+   was always empty; the listing now carries it.
+4. Broadcast-shape bug: metadata is an ORDERED LIST on the wire, but the
+   studio read `.voice` off it — always undefined, so the LIVE broadcast
+   never drove the selector (manifest/library carried everything).
+   voiceKnobEntry(metadata) now finds the entry; the broadcast override
+   finally works as designed (3 Aug).
+
+**Key findings/surprises:** the #111 narrowing (send only
+broadcast-listed ids) was validated against that always-empty broadcast
+list — auto-apply had been silently dead for every voice, premades
+included; her "clone fallback" was the visible tip of it.
+
+**Files:** agent/{convert_agent,elevenlabs_client,test_tts_engine}.py,
+src/pages/Studio.jsx, src/lib/voiceGroups.{js,test.js}, CLAUDE.md,
+devlog/SESSIONS.md, notes.md.
+
+**Verification:** 252 agent (3 new; re-list mutation-verified) + 373 lib
++ 286 worker tests; lint/typecheck bare; production build. Healer
+mandate re-confirmed to the CEO with receipts — no code change needed
+(vault-before-vendor at clone time, heal at session-create before the
+policy stamp, user-clone rows only; dashboard-era clones without a
+vaulted sample remain the named exception).
+
 ## 12 Aug 2026 — the premium block: agent triage, the selector owns the library, the studio overhaul
 
 **Task (CEO, verbatim essentials):** "Agent Offline: The video feed is

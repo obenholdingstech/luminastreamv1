@@ -131,8 +131,8 @@ journalctl --user -u lumina-agent -n 50 --no-pager
 **Linger is load-bearing (12 Aug 2026 outage).** Without `Linger=yes`, the
 user manager — and with it the agent AND the deploy timer — dies when the
 last SSH session closes: production exists only while someone is logged
-in, and deploys silently stop. That is exactly what happened after the
-7 Aug VPS reboot. Any reboot or "agent gone though nothing changed"
+in, and deploys silently stop. That is what happened after the
+7 Aug VPS reboot. Any reboot or "agent gone even though nothing changed"
 report: check `loginctl show-user lumina -p Linger` FIRST.
 
 **Checking for strays later.** Once systemd owns the agent, do not just count

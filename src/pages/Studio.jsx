@@ -32,7 +32,7 @@ import {
 } from '@/lib/unifiedLens';
 import { DEFAULT_VIDEO_PATH_MS, VIDEO_PATH_LIMITS, clampVideoPathMs } from '@/lib/alignStage';
 import voiceManifest from '@/lib/voiceManifest.json';
-import { groupVoices, mergeLibraryVoices } from '@/lib/voiceGroups';
+import { groupVoices, mergeLibraryVoices, voiceKnobEntry } from '@/lib/voiceGroups';
 import { listMyVoices } from '@/lib/voiceLibraryClient';
 import { createReloadSequence, foldListResponse } from '@/lib/listReload';
 import { previewSource } from '@/lib/previewPlayer';
@@ -237,7 +237,7 @@ export default function Studio() {
   // here is wiring and rendering, per AGENTS.md. The browser never holds
   // the vendor key; ids and labels arrive in the agent's own broadcast.
   const confirmedVoice = agentConfig?.config?.voice ?? null;
-  const voiceMeta = agentConfig?.metadata?.voice ?? null;
+  const voiceMeta = useMemo(() => voiceKnobEntry(agentConfig?.metadata), [agentConfig]);
   const voiceChoices = Array.isArray(voiceMeta?.choices) ? voiceMeta.choices : [];
   // useMemo so the object is referentially stable for the autosave effect's
   // dependency array (exhaustive-deps: a fresh {} per render re-arms it).

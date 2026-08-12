@@ -1,7 +1,18 @@
 // Run: node --test src/lib/voiceGroups.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupVoices, mergeLibraryVoices, splitVoiceLabel } from './voiceGroups.js';
+import { groupVoices, mergeLibraryVoices, splitVoiceLabel, voiceKnobEntry } from './voiceGroups.js';
+
+test('voiceKnobEntry: the wire shape is a LIST — the voice entry is found in it, never dotted off it', () => {
+  const metadata = [
+    { name: 'tts_model', kind: 'enum' },
+    { name: 'voice', kind: 'enum', choices: ['v1'], choice_labels: { v1: 'Amy' } },
+  ];
+  assert.equal(voiceKnobEntry(metadata)?.choices[0], 'v1');
+  assert.equal(voiceKnobEntry([{ name: 'stability' }]), null, 'no voice entry → null');
+  assert.equal(voiceKnobEntry(null), null);
+  assert.equal(voiceKnobEntry({ voice: { choices: ['x'] } }), null, 'a map is NOT the wire shape');
+});
 
 test('splitVoiceLabel: a known category suffix splits; anything else stays whole', () => {
   assert.deepEqual(splitVoiceLabel('Sarah - Mature, Reassuring, Confident (premade)'), {
