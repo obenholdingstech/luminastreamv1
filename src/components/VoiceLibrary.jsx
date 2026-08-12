@@ -6,8 +6,10 @@
 // while the new voice appears in the selector. Decisions stay in
 // src/lib/voiceLibrary.js; refusals still speak the server's words.
 
-import { Loader2, Mic2, RefreshCw, Trash2, Upload, X } from 'lucide-react';
+import { Mic2, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { PulseDot, Shimmer } from '@/components/ui/loading';
 
 import { afterDelete, cloneLabel, sampleRefusal } from '@/lib/voiceLibrary';
 import { runCloneFlow } from '@/lib/cloneFlow';
@@ -143,7 +145,10 @@ export default function VoiceLibrary({ onLibraryChanged }) {
       </div>
 
       {list.phase === 'loading' ? (
-        <p className="mt-2 text-[11px] text-[#64748B]">loading…</p>
+        <div className="mt-2 space-y-1.5" role="status" aria-label="loading your voices">
+          <Shimmer className="h-4 w-3/4" />
+          <Shimmer className="h-4 w-1/2" />
+        </div>
       ) : list.phase === 'error' ? (
         <p className="mt-2 flex items-center gap-2 text-[11px] text-[#FBBF24]">
           could not load your voices
@@ -254,7 +259,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
             >
               {cloning ? (
                 <>
-                  <Loader2 size={12} className="animate-spin" aria-hidden /> extracting &amp; cloning…
+                  <PulseDot color="currentColor" size={7} /> extracting &amp; cloning…
                 </>
               ) : (
                 'clone voice'

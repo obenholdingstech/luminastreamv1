@@ -107,6 +107,52 @@
   animation: shake 0.3s ease-in-out;
 }
 
+/* The premium loading language (CEO, 12 Aug: no generic rotors).
+   Shimmer sweeps a soft highlight across a skeleton block; breathe is the
+   working-state glow dot. Reduced motion gets a gentle opacity pulse for
+   shimmer and a static dot for breathe — state is still communicated,
+   nothing spins. */
+@keyframes shimmer-sweep {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.lens-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(30, 30, 46, 0.55) 40%,
+    rgba(99, 102, 241, 0.14) 50%,
+    rgba(30, 30, 46, 0.55) 60%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-sweep 1.8s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.35; box-shadow: 0 0 0 0 currentcolor; }
+  50% { opacity: 1; box-shadow: 0 0 8px 1px currentcolor; }
+}
+
+.lens-breathe {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+/* A settled state holds still — the breath is for WORKING states only. */
+.lens-breathe-still {
+  animation: none;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lens-shimmer {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+  .lens-breathe {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }

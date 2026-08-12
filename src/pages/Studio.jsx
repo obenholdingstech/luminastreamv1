@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ConnectionState, RoomEvent, Track } from 'livekit-client';
-import { AlertTriangle, KeyRound, Loader2, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, KeyRound, Mic, Power, SlidersHorizontal, Video, Volume2 } from 'lucide-react';
 
 import { AccountPanel } from '@/components/AccountPanel';
 import AvatarLibrary from '@/components/AvatarLibrary';
@@ -35,6 +35,10 @@ import voiceManifest from '@/lib/voiceManifest.json';
 import { groupVoices, mergeLibraryVoices } from '@/lib/voiceGroups';
 import { listMyVoices } from '@/lib/voiceLibraryClient';
 import { createReloadSequence, foldListResponse } from '@/lib/listReload';
+import VoicePicker from '@/components/VoicePicker';
+import { PulseDot } from '@/components/ui/loading';
+import { statChip, statLines } from '@/lib/streamStats';
+import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 
 // The product surface: LuminaStream as a lens.
 //
@@ -1219,10 +1223,13 @@ export default function Studio() {
             the fps number or find the trim buttons. A text-shadow tuned for
             dark scenes is a bet on the scene; a contained backdrop is not. */}
         <div className="lens-console w-full max-w-xl flex flex-col items-center">
-        {/* Status. aria-live so the state change is announced, not just seen —
-            this is the one piece of text that tells you whether your voice is
-            actually going anywhere. */}
-        <div className="mt-8 min-h-16 text-center" role="status" aria-live="polite">
+        {/* Status — a PILL, not a headline (CEO, 12 Aug: the giant agent
+            overlay blocked the stream). Same status model, same aria-live
+            duty; the working states breathe via PulseDot instead of
+            shouting in display type. The detail line stays for every
+            non-live tone — it is the one piece of text that says whether
+            your voice is actually going anywhere — but at caption size. */}
+        <div className="mt-8 min-h-12 text-center" role="status" aria-live="polite">
           {/* initial={false} is load-bearing, not a preference. With the enter
               animation armed on first mount, this block renders at opacity 0
               and only becomes visible once framer-motion's first frame lands —
@@ -1238,19 +1245,25 @@ export default function Studio() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: reduceMotion ? 0 : 0.24 }}
+              className="flex flex-col items-center gap-1.5"
             >
-              <p
-                className="text-base font-light tracking-wide"
-                style={{ color: tone.color }}
+              <span
+                className="inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[10px] tracking-[0.16em] uppercase"
+                style={{ color: tone.color, borderColor: `${tone.color}33` }}
               >
+                {/* only WORKING states breathe — every settled tone (live,
+                    idle, warn, error) holds still; steadiness is the point */}
+                <PulseDot color={tone.color} size={5} className={status.tone === 'working' ? '' : 'lens-breathe-still'} />
                 {status.label}
-              </p>
-              <p className="mt-1 text-[11px] text-[#64748B] max-w-sm mx-auto leading-relaxed">
-                {status.detail}
-                {agentModeReason && status.tone === 'live' && (
-                  <span className="text-[#F59E0B]"> ({agentModeReason})</span>
-                )}
-              </p>
+              </span>
+              {status.tone !== 'live' && (
+                <p className="text-[10px] text-[#64748B] max-w-sm mx-auto leading-relaxed">
+                  {status.detail}
+                </p>
+              )}
+              {agentModeReason && status.tone === 'live' && (
+                <p className="text-[10px] text-[#F59E0B] max-w-sm mx-auto">({agentModeReason})</p>
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -1347,44 +1360,21 @@ export default function Studio() {
               >
                 Voice
               </label>
-              <select
+              {/* The same honesty contract the native select carried: the
+                  value shown is the agent-CONFIRMED voice while connected,
+                  the stored choice before that, and a placeholder until a
+                  real choice exists (the picker's empty input — never the
+                  first list entry masquerading as a selection). */}
+              <VoicePicker
                 id="lens-voice"
                 value={isConnected && confirmedVoice ? confirmedVoice : (validChosenVoice ?? confirmedVoice ?? '')}
-                onChange={(e) => {
-                  chooseVoice(e.target.value);
-                  if (isConnected) requestVoice(e.target.value);
+                onChange={(picked) => {
+                  chooseVoice(picked);
+                  if (isConnected) requestVoice(picked);
                 }}
-                className="max-w-full bg-transparent border border-[#1A1A2E] rounded-full px-3 py-1.5 text-[10px] text-[#94A3B8] focus:outline-none focus:border-[#6366F1]"
-              >
-                {/* With no stored choice the select's value is '' — without
-                    this option the browser would DISPLAY the first voice in
-                    the list while the session would actually use the agent's
-                    default. A placeholder keeps the display honest until a
-                    real choice exists. */}
-                {!validChosenVoice && !(isConnected && confirmedVoice) && (
-                  <option value="" disabled className="bg-[#08080F]">
-                    choose a voice…
-                  </option>
-                )}
-                {voiceGroups.personal.length > 0 && (
-                  <optgroup label="your voices" className="bg-[#08080F]">
-                    {voiceGroups.personal.map((v) => (
-                      <option key={v.id} value={v.id} className="bg-[#08080F]">
-                        {v.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {voiceGroups.system.length > 0 && (
-                  <optgroup label="system voices" className="bg-[#08080F]">
-                    {voiceGroups.system.map((v) => (
-                      <option key={v.id} value={v.id} className="bg-[#08080F]">
-                        {v.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+                groups={voiceGroups}
+                labels={mergedVoices.labels}
+              />
             </div>
             {!isConnected && validChosenVoice && (
               <span className="text-[9px] text-[#3E4A5F]">
@@ -1432,49 +1422,51 @@ export default function Studio() {
             rides the first start, so hiding them behind the key would force
             the user to configure their identity AFTER the meter starts. */}
         <div className="mt-8 w-full max-w-sm flex flex-col items-center gap-2">
-            {/* the fidelity readout is one long honest sentence — on a phone
-                it wraps, centered, instead of pushing the panel sideways */}
+            {/* The de-cluttered readout (CEO, 12 Aug): the chip shows the
+                two numbers a glance needs; the full honest sentence — the
+                same claims-vs-measurements discipline as before, now as
+                term/value lines — lives behind the "stats" disclosure.
+                WHAT the panel says is decided in src/lib/streamStats.js
+                (pure, tested); this block only places it. */}
             <div className="flex flex-wrap items-center justify-center gap-3 px-2 text-center">
               {(video.phase === VIDEO_PHASE.starting || video.phase === VIDEO_PHASE.stopping) && (
                 <span className="flex items-center gap-2 text-[9px] tracking-[0.14em] uppercase text-[#64748B]">
-                  <Loader2 size={11} className="animate-spin" />
+                  <PulseDot color="#64748B" size={5} />
                   {video.phase === VIDEO_PHASE.starting ? 'video joining the lens' : 'video closing'}
                 </span>
               )}
-              {/* The fidelity readout says what the pipeline ACTUALLY
-                  delivers. While the upscale slot is empty it says 720p and
-                  names what is pending — claiming FHD before the stage exists
-                  would be the kind of lie this project keeps refusing. */}
-              {video.phase === VIDEO_PHASE.live && presentingRaw && (
-                /* Raw passthrough (CEO verdict, 6 Aug): the element shows the
-                   vendor's stream untouched, so the readout claims VENDOR
-                   truth only — native resolution, measured rate, no pipeline
-                   labels for work the presented pixels never received. */
-                <span className="text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
-                  <Video size={10} className="inline mr-1" aria-hidden />
-                  {fidelity.vendorNative.height}p
-                  {deliveredFps != null && ` · ${deliveredFps}fps`}
-                  {' · raw passthrough · press H for clean view'}
-                </span>
-              )}
-              {video.phase === VIDEO_PHASE.live && !presentingRaw && (
-                <span className="text-[9px] tracking-[0.14em] uppercase text-[#94A3B8]">
-                  <Video size={10} className="inline mr-1" aria-hidden />
-                  {fidelity.delivering.height}p
-                  {deliveredFps != null && ` · ${deliveredFps}fps`}
-                  {/* The tier LABEL is the synthesis stage's claim about what
-                      runs; the fps NUMBER stays the meter's measurement of
-                      what the element presents. Kept separate on purpose —
-                      when they disagree, the disagreement is the diagnosis. */}
-                  {fidelity.synthLabel && ` · ${fidelity.synthLabel}`}
-                  {!fidelity.upscaleActive && ' · upscale pending'}
-                  {/* The applied hold, not a vanity light: how far the video
-                      is standing behind real time to meet its voice. State,
-                      not a render-time read — written by the same effect
-                      that moves the target, so it is never a beat behind. */}
-                  {fidelity.alignActive && ` · video held ${(appliedHoldMs / 1000).toFixed(1)}s`}
-                  {' · press H for clean view'}
-                </span>
+              {video.phase === VIDEO_PHASE.live && (
+                <Disclosure>
+                  <div className="flex flex-col items-center gap-1.5">
+                    <DisclosureButton className="group flex items-center gap-1.5 rounded-full border border-[#1A1A2E] px-3 py-1 text-[9px] tracking-[0.14em] uppercase text-[#94A3B8] transition-colors hover:border-[#475569]">
+                      <Video size={10} aria-hidden />
+                      {statChip({ presentingRaw, fidelity, deliveredFps })}
+                      {presentingRaw && ' · raw'}
+                      <ChevronDown
+                        size={10}
+                        aria-hidden
+                        className="text-[#4A5568] transition-transform group-data-[open]:rotate-180 motion-reduce:transition-none"
+                      />
+                    </DisclosureButton>
+                    <DisclosurePanel className="w-full max-w-60 rounded-xl border border-[#1E1E2E] bg-[#0B0B14]/95 px-3 py-2 backdrop-blur-md">
+                      <dl className="space-y-1">
+                        {statLines({ presentingRaw, fidelity, deliveredFps, appliedHoldMs }).map(
+                          ([term, value]) => (
+                            <div key={term} className="flex items-baseline justify-between gap-3">
+                              <dt className="text-[8px] tracking-[0.18em] uppercase text-[#4A5568]">
+                                {term}
+                              </dt>
+                              <dd className="text-[10px] tabular-nums text-[#94A3B8]">{value}</dd>
+                            </div>
+                          ),
+                        )}
+                      </dl>
+                      <p className="mt-1.5 text-[8px] tracking-[0.14em] uppercase text-[#3E4A5F]">
+                        press H for clean view
+                      </p>
+                    </DisclosurePanel>
+                  </div>
+                </Disclosure>
               )}
             </div>
 
@@ -1651,7 +1643,7 @@ export default function Studio() {
                 style={{ border: '1px solid #1A1A2E', color: '#94A3B8' }}
               >
                 {connectionState === ConnectionState.Connecting ? (
-                  <Loader2 size={13} className="animate-spin" />
+                  <PulseDot color="currentColor" size={7} />
                 ) : (
                   <Power size={13} />
                 )}
@@ -1671,7 +1663,7 @@ export default function Studio() {
                 className="w-full flex items-center justify-center gap-2.5 rounded-full py-3.5 text-[11px] tracking-[0.2em] uppercase bg-white text-[#08080F] disabled:opacity-50 transition-opacity"
               >
                 {unlocking ? (
-                  <Loader2 size={13} className="animate-spin" />
+                  <PulseDot color="currentColor" size={7} />
                 ) : (
                   <Power size={13} />
                 )}
@@ -1697,7 +1689,7 @@ export default function Studio() {
                 disabled={unlocking}
                 className="flex items-center justify-center gap-2 rounded-full px-10 py-3.5 text-[11px] tracking-[0.16em] uppercase bg-white text-[#08080F] disabled:opacity-40 transition-opacity"
               >
-                {unlocking ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+                {unlocking ? <PulseDot color="currentColor" size={7} /> : <Power size={13} />}
                 Start the lens
               </button>
               {unlockError && (
@@ -1736,7 +1728,7 @@ export default function Studio() {
                   disabled={unlocking || !accessKey}
                   className="flex items-center gap-2 rounded-full px-6 text-[11px] tracking-[0.16em] uppercase bg-white text-[#08080F] disabled:opacity-40 transition-opacity"
                 >
-                  {unlocking ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+                  {unlocking ? <PulseDot color="currentColor" size={7} /> : <KeyRound size={13} />}
                   Start the lens
                 </button>
               </div>

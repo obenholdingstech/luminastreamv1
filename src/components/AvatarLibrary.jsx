@@ -11,7 +11,9 @@
 // learns the chosen id through onSelected and decides what it means for a
 // running or future session.
 
-import { ImagePlus, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { ImagePlus, RefreshCw, Trash2 } from 'lucide-react';
+
+import { Shimmer } from '@/components/ui/loading';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { afterDelete, afterSelect } from '@/lib/avatarLibrary';
@@ -97,7 +99,13 @@ export default function AvatarLibrary({ onSelected, revision = 0 }) {
   };
 
   if (list.phase === 'loading') {
-    return <p className="mt-2 text-[11px] text-[#64748B]">loading your avatars…</p>;
+    return (
+      <div className="mt-2 flex gap-2" role="status" aria-label="loading your avatars">
+        <Shimmer className="h-12 w-12 rounded-lg" />
+        <Shimmer className="h-12 w-12 rounded-lg" />
+        <Shimmer className="h-12 w-12 rounded-lg" />
+      </div>
+    );
   }
   if (list.phase === 'error') {
     return (
@@ -139,9 +147,7 @@ export default function AvatarLibrary({ onSelected, revision = 0 }) {
                 {thumbs[a.id] ? (
                   <img src={thumbs[a.id]} alt={a.name} className="h-full w-full object-cover" />
                 ) : (
-                  <span className="flex h-full w-full items-center justify-center">
-                    <Loader2 size={12} className="animate-spin text-[#475569]" aria-hidden />
-                  </span>
+                  <Shimmer className="h-full w-full rounded-none" />
                 )}
               </button>
               <button

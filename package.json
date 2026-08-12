@@ -16,6 +16,7 @@
     "probe:video": "E2E_VIDEO_PROBE=1 E2E_ADMIN_PASSWORD=\"$(grep -E '^ADMIN_PASSWORD=' secrets.env | head -1 | cut -d= -f2-)\" playwright test e2e/video-render.probe.spec.js"
   },
   "dependencies": {
+    "@headlessui/react": "^2.2.10",
     "framer-motion": "^11.16.4",
     "livekit-client": "^2.20.1",
     "lucide-react": "^0.475.0",
