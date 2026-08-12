@@ -4,6 +4,77 @@ Full session records, **newest at top**. Terse handover summaries live in `notes
 
 ---
 
+## 12 Aug 2026 — the premium block: agent triage, the selector owns the library, the studio overhaul
+
+**Task (CEO, verbatim essentials):** "Agent Offline: The video feed is
+stuck on 'Waiting for the agent' … check journalctl -u lumina-agent";
+"Broken Async State (Missing Voice): … when a clone succeeds, it must
+instantly appear in the UI without requiring a page refresh"; "Full
+Studio UI/UX Overhaul … Replace the 'Rolling' Spinner … Custom Voice
+Library … search, filter tabs (My Voices vs. System Voices), and visual
+voice cards that include audio preview buttons and language tags …
+clean grid/carousel of rich visual cards … collapsible 'Developer /
+Stream Stats' toggle … subtle, non-intrusive status pill … research
+open-source GitHub repositories … (like Shadcn UI, Aceternity UI,
+Tailwind UI …) … Fix the offline agent and the broken async state
+first, then begin the UI research and redesign."
+
+**Agent triage (open — her hands):** no SSH from here by design, so the
+diagnosis is a paste-back protocol: status/journal/deploy-state block
+delivered, plus the Health screen (#107) as the zero-SSH first look.
+Timeline note: her first screenshot shows the grouped dropdown
+populated with clones — that only comes from a live broadcast, so the
+agent was UP after the #110 deploy and died later (payment-class
+mid-run death or crash loop, not the deploy gate). Awaiting her paste.
+
+**What shipped:**
+
+1. **#111 — the selector owns the library (merged @ 8b4dd2b).** Root
+   cause of the missing voice: "your voices" had ONE source — the
+   agent's live broadcast — so with the agent down a fresh clone had no
+   path into the dropdown. mergeLibraryVoices folds /api/me/voices into
+   the selector inputs (broadcast-first); the library is sequenced
+   state that follows the session (sign-out empties AND invalidates —
+   CodeRabbit's security catch; policy extracted to listReload.js);
+   the select offers broadcast ∪ library while auto-apply only SENDS
+   broadcast-listed ids; saveProfile reads the merged label map.
+
+2. **#112 — the premium foundation (merged @ 1b8ba53).** Research
+   verdict: Headless UI v2 (Tailwind-native, unstyled, accessible;
+   Radix slowed post-WorkOS-acquisition; shadcn's PATTERNS borrowed,
+   not the kit). VoicePicker replaces the native select — combobox
+   input-as-trigger, all/mine/system tabs, grouped rows with
+   yours/system chips, honest empty states (voicePicker.js pure).
+   Loading language: lens-shimmer skeletons + PulseDot breathing glows
+   replace every Loader2 rotor. Stream stats leave the viewport (chip +
+   Disclosure; streamStats.js keeps the claims-vs-measurements
+   honesty). The status headline became a pill — same lensState model,
+   same aria-live, same load-bearing initial={false}. CodeRabbit round:
+   its Major was REAL — the tab buttons sat inside role=listbox, which
+   the WAI-ARIA pattern forbids; the panel is now ours with only
+   groups/options in the listbox. Plus: dot breathes only while
+   working; shimmer containers role=status; tab+query composition test.
+
+3. **#113 — previews, language tags, cards (this PR).** Worker:
+   GET /api/me/voices/:id/sample streams the caller's OWN vaulted audio
+   (userId-scoped, private cache, own-name 404s, rejecting store =
+   503); list carries language. Agent: broadcast carries
+   choice_previews. Frontend: previewPlayer.js decides (OUR vault
+   outranks the vendor clip for own voices) + one shared audio element
+   across all surfaces; picker gets language tags on rows (static =
+   ARIA-legal) and the preview control in the panel FOOTER (the #112
+   listbox lesson applied in advance); MY VOICES is a card grid.
+   CodeRabbit round 1: stale-response object-URL leak (check before
+   minting) and store-rejection 503 — both fixed with tests.
+
+**Verification:** 372 lib + 286 worker + 249 agent tests; gates bare;
+production builds; every new behavior mutation-verified. New dependency:
+@headlessui/react (the only one).
+
+**Process note:** empty CodeRabbit review objects are ambiguous by
+API shape; the disambiguation is "@coderabbitai review" → "Already
+reviewed" = a real finding-free pass (now a memory file).
+
 ## 11 Aug 2026 (late night) — the studio block closed: bugs → media limits → categorization + responsive
 
 **Task (CEO, verbatim essentials):** "Studio Bug Fixes, Health Probe
