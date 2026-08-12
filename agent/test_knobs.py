@@ -363,6 +363,14 @@ def test_dynamic_voice_knob_clamp_and_metadata():
     md_nocat = {e["name"]: e for e in knobs.metadata(
         "tts", voice_choices=[{"id": "v3", "name": "Bare"}])}
     assert md_nocat["voice"]["choice_categories"] == {}
+    # previews ride the same way: present when the vendor offers a clip,
+    # absent (not null-valued) when it doesn't — no dead players
+    md_prev = {e["name"]: e for e in knobs.metadata(
+        "tts", voice_choices=[
+            {"id": "v1", "name": "A", "preview_url": "https://cdn/x.mp3"},
+            {"id": "v2", "name": "B", "preview_url": None},
+        ])}
+    assert md_prev["voice"]["choice_previews"] == {"v1": "https://cdn/x.mp3"}
     assert md["voice"]["dynamic"] is True
     assert md["voice"]["group"] == "ElevenLabs voice"
     # no voice_choices ⇒ still renders (empty choices), never crashes

@@ -763,7 +763,11 @@ class ConvertAgent:
         if self.tts is not None:
             room_policy = self._room_voice_policy()
             voice_choices = [{"id": v["voice_id"], "name": v["name"],
-                              "category": v.get("category")}
+                              "category": v.get("category"),
+                              # the vendor's own sample clip — the studio's
+                              # preview button for system voices (clones
+                              # preview from OUR vaulted sample instead)
+                              "preview_url": v.get("preview_url")}
                              for v in self.tts.voices
                              if voice_allowed(room_policy, v)]
         spend = self.tts.governor.snapshot() if self.tts is not None else None

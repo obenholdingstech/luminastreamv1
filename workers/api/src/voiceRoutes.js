@@ -83,6 +83,7 @@ export function createVoiceRoutes(kit) {
     createDb,
     resolveUserSession,
     mayStartSession,
+    corsHeaders,
   } = kit;
 
   // Rate-limit BEFORE auth, like every other route family. MEDIA_LIMITER
@@ -102,6 +103,40 @@ export function createVoiceRoutes(kit) {
   }
 
   return {
+    /**
+     * GET /api/me/voices/:id/sample — the caller's OWN vaulted reference
+     * audio, streamed for the card's preview button. The sample is
+     * personal data: only the owning session reaches it (findUserVoice is
+     * scoped by userId), and a row without a vaulted object — a
+     * dashboard-era clone — is a plain 404, not an error. Private
+     * cache only: this must never land in a shared cache.
+     */
+    async sample(request, env, origin, rowId) {
+      const { refusal, session } = await requireUser(request, env, origin);
+      if (refusal) return refusal;
+      const row = await session.db.findUserVoice(session.userId, rowId);
+      if (!row) return json({ ok: false, error: 'voice_not_found' }, { status: 404, origin });
+      if (!env.AVATARS) {
+        return json({ ok: false, error: 'voice_storage_unavailable' }, { status: 503, origin });
+      }
+      let obj;
+      try {
+        obj = await env.AVATARS.get(sampleKey(session.userId, row.id));
+      } catch {
+        // a failing STORE is an outage, not a missing sample — 503 says
+        // "try again", 404 would say "gone" and stop the caller retrying
+        return json({ ok: false, error: 'voice_storage_unavailable' }, { status: 503, origin });
+      }
+      if (!obj) return json({ ok: false, error: 'sample_not_found' }, { status: 404, origin });
+      return new Response(obj.body, {
+        headers: {
+          'Content-Type': obj.httpMetadata?.contentType ?? 'audio/wav',
+          'Cache-Control': 'private, max-age=300',
+          ...corsHeaders(origin),
+        },
+      });
+    },
+
     /** GET /api/me/voices — the caller's clones, nothing else's. */
     async list(request, env, origin) {
       const { refusal, session } = await requireUser(request, env, origin);
@@ -123,6 +158,10 @@ export function createVoiceRoutes(kit) {
             voiceId: v.vendor_voice_id,
             label: v.label,
             vendorAccount: v.vendor_account,
+            // The conditioning language chosen at clone time (0007) — the
+            // studio renders it as the card's language tag. Null for
+            // auto-detect; never fabricated.
+            language: v.language ?? null,
           })),
         },
         { origin },

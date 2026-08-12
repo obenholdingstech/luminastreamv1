@@ -2,6 +2,21 @@
 
 Running summary of every working session, **newest entry first**. Each entry: what was done, which files changed, how it was verified, and the next step. This file is the standing summary channel — check the top entry for the most recent work.
 
+## 12 August 2026 — the premium overhaul, shipped in three
+
+- **#111 merged:** the selector reads OUR library too — a fresh clone
+  appears with no agent involved (root cause of her "missing voice").
+- **#112 merged:** Headless UI VoicePicker (search + my/system tabs),
+  shimmer/pulse loading language, stats behind a disclosure chip, the
+  status pill instead of the blocking headline.
+- **#113 open/merged:** voice previews (own vault outranks vendor clip;
+  one shared player), language tags, MY VOICES card grid; sample-stream
+  route with own-name 404s and 503 on store failure.
+- **Agent still offline:** awaiting her journalctl paste; Health screen
+  is the zero-SSH first look. Screenshot timeline says it died AFTER
+  the #110 deploy came up — mid-run death, not the deploy gate.
+- Next: her journal paste → agent fix; avatar grid polish rides later.
+
 ## 11 August 2026 (late night) — studio block closed
 
 - **#109 merged:** 15MB avatars compressed in-browser to the vendor

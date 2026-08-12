@@ -123,7 +123,9 @@ test('/api/me/voices: the caller sees exactly their rows; anonymous sees a 401',
   const res = await worker.fetch(req('/api/me/voices', { method: 'GET', cookie }), env);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.deepEqual(body.voices, [{ id: 'row-clone-a', voiceId: 'clone-a', label: 'clone-a' }]);
+  assert.deepEqual(body.voices, [
+    { id: 'row-clone-a', voiceId: 'clone-a', label: 'clone-a', language: null },
+  ]);
 
   const anon = await worker.fetch(req('/api/me/voices', { method: 'GET' }), env);
   assert.equal(anon.status, 401);

@@ -725,3 +725,57 @@ test('clone: language rides to the vendor as labels; junk languages refuse befor
     vendor2.restore();
   }
 });
+
+// ── the sample vault, streamed for preview (voice cards) ──────────────────
+
+test('sample: the owner streams their vaulted audio with its stored type', async () => {
+  const { cookie, env } = await userEnv({ voices: [{ rowId: 'aa11', vendorId: 'v1' }] });
+  await env.AVATARS.put('voice-samples/u1/aa11', new Uint8Array([1, 2, 3]).buffer, {
+    httpMetadata: { contentType: 'audio/wav' },
+  });
+  const res = await worker.fetch(req('/api/me/voices/aa11/sample', { cookie }), env);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Content-Type'), 'audio/wav');
+  assert.equal(res.headers.get('Cache-Control'), 'private, max-age=300', 'personal audio never lands in a shared cache');
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [1, 2, 3]);
+});
+
+test('sample: an unknown row and a rowless vault answer their OWN 404s', async () => {
+  const { cookie, env } = await userEnv({ voices: [{ rowId: 'aa11', vendorId: 'v1' }] });
+  const missRow = await worker.fetch(req('/api/me/voices/dead/sample', { cookie }), env);
+  assert.equal(missRow.status, 404);
+  assert.equal((await missRow.json()).error, 'voice_not_found');
+  // the row exists, the object does not — the dashboard-era case
+  const missObj = await worker.fetch(req('/api/me/voices/aa11/sample', { cookie }), env);
+  assert.equal(missObj.status, 404);
+  assert.equal((await missObj.json()).error, 'sample_not_found');
+});
+
+test('sample: no session is 401 — the vault never streams to strangers', async () => {
+  const { env } = await userEnv({ voices: [{ rowId: 'aa11', vendorId: 'v1' }] });
+  const res = await worker.fetch(req('/api/me/voices/aa11/sample'), env);
+  assert.equal(res.status, 401);
+});
+
+test('list: language rides each row for the card tag — null means auto-detect, never fabricated', async () => {
+  const { cookie, env } = await userEnv({
+    voices: [
+      { rowId: 'aa11', vendorId: 'v1', language: 'pl' },
+      { rowId: 'bb22', vendorId: 'v2' },
+    ],
+  });
+  const res = await worker.fetch(req('/api/me/voices', { cookie }), env);
+  const { voices } = await res.json();
+  assert.equal(voices[0].language, 'pl');
+  assert.equal(voices[1].language, null);
+});
+
+test('sample: a FAILING store answers 503 voice_storage_unavailable — an outage, not a missing sample', async () => {
+  const { cookie, env } = await userEnv({ voices: [{ rowId: 'aa11', vendorId: 'v1' }] });
+  env.AVATARS.get = async () => {
+    throw new Error('r2 down');
+  };
+  const res = await worker.fetch(req('/api/me/voices/aa11/sample', { cookie }), env);
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'voice_storage_unavailable');
+});

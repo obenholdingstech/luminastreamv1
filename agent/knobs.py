@@ -289,6 +289,12 @@ def metadata(engine=None, voice_choices=None, spend=None):
                 entry["choice_categories"] = {
                     v["id"]: v["category"] for v in voice_choices if v.get("category")
                 }
+                # The vendor's sample clip per voice — the preview button's
+                # source for system voices. Absent means absent: the UI
+                # renders no preview rather than a dead player.
+                entry["choice_previews"] = {
+                    v["id"]: v["preview_url"] for v in voice_choices if v.get("preview_url")
+                }
                 entry["dynamic"] = True
             else:
                 entry["choices"] = list(spec["choices"])
