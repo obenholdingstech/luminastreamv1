@@ -119,7 +119,14 @@ export function createVoiceRoutes(kit) {
       if (!env.AVATARS) {
         return json({ ok: false, error: 'voice_storage_unavailable' }, { status: 503, origin });
       }
-      const obj = await env.AVATARS.get(sampleKey(session.userId, row.id));
+      let obj;
+      try {
+        obj = await env.AVATARS.get(sampleKey(session.userId, row.id));
+      } catch {
+        // a failing STORE is an outage, not a missing sample — 503 says
+        // "try again", 404 would say "gone" and stop the caller retrying
+        return json({ ok: false, error: 'voice_storage_unavailable' }, { status: 503, origin });
+      }
       if (!obj) return json({ ok: false, error: 'sample_not_found' }, { status: 404, origin });
       return new Response(obj.body, {
         headers: {

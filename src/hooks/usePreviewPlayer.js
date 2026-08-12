@@ -64,7 +64,11 @@ export function usePreviewPlayer() {
         // cookie-walled route — fetch with credentials, play the blob
         const res = await fetch(source.src, { credentials: 'include' });
         if (!res.ok) throw new Error('sample unavailable');
-        shared.objectUrl = URL.createObjectURL(await res.blob());
+        const blob = await res.blob();
+        // staleness is checked BEFORE the object URL exists — a superseded
+        // response must never mint a URL nothing will ever revoke
+        if (shared.playingId !== id) return;
+        shared.objectUrl = URL.createObjectURL(blob);
         src = shared.objectUrl;
       }
       // a newer toggle may have superseded this async fetch

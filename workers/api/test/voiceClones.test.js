@@ -769,3 +769,13 @@ test('list: language rides each row for the card tag — null means auto-detect,
   assert.equal(voices[0].language, 'pl');
   assert.equal(voices[1].language, null);
 });
+
+test('sample: a FAILING store answers 503 voice_storage_unavailable — an outage, not a missing sample', async () => {
+  const { cookie, env } = await userEnv({ voices: [{ rowId: 'aa11', vendorId: 'v1' }] });
+  env.AVATARS.get = async () => {
+    throw new Error('r2 down');
+  };
+  const res = await worker.fetch(req('/api/me/voices/aa11/sample', { cookie }), env);
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, 'voice_storage_unavailable');
+});
