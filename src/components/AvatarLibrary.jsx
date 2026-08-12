@@ -100,7 +100,7 @@ export default function AvatarLibrary({ onSelected, revision = 0 }) {
 
   if (list.phase === 'loading') {
     return (
-      <div className="mt-2 flex gap-2" aria-label="loading your avatars">
+      <div className="mt-2 flex gap-2" role="status" aria-label="loading your avatars">
         <Shimmer className="h-12 w-12 rounded-lg" />
         <Shimmer className="h-12 w-12 rounded-lg" />
         <Shimmer className="h-12 w-12 rounded-lg" />

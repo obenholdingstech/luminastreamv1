@@ -145,7 +145,7 @@ export default function VoiceLibrary({ onLibraryChanged }) {
       </div>
 
       {list.phase === 'loading' ? (
-        <div className="mt-2 space-y-1.5" aria-label="loading your voices">
+        <div className="mt-2 space-y-1.5" role="status" aria-label="loading your voices">
           <Shimmer className="h-4 w-3/4" />
           <Shimmer className="h-4 w-1/2" />
         </div>

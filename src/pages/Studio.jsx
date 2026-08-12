@@ -1251,7 +1251,9 @@ export default function Studio() {
                 className="inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[10px] tracking-[0.16em] uppercase"
                 style={{ color: tone.color, borderColor: `${tone.color}33` }}
               >
-                <PulseDot color={tone.color} size={5} className={status.tone === 'live' ? 'lens-breathe-still' : ''} />
+                {/* only WORKING states breathe — every settled tone (live,
+                    idle, warn, error) holds still; steadiness is the point */}
+                <PulseDot color={tone.color} size={5} className={status.tone === 'working' ? '' : 'lens-breathe-still'} />
                 {status.label}
               </span>
               {status.tone !== 'live' && (

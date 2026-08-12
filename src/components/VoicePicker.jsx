@@ -5,6 +5,13 @@
 // focus, and ARIA semantics come from the primitive; the DECISIONS
 // (tab/query filtering, empty-state wording) live in src/lib/voicePicker
 // and are unit-tested there.
+//
+// Structure note (CodeRabbit, this PR): the floating panel is OURS — a
+// plain positioned div gated on the combobox's open state — and
+// ComboboxOptions (role="listbox") holds ONLY option rows and labeled
+// role="group" sections, per the WAI-ARIA listbox pattern. The filter
+// tabs and the empty-state line live in the panel but OUTSIDE the
+// listbox subtree, so option navigation never trips over a button.
 
 import {
   Combobox,
@@ -48,8 +55,8 @@ function OptionRow({ voice, personal }) {
 function GroupSection({ heading, voices, personal }) {
   if (voices.length === 0) return null;
   return (
-    <div>
-      <p className="px-3 pb-1 pt-2 text-[9px] tracking-[0.22em] uppercase text-[#4A5568]">
+    <div role="group" aria-label={heading}>
+      <p aria-hidden className="px-3 pb-1 pt-2 text-[9px] tracking-[0.22em] uppercase text-[#4A5568]">
         {heading}
       </p>
       {voices.map((v) => (
@@ -77,56 +84,56 @@ export default function VoicePicker({ id, value, onChange, groups, labels, disab
       disabled={disabled}
       immediate
     >
-      <div className="relative">
-        <ComboboxInput
-          id={id}
-          aria-label="voice"
-          placeholder="choose a voice…"
-          displayValue={(v) => (v ? (labels[v] ?? v) : '')}
-          onChange={(e) => setQuery(e.target.value)}
-          className="w-56 max-w-full rounded-full border border-[#1A1A2E] bg-transparent py-1.5 pl-3 pr-8 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:border-[#6366F1] focus:outline-none"
-        />
-        <ComboboxButton
-          aria-label="open the voice list"
-          className="absolute inset-y-0 right-0 flex items-center px-2.5 text-[#4A5568]"
-        >
-          <ChevronDown size={12} aria-hidden />
-        </ComboboxButton>
-      </div>
+      {({ open }) => (
+        <div className="relative">
+          <ComboboxInput
+            id={id}
+            aria-label="voice"
+            placeholder="choose a voice…"
+            displayValue={(v) => (v ? (labels[v] ?? v) : '')}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-56 max-w-full rounded-full border border-[#1A1A2E] bg-transparent py-1.5 pl-3 pr-8 text-[10px] text-[#94A3B8] placeholder:text-[#3E4A5F] focus:border-[#6366F1] focus:outline-none"
+          />
+          <ComboboxButton
+            aria-label="open the voice list"
+            className="absolute inset-y-0 right-0 flex items-center px-2.5 text-[#4A5568]"
+          >
+            <ChevronDown size={12} aria-hidden />
+          </ComboboxButton>
 
-      <ComboboxOptions
-        anchor="bottom start"
-        transition
-        className="z-50 mt-2 w-[var(--input-width)] min-w-64 origin-top rounded-xl border border-[#1E1E2E] bg-[#0B0B14]/95 p-1.5 shadow-2xl backdrop-blur-md transition duration-150 ease-out data-[closed]:scale-95 data-[closed]:opacity-0 motion-reduce:transition-none"
-      >
-        {/* the filter tabs — a REQUEST about which shelf to browse; the
-            search below applies within it */}
-        <div className="flex items-center gap-1 border-b border-[#14141F] px-1.5 pb-1.5">
-          {PICKER_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              aria-pressed={tab === t.id}
-              onClick={() => setTab(t.id)}
-              className={`rounded-full px-2.5 py-1 text-[9px] tracking-[0.14em] uppercase transition-colors ${
-                tab === t.id
-                  ? 'bg-[#161626] text-[#E2E8F0]'
-                  : 'text-[#4A5568] hover:text-[#94A3B8]'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+          {open && (
+            <div className="absolute left-1/2 top-full z-50 mt-2 w-72 max-w-[85vw] -translate-x-1/2 rounded-xl border border-[#1E1E2E] bg-[#0B0B14]/95 p-1.5 shadow-2xl backdrop-blur-md">
+              {/* the filter tabs — in the panel, OUTSIDE the listbox */}
+              <div className="flex items-center gap-1 border-b border-[#14141F] px-1.5 pb-1.5">
+                {PICKER_TABS.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    aria-pressed={tab === t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`rounded-full px-2.5 py-1 text-[9px] tracking-[0.14em] uppercase transition-colors ${
+                      tab === t.id
+                        ? 'bg-[#161626] text-[#E2E8F0]'
+                        : 'text-[#4A5568] hover:text-[#94A3B8]'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
 
-        <div className="max-h-72 overflow-y-auto custom-scrollbar">
-          <GroupSection heading="your voices" voices={filtered.personal} personal />
-          <GroupSection heading="system voices" voices={filtered.system} personal={false} />
-          {empty && (
-            <p className="px-3 py-4 text-center text-[11px] text-[#64748B]">{empty}</p>
+              <ComboboxOptions static className="max-h-72 overflow-y-auto custom-scrollbar">
+                <GroupSection heading="your voices" voices={filtered.personal} personal />
+                <GroupSection heading="system voices" voices={filtered.system} personal={false} />
+              </ComboboxOptions>
+
+              {empty && (
+                <p className="px-3 py-4 text-center text-[11px] text-[#64748B]">{empty}</p>
+              )}
+            </div>
           )}
         </div>
-      </ComboboxOptions>
+      )}
     </Combobox>
   );
 }

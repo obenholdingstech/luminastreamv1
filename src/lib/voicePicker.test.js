@@ -28,6 +28,11 @@ test('search filters BOTH groups, case-insensitive, blank keeps all', () => {
   const hit = filterVoiceGroups(GROUPS, { query: 'sar' });
   assert.deepEqual(hit.personal, []);
   assert.deepEqual(hit.system.map((v) => v.id), ['p2']);
+  // tab AND query compose: the tab excludes the group the query would hit
+  assert.deepEqual(filterVoiceGroups(GROUPS, { tab: 'mine', query: 'sar' }), {
+    personal: [],
+    system: [],
+  });
   const both = filterVoiceGroups(GROUPS, { query: 'L' });
   assert.ok(both.personal.length > 0 && both.system.length > 0);
   assert.deepEqual(filterVoiceGroups(GROUPS, { query: '   ' }), GROUPS, 'whitespace is blank');

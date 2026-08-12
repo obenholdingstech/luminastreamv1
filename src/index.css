@@ -129,8 +129,8 @@
 }
 
 @keyframes breathe {
-  0%, 100% { opacity: 0.35; box-shadow: 0 0 0 0 currentColor; }
-  50% { opacity: 1; box-shadow: 0 0 8px 1px currentColor; }
+  0%, 100% { opacity: 0.35; box-shadow: 0 0 0 0 currentcolor; }
+  50% { opacity: 1; box-shadow: 0 0 8px 1px currentcolor; }
 }
 
 .lens-breathe {
