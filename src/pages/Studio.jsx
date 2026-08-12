@@ -37,6 +37,7 @@ import { listMyVoices } from '@/lib/voiceLibraryClient';
 import { createReloadSequence, foldListResponse } from '@/lib/listReload';
 import { previewSource } from '@/lib/previewPlayer';
 import VoicePicker from '@/components/VoicePicker';
+import VoiceTuning from '@/components/VoiceTuning';
 import { PulseDot } from '@/components/ui/loading';
 import { statChip, statLines } from '@/lib/streamStats';
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
@@ -1418,6 +1419,19 @@ export default function Studio() {
                 the agent kept {voiceLabels[confirmedVoice] ?? 'its voice'} —{' '}
                 {voiceSel.rejection.reason}
               </span>
+            )}
+            {/* Advanced voice settings (CEO, 12 Aug): the taste sliders,
+                bound to the agent's own knob broadcast — the component
+                renders nothing until a connected agent has broadcast its
+                metadata, so pre-start there is no dead panel. Placed under
+                the voice ROW, not on the cards: these tune the live
+                session's voice, not a stored per-voice profile. */}
+            {isConnected && (
+              <VoiceTuning
+                metadata={agentConfig?.metadata}
+                config={agentConfig?.config}
+                requestAgentConfig={requestAgentConfig}
+              />
             )}
           </div>
         )}
